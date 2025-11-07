@@ -1,0 +1,66 @@
+---
+# Example playbook: Manage users and organization members
+- name: Manage VergeIO users and members
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vergeos_host: "192.168.1.100"
+    vergeos_username: "admin"
+    vergeos_password: "password"
+
+  tasks:
+    # Note: The 'user' module has a known parameter name conflict where 'username'
+    # is used for both authentication and the target user. This is being addressed.
+    # For now, use environment variables for authentication to avoid the conflict.
+
+    - name: Create a new admin user
+      vergeio.vergeos.user:
+        host: "{{ vergeos_host }}"
+        username: "john.doe"
+        password: "secure_password"
+        email: "john.doe@example.com"
+        full_name: "John Doe"
+        role: admin
+        enabled: true
+        state: present
+      environment:
+        VERGEOS_USERNAME: "{{ vergeos_username }}"
+        VERGEOS_PASSWORD: "{{ vergeos_password }}"
+
+    - name: Create a readonly user
+      vergeio.vergeos.user:
+        host: "{{ vergeos_host }}"
+        username: "viewer"
+        password: "viewer_password"
+        email: "viewer@example.com"
+        full_name: "Read Only User"
+        role: readonly
+        state: present
+      environment:
+        VERGEOS_USERNAME: "{{ vergeos_username }}"
+        VERGEOS_PASSWORD: "{{ vergeos_password }}"
+
+    # Note: The 'member' module also has a parameter name conflict where 'username'
+    # is used for both authentication and the target member username.
+    # Using environment variables for authentication to avoid the conflict.
+
+    - name: Add user to group
+      vergeio.vergeos.member:
+        host: "{{ vergeos_host }}"
+        group: "engineering"
+        username: "john.doe"
+        state: present
+      environment:
+        VERGEOS_USERNAME: "{{ vergeos_username }}"
+        VERGEOS_PASSWORD: "{{ vergeos_password }}"
+
+    - name: Add another user to group
+      vergeio.vergeos.member:
+        host: "{{ vergeos_host }}"
+        group: "engineering"
+        username: "viewer"
+        state: present
+      environment:
+        VERGEOS_USERNAME: "{{ vergeos_username }}"
+        VERGEOS_PASSWORD: "{{ vergeos_password }}"

@@ -1,0 +1,101 @@
+---
+- name: VM Snapshot Management Examples
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vergeos_host: "192.168.1.100"
+    vergeos_username: "admin"
+    vergeos_password: "password"
+    vergeos_insecure: true
+
+  tasks:
+    # Create snapshot examples
+    # Note: Using 'operation' parameter consistently throughout this example.
+    # You can also use 'state' (present/absent/list) which maps to operations.
+
+    - name: Create a simple snapshot
+      vergeio.vergeos.vm_snapshot:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        vm_name: "web-server-01"
+        snapshot_name: "pre-update-snapshot"
+        description: "Before system update"
+        operation: create
+      register: snapshot_result
+
+    - name: Display snapshot creation result
+      ansible.builtin.debug:
+        msg: |
+          Snapshot created successfully!
+          Snapshot ID: {{ snapshot_result.snapshot_id }}
+          VM ID: {{ snapshot_result.vm_id }}
+
+    - name: Create an expiring snapshot
+      vergeio.vergeos.vm_snapshot:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        vm_name: "web-server-01"
+        snapshot_name: "temp-snapshot"
+        description: "Expires in 7 days"
+        expiration: "{{ (ansible_date_time.epoch | int) + (7 * 24 * 3600) }}"
+        operation: create
+
+    # List snapshots examples
+    - name: List all snapshots for a specific VM
+      vergeio.vergeos.vm_snapshot:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        vm_name: "web-server-01"
+        operation: list
+      register: vm_snapshots
+
+    - name: Display VM snapshots
+      ansible.builtin.debug:
+        msg: |
+          Found {{ vm_snapshots.count }} snapshots for web-server-01:
+          {% for snapshot in vm_snapshots.snapshots %}
+          - {{ snapshot.name }} (ID: {{ snapshot['$key'] }})
+          {% endfor %}
+
+    - name: List all snapshots in the system
+      vergeio.vergeos.vm_snapshot:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        operation: list
+      register: all_snapshots
+
+    - name: Display total snapshot count
+      ansible.builtin.debug:
+        msg: "Total snapshots in system: {{ all_snapshots.count }}"
+
+    # Restore snapshot example
+    - name: Restore VM from snapshot
+      vergeio.vergeos.vm_snapshot:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        vm_name: "web-server-01"
+        snapshot_id: "{{ snapshot_result.snapshot_id }}"
+        operation: restore
+      when: snapshot_result.snapshot_id is defined
+
+    # Delete snapshot example
+    - name: Delete a snapshot
+      vergeio.vergeos.vm_snapshot:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        snapshot_id: "{{ snapshot_result.snapshot_id }}"
+        operation: delete
+      when: snapshot_result.snapshot_id is defined

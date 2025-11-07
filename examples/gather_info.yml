@@ -1,0 +1,56 @@
+---
+# Example playbook: Gather information about VergeIO resources
+- name: Gather VergeIO infrastructure information
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vergeos_host: "192.168.1.100"
+    vergeos_username: "admin"
+    vergeos_password: "password"
+
+  tasks:
+    - name: Get all VMs
+      vergeio.vergeos.vm_info:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+      register: all_vms
+
+    - name: Display all VMs
+      ansible.builtin.debug:
+        msg: "Found {{ all_vms.vms | length }} VMs"
+
+    - name: Get specific VM information
+      vergeio.vergeos.vm_info:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        name: "web-server-01"
+      register: vm_info
+
+    - name: Display VM details
+      ansible.builtin.debug:
+        var: vm_info.vms
+
+    - name: Get all networks
+      vergeio.vergeos.network_info:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+      register: all_networks
+
+    - name: Display networks
+      ansible.builtin.debug:
+        msg: "Found {{ all_networks.networks | length }} networks"
+
+    - name: Get cluster information
+      vergeio.vergeos.cluster_info:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+      register: cluster_info
+
+    - name: Display cluster info
+      ansible.builtin.debug:
+        var: cluster_info.clusters

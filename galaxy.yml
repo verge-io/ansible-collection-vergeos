@@ -1,0 +1,22 @@
+---
+namespace: vergeio
+name: vergeos
+version: 1.0.0
+readme: README.md
+authors:
+  - VergeIO
+description: Ansible collection for managing VergeOS virtualization infrastructure
+license:
+  - MIT
+license_file: ''
+tags:
+  - vergeio
+  - vergeos
+  - virtualization
+  - infrastructure
+  - cloud
+repository: https://github.com/verge-io/ansible-vergeos
+documentation: https://github.com/verge-io/ansible-vergeos
+homepage: https://verge.io
+issues: https://github.com/verge-io/ansible-vergeos/issues
+build_ignore: []

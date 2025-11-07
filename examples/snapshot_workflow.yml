@@ -1,0 +1,88 @@
+---
+- name: Safe Update Workflow with Snapshots
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    vergeos_host: "192.168.1.10"
+    vergeos_username: "admin"
+    vergeos_password: "password"
+    vergeos_insecure: true
+    target_vm: "win2022-server"
+
+  tasks:
+    - name: Create pre-update snapshot
+      vergeio.vergeos.vm_snapshot:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        vm_name: "{{ target_vm }}"
+        snapshot_name: "pre-update-{{ ansible_date_time.iso8601_basic_short }}"
+        description: "Automated snapshot before update on {{ ansible_date_time.iso8601 }}"
+        operation: create
+      register: snapshot
+
+    - name: Display snapshot information
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Pre-Update Snapshot Created
+          ========================================
+          VM: {{ target_vm }}
+          Snapshot ID: {{ snapshot.snapshot_id }}
+          Snapshot Name: {{ snapshot.snapshot_name }}
+
+          This snapshot can be used to restore the VM if needed.
+
+    - name: Perform update operations
+      ansible.builtin.debug:
+        msg: "This is where you would perform your update tasks..."
+      # Add your actual update tasks here
+      # For example:
+      # - name: Update application
+      #   ...
+      # - name: Restart services
+      #   ...
+
+    - name: Prompt for snapshot cleanup
+      ansible.builtin.pause:
+        prompt: |
+          ========================================
+          Update Complete
+          ========================================
+
+          If the update was successful and you want to keep this snapshot,
+          press ENTER to continue.
+
+          Snapshot ID: {{ snapshot.snapshot_id }}
+          Snapshot Name: {{ snapshot.snapshot_name }}
+
+          Note: You can manually delete this snapshot later using:
+          ansible-playbook examples/vm_snapshots.yml --tags delete \
+            -e "snapshot_id={{ snapshot.snapshot_id }}"
+
+    - name: List all snapshots for the VM
+      vergeio.vergeos.vm_snapshot:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        vm_name: "{{ target_vm }}"
+        operation: list
+      register: vm_snapshots
+
+    - name: Display snapshot inventory
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Snapshot Inventory for {{ target_vm }}
+          ========================================
+          Total Snapshots: {{ vm_snapshots.count }}
+
+          {% for snap in vm_snapshots.snapshots %}
+          - Name: {{ snap.name }}
+            ID: {{ snap['$key'] }}
+            Created: {{ snap.created | default('N/A') }}
+            Description: {{ snap.description | default('No description') }}
+          {% endfor %}

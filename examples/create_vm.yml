@@ -1,0 +1,89 @@
+---
+# Example playbook: Create a VM with network and storage
+- name: Create and configure a VergeOS VM
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vergeos_host: "192.168.1.1"
+    vergeos_username: "admin"
+    vergeos_password: "password"
+
+  tasks:
+    - name: Create an internal network
+      vergeio.vergeos.network:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        name: "production-network"
+        description: "Production internal network"
+        network_type: internal
+        ip_address: "10.0.100.0"
+        subnet_mask: "255.255.255.0"
+        gateway: "10.0.100.1"
+        dhcp_enabled: true
+        dhcp_start: "10.0.100.100"
+        dhcp_end: "10.0.100.200"
+        dns_servers:
+          - "8.8.8.8"
+          - "8.8.4.4"
+        state: present
+
+    - name: Create a Linux VM
+      vergeio.vergeos.vm:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        name: "web-server-01"
+        description: "Production web server"
+        enabled: true
+        os_family: linux
+        cpu_cores: 4
+        ram: 8192
+        machine_type: q35
+        state: present
+      register: vm_result
+
+    - name: Add primary disk to VM
+      vergeio.vergeos.drive:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        vm_name: "web-server-01"
+        name: "os-disk"
+        size: 100
+        drive_type: virtio
+        state: present
+
+    - name: Add data disk to VM
+      vergeio.vergeos.drive:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        vm_name: "web-server-01"
+        name: "data-disk"
+        size: 500
+        drive_type: virtio
+        state: present
+
+    - name: Add network interface to VM
+      vergeio.vergeos.nic:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        vm_name: "web-server-01"
+        network: "production-network"
+        nic_type: virtio
+        state: present
+
+    - name: Power on the VM
+      vergeio.vergeos.vm:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        name: "web-server-01"
+        state: running
+
+    - name: Display VM information
+      ansible.builtin.debug:
+        var: vm_result

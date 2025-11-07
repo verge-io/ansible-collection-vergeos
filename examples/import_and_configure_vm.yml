@@ -1,0 +1,158 @@
+---
+- name: Import OVA and configure with cloud-init
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vergeos_host: "192.168.1.216"
+    vergeos_username: "admin"
+    vergeos_password: "password"
+    vergeos_insecure: true
+
+    # VM configuration
+    vm_name: "rhelovavm"
+    vm_hostname: "rhelovavm"
+    # Option 1: Use file name (recommended)
+    ova_file_name: "rhel8.ova"
+    # Option 2: Use file ID directly (if you know it)
+    # ova_file_id: "41"
+
+    # Network configuration
+    network_name: "External"          # VergeOS network to attach NIC to
+    network_interface: "ens1"         # Interface name inside the VM for cloud-init
+    ip_address: "192.168.1.11/24"
+    gateway: "192.168.1.1"
+    dns_servers:
+      - "8.8.8.8"
+      - "1.1.1.1"
+
+  tasks:
+    - name: Import VM from OVA file
+      vergeio.vergeos.vm_import:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        ova_file_name: "{{ ova_file_name }}"
+        name: "{{ vm_name }}"
+        preserve_macs: false
+        preferred_tier: "4"
+        override_drive_interface: virtio
+        override_nic_interface: virtio
+        poll_interval: 5
+        poll_timeout: 600
+      register: import_result
+
+    - name: Display import result
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          VM Import Completed Successfully!
+          ========================================
+          VM Name: {{ import_result.vm_name | default('N/A (check mode)') }}
+          VM ID: {{ import_result.vm_id | default('N/A (check mode)') }}
+          Status: {{ import_result.status | default('N/A (check mode)') }}
+          Import Key: {{ import_result.import_key | default('N/A (check mode)') }}
+
+    - name: Wait for VM to become fully editable
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Attach NIC to the External network
+      vergeio.vergeos.nic:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        vm_name: "{{ vm_name }}"
+        network: "{{ network_name }}"
+        state: present
+        nic_type: virtio
+        enabled: true
+      register: nic_result
+
+    - name: Display NIC configuration result
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          NIC Configured Successfully!
+          ========================================
+          VM: {{ vm_name }}
+          Network: {{ network_name }}
+          NIC Type: virtio
+          Status: {{ 'Created' if nic_result.changed else 'Already exists' }}
+
+    - name: Configure cloud-init for the imported VM
+      vergeio.vergeos.cloud_init:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        vm_name: "{{ vm_name }}"
+        datasource: nocloud
+        hostname: "{{ vm_hostname }}"
+        network:
+          interface: "{{ network_interface }}"
+          address: "{{ ip_address }}"
+          gateway: "{{ gateway }}"
+          nameservers: "{{ dns_servers }}"
+      register: cloudinit_result
+
+    - name: Display cloud-init configuration result
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Cloud-init Configuration Completed!
+          ========================================
+          VM ID: {{ cloudinit_result.vm_id | default('N/A (check mode)') }}
+          Datasource: {{ cloudinit_result.datasource | default('N/A (check mode)') }}
+          Cloud-init Files:
+          {% for file in cloudinit_result.cloudinit_files | default([]) %}
+            - {{ file.name }} (ID: {{ file.key }})
+          {% endfor %}
+
+    - name: Power on the VM
+      vergeio.vergeos.vm:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: "{{ vm_name }}"
+        state: running
+      register: vm_power_result
+
+    - name: Display final status
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          VM Successfully Deployed and Started!
+          ========================================
+          Name: {{ vm_name }}
+          Hostname: {{ vm_hostname }}
+          IP Address: {{ ip_address }}
+          Gateway: {{ gateway }}
+          DNS: {{ dns_servers | join(', ') }}
+
+          The VM is now running and will configure itself
+          with the specified hostname and network settings
+          on first boot using cloud-init.
+
+          You can connect to the VM after it completes
+          its cloud-init configuration (usually 1-2 minutes).
+
+    - name: Summary of created resources
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Resource Summary
+          ========================================
+          VM ID: {{ import_result.vm_id | default('N/A (check mode)') }}
+          VM Name: {{ vm_name }}
+          Import Key: {{ import_result.import_key | default('N/A (check mode)') }}
+          Cloud-init Files: {{ (cloudinit_result.cloudinit_files | default([])) | length }}
+          Power State: running
+
+          Next Steps:
+          1. Wait 1-2 minutes for cloud-init to complete
+          2. Connect to {{ ip_address }}
+          3. Verify hostname: {{ vm_hostname }}

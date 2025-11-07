@@ -1,0 +1,52 @@
+---
+- name: Test VergeOS Dynamic Inventory
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Display inventory information
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Host: {{ inventory_hostname }}
+          ========================================
+          VM ID: {{ vergeos_vm_id | default('N/A') }}
+          VM Name: {{ vergeos_name | default('N/A') }}
+          CPU Cores: {{ cpu_cores | default('N/A') }}
+          RAM: {{ ram | default('N/A') }} MB
+          OS Family: {{ os_family | default('N/A') }}
+          Power State: {{ vergeos_power_state | default('N/A') }}
+          Is Snapshot: {{ vergeos_is_snapshot | default('N/A') }}
+          Machine ID: {{ vergeos_machine | default('N/A') }}
+          IP Address: {{ vergeos_ip | default(ansible_host) | default('N/A') }}
+
+          Groups: {{ group_names | join(', ') }}
+
+- name: Show VMs by Power State
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: List powered on VMs
+      ansible.builtin.debug:
+        msg: "Powered On VMs: {{ groups['powered_on'] | default([]) | length }}"
+      when: "'powered_on' in groups"
+
+    - name: List powered off VMs
+      ansible.builtin.debug:
+        msg: "Powered Off VMs: {{ groups['powered_off'] | default([]) | length }}"
+      when: "'powered_off' in groups"
+
+- name: Show VMs by Cluster
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Display cluster groups
+      ansible.builtin.debug:
+        msg: |
+          Available Cluster Groups:
+          {% for group in groups.keys() | select('match', '^cluster_.*') %}
+          - {{ group }}: {{ groups[group] | length }} VMs
+          {% endfor %}
+      when: groups.keys() | select('match', '^cluster_.*') | list | length > 0
