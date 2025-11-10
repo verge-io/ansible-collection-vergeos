@@ -1,4 +1,4 @@
-# Quick Start Guide From Tar File
+# Quick Start Guide From Repo 
 
 This guide will help you get started with the VergeOS Ansible collection in minutes.
 
