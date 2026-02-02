@@ -1,12 +1,39 @@
-# Quick Start Guide From Repo 
+# VergeOS Ansible Collection
 
-This guide will help you get started with the VergeOS Ansible collection in minutes.
+Ansible collection for managing VergeOS virtualization infrastructure via the VergeOS API.
+
+## Requirements
+
+- **Python**: >= 3.9
+- **Ansible**: >= 2.14.0
+- **pyvergeos**: >= 1.0.0 (VergeOS Python SDK)
 
 ## Installation
 
+### 1. Install the pyvergeos SDK
+
+```bash
+pip install pyvergeos
+```
+
+### 2. Install the Collection
+
+**From Galaxy (when published):**
+```bash
+ansible-galaxy collection install vergeio.vergeos
+```
+
+**From Source:**
 ```bash
 ansible-galaxy collection build --force
 ansible-galaxy collection install vergeio-vergeos-*.tar.gz --force
+```
+
+### 3. For Ansible Execution Environments
+
+Add to your `requirements.txt`:
+```
+pyvergeos>=1.0.0
 ```
 
 ## Basic Setup

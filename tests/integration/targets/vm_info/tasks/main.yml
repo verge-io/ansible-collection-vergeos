@@ -1,0 +1,53 @@
+---
+# Integration tests for vergeio.vergeos.vm_info module
+# Requires VERGEOS_HOST, VERGEOS_USERNAME, VERGEOS_PASSWORD environment variables
+
+# Test: Get all VMs
+- name: Get information about all VMs
+  vergeio.vergeos.vm_info:
+  register: all_vms_result
+
+- name: Verify vm_info returns list
+  ansible.builtin.assert:
+    that:
+      - all_vms_result.vms is defined
+      - all_vms_result.vms is iterable
+      - not all_vms_result.changed
+    fail_msg: "vm_info did not return expected structure"
+
+- name: Display number of VMs found
+  ansible.builtin.debug:
+    msg: "Found {{ all_vms_result.vms | length }} VMs"
+
+# Test: Get specific VM (if any exist)
+- name: Get first VM name if exists
+  ansible.builtin.set_fact:
+    first_vm_name: "{{ all_vms_result.vms[0].name }}"
+  when: all_vms_result.vms | length > 0
+
+- name: Get information about specific VM
+  vergeio.vergeos.vm_info:
+    name: "{{ first_vm_name }}"
+  register: specific_vm_result
+  when: first_vm_name is defined
+
+- name: Verify specific VM info
+  ansible.builtin.assert:
+    that:
+      - specific_vm_result.vms | length == 1
+      - specific_vm_result.vms[0].name == first_vm_name
+    fail_msg: "Specific VM info not returned correctly"
+  when: first_vm_name is defined
+
+# Test: Non-existent VM returns empty list
+- name: Query non-existent VM
+  vergeio.vergeos.vm_info:
+    name: "nonexistent-vm-{{ lookup('pipe', 'date +%s') }}"
+  register: nonexistent_result
+
+- name: Verify empty list for non-existent VM
+  ansible.builtin.assert:
+    that:
+      - nonexistent_result.vms | length == 0
+      - not nonexistent_result.changed
+    fail_msg: "Non-existent VM query did not return empty list"
