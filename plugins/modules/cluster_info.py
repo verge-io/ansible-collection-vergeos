@@ -39,10 +39,19 @@ clusters:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
+
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
 
 def main():
@@ -51,13 +60,14 @@ def main():
         supports_check_mode=True
     )
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
 
     try:
-        clusters = api.get('clusters')
+        clusters = [dict(cluster) for cluster in client.clusters.list()]
         module.exit_json(changed=False, clusters=clusters)
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
     except Exception as e:
         module.fail_json(msg=f"Unexpected error: {str(e)}")
 

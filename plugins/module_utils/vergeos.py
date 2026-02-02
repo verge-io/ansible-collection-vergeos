@@ -52,8 +52,16 @@ def get_vergeos_client(module):
             msg="The pyvergeos SDK is required for this module. "
                 "Install it with: pip install pyvergeos"
         )
+
+    # Strip protocol prefix if present (SDK expects hostname only)
+    host = module.params['host']
+    if host.startswith('https://'):
+        host = host[8:]
+    elif host.startswith('http://'):
+        host = host[7:]
+
     return VergeClient(
-        host=module.params['host'],
+        host=host,
         username=module.params['username'],
         password=module.params['password'],
         verify_ssl=not module.params.get('insecure', False)
