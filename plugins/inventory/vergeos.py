@@ -21,7 +21,8 @@ description:
   - Supports filtering by tenant, cluster, or other criteria.
   - Provides comprehensive host variables for all discovered resources.
 requirements:
-  - python >= 3.6
+  - python >= 3.9
+  - pyvergeos
 extends_documentation_fragment:
   - constructed
   - inventory_cache
@@ -177,13 +178,22 @@ groups:
   development: "'dev' in (vergeos_tags | default([]))"
 '''
 
-import base64
-import json
-import ssl
 from ansible.errors import AnsibleError, AnsibleParserError
-from ansible.module_utils.urls import open_url
-from ansible.module_utils.six.moves.urllib.error import HTTPError, URLError
 from ansible.plugins.inventory import BaseInventoryPlugin, Constructable, Cacheable
+
+# SDK Integration
+try:
+    from pyvergeos import VergeClient
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
+    HAS_PYVERGEOS = True
+except ImportError:
+    HAS_PYVERGEOS = False
 
 
 class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
@@ -199,83 +209,92 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 return True
         return False
 
-    def _get_auth_header(self):
-        """Build HTTP Basic Auth header"""
-        credentials = f"{self.username}:{self.password}"
-        encoded = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
-        return f"Basic {encoded}"
-
-    def _make_request(self, endpoint, params=None):
-        """Make an authenticated API request"""
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        headers = {
-            'Authorization': self.auth_header,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        }
-
-        try:
-            response = open_url(
-                url,
-                method='GET',
-                headers=headers,
-                validate_certs=self.validate_certs,
-                timeout=30
+    def _init_client(self):
+        """Initialize the pyvergeos SDK client"""
+        if not HAS_PYVERGEOS:
+            raise AnsibleError(
+                "The pyvergeos SDK is required for this inventory plugin. "
+                "Install it with: pip install pyvergeos"
             )
 
-            if response.code == 204:
-                return None
+        # Strip protocol prefix if present (SDK expects hostname only)
+        host = self.host
+        if host.startswith('https://'):
+            host = host[8:]
+        elif host.startswith('http://'):
+            host = host[7:]
 
-            response_text = response.read()
-            if not response_text:
-                return None
-
-            return json.loads(response_text)
-
-        except HTTPError as e:
-            error_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
-            raise AnsibleError(f"HTTP error from VergeOS API ({e.code}): {error_body}")
-        except URLError as e:
-            raise AnsibleError(f"Connection error to VergeOS API: {str(e.reason)}")
+        try:
+            self.client = VergeClient(
+                host=host,
+                username=self.username,
+                password=self.password,
+                verify_ssl=self.validate_certs
+            )
+        except AuthenticationError as e:
+            raise AnsibleError(f"Authentication failed: {e}")
+        except VergeConnectionError as e:
+            raise AnsibleError(f"Connection to VergeOS failed: {e}")
         except Exception as e:
-            raise AnsibleError(f"Error querying VergeOS API: {str(e)}")
+            raise AnsibleError(f"Failed to initialize VergeOS client: {e}")
 
     def _get_vms(self):
-        """Get all VMs from VergeOS"""
+        """Get all VMs from VergeOS using SDK"""
         try:
-            vms = self._make_request('vms')
-            if not vms:
-                return []
-            return vms if isinstance(vms, list) else [vms]
+            return [dict(vm) for vm in self.client.vms.list()]
+        except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+            raise AnsibleError(f"Failed to retrieve VMs: {e}")
         except Exception as e:
             raise AnsibleError(f"Failed to retrieve VMs: {str(e)}")
 
     def _get_vm_details(self, vm_id):
-        """Get detailed information for a specific VM"""
+        """Get detailed information for a specific VM using SDK"""
         try:
-            return self._make_request(f'vms/{vm_id}')
+            vm = self.client.vms.get(id=vm_id)
+            return dict(vm)
+        except NotFoundError:
+            self.display.vvv(f"VM {vm_id} not found")
+            return {}
+        except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+            self.display.vvv(f"Failed to get details for VM {vm_id}: {e}")
+            return {}
         except Exception as e:
             self.display.vvv(f"Failed to get details for VM {vm_id}: {str(e)}")
             return {}
 
-    def _get_networks(self):
-        """Get all networks from VergeOS"""
+    def _get_vm_drives(self, vm_id):
+        """Get drives for a specific VM using SDK"""
         try:
-            networks = self._make_request('vnets')
-            if not networks:
-                return []
-            return networks if isinstance(networks, list) else [networks]
+            vm = self.client.vms.get(id=vm_id)
+            return [dict(drive) for drive in vm.drives.list()]
+        except NotFoundError:
+            self.display.vvv(f"VM {vm_id} not found when getting drives")
+            return []
+        except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+            self.display.vvv(f"Failed to get drives for VM {vm_id}: {e}")
+            return []
+        except Exception as e:
+            self.display.vvv(f"Failed to get drives for VM {vm_id}: {str(e)}")
+            return []
+
+    def _get_networks(self):
+        """Get all networks from VergeOS using SDK"""
+        try:
+            return [dict(net) for net in self.client.vnets.list()]
+        except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+            self.display.vvv(f"Failed to retrieve networks: {e}")
+            return []
         except Exception as e:
             self.display.vvv(f"Failed to retrieve networks: {str(e)}")
             return []
 
     def _get_nics(self):
-        """Get all NICs from VergeOS"""
+        """Get all NICs from VergeOS using SDK"""
         try:
-            nics = self._make_request('nics')
-            if not nics:
-                return []
-            return nics if isinstance(nics, list) else [nics]
+            return [dict(nic) for nic in self.client.nics.list()]
+        except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+            self.display.vvv(f"Failed to retrieve NICs: {e}")
+            return []
         except Exception as e:
             self.display.vvv(f"Failed to retrieve NICs: {str(e)}")
             return []
@@ -452,9 +471,8 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         self.insecure = self.get_option('insecure')
         self.validate_certs = not self.insecure
 
-        # Build API connection
-        self.base_url = f"https://{self.host}/api/v4"
-        self.auth_header = self._get_auth_header()
+        # Initialize SDK client
+        self._init_client()
 
         # Get filtering options
         self.limit_tenants = set(self.get_option('tenants') or [])
@@ -520,13 +538,13 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             # Add to groups
             self._add_to_groups(hostname, vm)
 
-            # Get detailed info if requested
+            # Get drives if requested
             if self.include_drives:
                 vm_id = vm.get('$key')
                 if vm_id:
-                    details = self._get_vm_details(vm_id)
-                    if details:
-                        self.inventory.set_variable(hostname, 'vergeos_drives', details.get('drives', []))
+                    drives = self._get_vm_drives(vm_id)
+                    if drives:
+                        self.inventory.set_variable(hostname, 'vergeos_drives', drives)
 
             # Apply constructed features for this host
             self._set_composite_vars(
