@@ -104,81 +104,72 @@ nic:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
 
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
-def get_vm_and_machine_keys(api, vm_name):
-    """Get VM key and machine key by VM name
 
-    Returns: (vm_key, machine_key) tuple
-    """
+def get_vm(client, vm_name):
+    """Get VM by name using SDK"""
     try:
-        # Get all VMs and filter by name (API doesn't support ?name= filter)
-        vms = api.get('vms')
-        matching_vms = [vm for vm in vms if vm.get('name') == vm_name]
-        if not matching_vms:
-            return None, None
-
-        vm = matching_vms[0]
-        vm_key = vm.get('$key')
-        machine_key = vm.get('machine')
-
-        return vm_key, machine_key
-    except VergeOSAPIError:
-        return None, None
-
-
-def get_vnet_key(api, network_name):
-    """Get vnet key by name"""
-    try:
-        vnets = api.get('vnets')
-        for vnet in vnets:
-            if vnet.get('name') == network_name:
-                return vnet.get('$key')
-        return None
-    except VergeOSAPIError:
+        return client.vms.get(name=vm_name)
+    except NotFoundError:
         return None
 
 
-def get_nic(api, machine_key, vnet_key):
-    """Get NIC by machine and vnet
+def get_network(client, network_name):
+    """Get network by name using SDK"""
+    try:
+        return client.networks.get(name=network_name)
+    except NotFoundError:
+        return None
 
-    Returns the NIC if it exists with the correct vnet, or the first NIC
-    for the machine if it needs to be updated.
+
+def get_nic(client, vm, target_network):
+    """Get NIC by VM and network using SDK
+
+    Returns the NIC if it exists with the correct network, or the first NIC
+    for the VM if it needs to be updated.
     """
     try:
-        # Get all NICs for this machine
-        nics = api.get('machine_nics')
-        if not isinstance(nics, list):
-            nics = [nics] if nics else []
+        nics = list(vm.nics.list())
+        target_network_key = dict(target_network).get('$key')
 
-        machine_nics = [nic for nic in nics if nic.get('machine') == machine_key]
-
-        # First, check if any NIC is already on the target vnet
-        for nic in machine_nics:
-            if nic.get('vnet') == vnet_key:
+        # First, check if any NIC is already on the target network
+        for nic in nics:
+            nic_dict = dict(nic)
+            if nic_dict.get('vnet') == target_network_key:
                 return nic
 
-        # If no NIC is on the target vnet, return the first NIC for this machine
-        # (we'll update it to use the target vnet)
-        if machine_nics:
-            return machine_nics[0]
+        # If no NIC is on the target network, return the first NIC for this VM
+        # (we'll update it to use the target network)
+        if nics:
+            return nics[0]
 
-        # No NICs exist for this machine
+        # No NICs exist for this VM
         return None
-    except VergeOSAPIError:
+    except (NotFoundError, AttributeError):
         return None
 
 
-def create_nic(module, api, machine_key, vnet_key):
-    """Create a new NIC"""
+def create_nic(module, client, vm, network):
+    """Create a new NIC using SDK"""
+    network_key = dict(network).get('$key')
+
     # Map our friendly parameter names to API field names
     nic_data = {
-        'machine': machine_key,
-        'vnet': vnet_key,
+        'vnet': network_key,
         'enabled': module.params.get('enabled', True),
         'interface': module.params.get('nic_type', 'virtio-net-pci'),
     }
@@ -189,21 +180,21 @@ def create_nic(module, api, machine_key, vnet_key):
     if module.check_mode:
         return True, nic_data
 
-    try:
-        result = api.post('machine_nics', nic_data)
-        return True, result
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to create NIC: {str(e)}")
+    nic = vm.nics.create(**nic_data)
+    return True, dict(nic)
 
 
-def update_nic(module, api, nic, target_vnet_key):
-    """Update an existing NIC"""
+def update_nic(module, client, nic, target_network):
+    """Update an existing NIC using SDK"""
     changed = False
     update_data = {}
 
+    nic_dict = dict(nic)
+    target_network_key = dict(target_network).get('$key')
+
     # Check if vnet needs to be updated
-    if nic.get('vnet') != target_vnet_key:
-        update_data['vnet'] = target_vnet_key
+    if nic_dict.get('vnet') != target_network_key:
+        update_data['vnet'] = target_network_key
         changed = True
 
     # Map parameter names to API fields
@@ -215,36 +206,31 @@ def update_nic(module, api, nic, target_vnet_key):
 
     for param, api_field in param_mapping.items():
         if module.params.get(param) is not None:
-            if nic.get(api_field) != module.params[param]:
+            if nic_dict.get(api_field) != module.params[param]:
                 update_data[api_field] = module.params[param]
                 changed = True
 
     if not changed:
-        return False, nic
+        return False, nic_dict
 
     if module.check_mode:
-        nic.update(update_data)
-        return True, nic
+        nic_dict.update(update_data)
+        return True, nic_dict
 
-    try:
-        nic_key = nic.get('$key')
-        result = api.put(f'machine_nics/{nic_key}', update_data)
-        return True, result
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to update NIC: {str(e)}")
+    # Update NIC attributes and save
+    for key, value in update_data.items():
+        setattr(nic, key, value)
+    nic.save()
+    return True, dict(nic)
 
 
-def delete_nic(module, api, nic):
-    """Delete a NIC"""
+def delete_nic(module, client, nic):
+    """Delete a NIC using SDK"""
     if module.check_mode:
         return True
 
-    try:
-        nic_key = nic.get('$key')
-        api.delete(f'machine_nics/{nic_key}')
-        return True
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to delete NIC: {str(e)}")
+    nic.delete()
+    return True
 
 
 def main():
@@ -263,45 +249,48 @@ def main():
         supports_check_mode=True
     )
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
     vm_name = module.params['vm_name']
     network_name = module.params['network']
     state = module.params['state']
 
     try:
-        # Get VM and machine keys
-        vm_key, machine_key = get_vm_and_machine_keys(api, vm_name)
-        if not vm_key:
+        # Get VM
+        vm = get_vm(client, vm_name)
+        if not vm:
             module.fail_json(msg=f"VM '{vm_name}' not found")
-        if not machine_key:
+
+        vm_dict = dict(vm)
+        if not vm_dict.get('machine'):
             module.fail_json(msg=f"VM '{vm_name}' has no machine key (may not be fully created yet)")
 
-        vnet_key = get_vnet_key(api, network_name)
-        if not vnet_key:
+        # Get network
+        network = get_network(client, network_name)
+        if not network:
             module.fail_json(msg=f"Network '{network_name}' not found")
 
         # Get existing NIC
-        nic = get_nic(api, machine_key, vnet_key)
+        nic = get_nic(client, vm, network)
 
         if state == 'absent':
             if nic:
-                delete_nic(module, api, nic)
+                delete_nic(module, client, nic)
                 module.exit_json(changed=True, msg=f"NIC removed from VM '{vm_name}'")
             else:
                 module.exit_json(changed=False, msg="NIC does not exist")
 
         elif state == 'present':
             if nic:
-                # Update existing NIC (may need to change vnet)
-                changed, updated_nic = update_nic(module, api, nic, vnet_key)
+                # Update existing NIC (may need to change network)
+                changed, updated_nic = update_nic(module, client, nic, network)
                 module.exit_json(changed=changed, nic=updated_nic)
             else:
                 # No NIC exists, create one
-                changed, new_nic = create_nic(module, api, machine_key, vnet_key)
+                changed, new_nic = create_nic(module, client, vm, network)
                 module.exit_json(changed=changed, nic=new_nic)
 
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
     except Exception as e:
         module.fail_json(msg=f"Unexpected error: {str(e)}")
 

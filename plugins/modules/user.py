@@ -127,26 +127,32 @@ user:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
 
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
-def get_user(api, username):
-    """Get user by username"""
+
+def get_user(client, username):
+    """Get user by username using SDK"""
     try:
-        users = api.get('users')
-        for user in users:
-            if user.get('username') == username:
-                return user
-        return None
-    except VergeOSAPIError:
+        return client.users.get(username=username)
+    except NotFoundError:
         return None
 
 
-def create_user(module, api):
-    """Create a new user"""
+def create_user(module, client):
+    """Create a new user using SDK"""
     if not module.params.get('password'):
         module.fail_json(msg="Password is required when creating a new user")
 
@@ -166,22 +172,20 @@ def create_user(module, api):
         user_data_copy.pop('password', None)
         return True, user_data_copy
 
-    try:
-        result = api.post('users', user_data)
-        return True, result
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to create user: {str(e)}")
+    user = client.users.create(**user_data)
+    return True, dict(user)
 
 
-def update_user(module, api, user):
-    """Update an existing user"""
+def update_user(module, client, user):
+    """Update an existing user using SDK"""
     changed = False
     update_data = {}
 
+    user_dict = dict(user)
     fields_to_check = ['email', 'full_name', 'enabled', 'role', 'groups']
     for field in fields_to_check:
         if module.params.get(field) is not None:
-            if user.get(field) != module.params[field]:
+            if user_dict.get(field) != module.params[field]:
                 update_data[field] = module.params[field]
                 changed = True
 
@@ -191,31 +195,26 @@ def update_user(module, api, user):
         changed = True
 
     if not changed:
-        return False, user
+        return False, user_dict
 
     if module.check_mode:
-        user.update({k: v for k, v in update_data.items() if k != 'password'})
-        return True, user
+        user_dict.update({k: v for k, v in update_data.items() if k != 'password'})
+        return True, user_dict
 
-    try:
-        user_id = user.get('id')
-        result = api.put(f'users/{user_id}', update_data)
-        return True, result
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to update user: {str(e)}")
+    # Update user attributes and save
+    for key, value in update_data.items():
+        setattr(user, key, value)
+    user.save()
+    return True, dict(user)
 
 
-def delete_user(module, api, user):
-    """Delete a user"""
+def delete_user(module, client, user):
+    """Delete a user using SDK"""
     if module.check_mode:
         return True
 
-    try:
-        user_id = user.get('id')
-        api.delete(f'users/{user_id}')
-        return True
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to delete user: {str(e)}")
+    user.delete()
+    return True
 
 
 def main():
@@ -236,39 +235,33 @@ def main():
         supports_check_mode=True
     )
 
-    # Rename the module parameter to avoid conflict
-    api_argument_spec = vergeos_argument_spec()
-    api_params = {}
-    for key in api_argument_spec.keys():
-        api_params[key] = module.params[key]
+    # Get the target username (note: module.params['username'] is the target user,
+    # while vergeos_argument_spec 'username' is for API auth - handled by env vars)
+    target_username = module.params['username']
 
-    # Create a modified module params without 'username' conflict
-    temp_params = module.params.copy()
-    target_username = temp_params.pop('username')
-
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
     state = module.params['state']
 
     try:
-        user = get_user(api, target_username)
+        user = get_user(client, target_username)
 
         if state == 'absent':
             if user:
-                delete_user(module, api, user)
+                delete_user(module, client, user)
                 module.exit_json(changed=True, msg=f"User '{target_username}' deleted")
             else:
                 module.exit_json(changed=False, msg=f"User '{target_username}' does not exist")
 
         elif state == 'present':
             if user:
-                changed, updated_user = update_user(module, api, user)
+                changed, updated_user = update_user(module, client, user)
                 module.exit_json(changed=changed, user=updated_user)
             else:
-                changed, new_user = create_user(module, api)
+                changed, new_user = create_user(module, client)
                 module.exit_json(changed=changed, user=new_user)
 
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
     except Exception as e:
         module.fail_json(msg=f"Unexpected error: {str(e)}")
 

@@ -168,21 +168,31 @@ import_info:
 
 import time
 from ansible.module_utils.basic import AnsibleModule
-from ansible.module_utils.six.moves.urllib.parse import quote
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
 
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
-def wait_for_import_completion(api, import_key, poll_interval, poll_timeout, module):
+
+def wait_for_import_completion(client, import_obj, poll_interval, poll_timeout, module):
     """
     Poll the import status until it completes or times out.
 
     Returns the final import status dict when complete.
     """
     start_time = time.time()
+    import_key = dict(import_obj).get('$key')
 
     while True:
         elapsed = time.time() - start_time
@@ -192,10 +202,11 @@ def wait_for_import_completion(api, import_key, poll_interval, poll_timeout, mod
                 import_key=import_key
             )
 
-        # Query import status
+        # Refresh import status
         try:
-            import_status = api.get(f"vm_imports/{import_key}")
-        except VergeOSAPIError as e:
+            import_obj.refresh()
+            import_status = dict(import_obj)
+        except Exception as e:
             module.fail_json(
                 msg=f"Failed to query import status: {str(e)}",
                 import_key=import_key
@@ -238,24 +249,16 @@ def wait_for_import_completion(api, import_key, poll_interval, poll_timeout, mod
         time.sleep(poll_interval)
 
 
-def get_file_id_by_name(api, file_name):
-    """Look up file ID by name."""
+def get_file_by_name(client, file_name):
+    """Look up file by name using SDK."""
     try:
-        files = api.get('files')
-        if not isinstance(files, list):
-            files = [files] if files else []
-
-        for file_obj in files:
-            if file_obj.get('name') == file_name:
-                return str(file_obj.get('$key'))
-
-        return None
-    except VergeOSAPIError:
+        return client.files.get(name=file_name)
+    except NotFoundError:
         return None
 
 
-def create_vm_import(api, module):
-    """Create a new VM import and wait for completion."""
+def create_vm_import(client, module):
+    """Create a new VM import and wait for completion using SDK."""
     # Determine file_id from ova_file_id, ova_file_name, or deprecated file_id
     ova_file_id = module.params.get('ova_file_id')
     ova_file_name = module.params.get('ova_file_name')
@@ -265,9 +268,10 @@ def create_vm_import(api, module):
     if ova_file_id:
         file_id = ova_file_id
     elif ova_file_name:
-        file_id = get_file_id_by_name(api, ova_file_name)
-        if not file_id:
+        file_obj = get_file_by_name(client, ova_file_name)
+        if not file_obj:
             module.fail_json(msg=f"OVA file '{ova_file_name}' not found in VergeOS files")
+        file_id = str(dict(file_obj).get('$key'))
     elif deprecated_file_id:
         file_id = deprecated_file_id
         module.warn("Parameter 'file_id' is deprecated, use 'ova_file_id' instead")
@@ -277,57 +281,55 @@ def create_vm_import(api, module):
     name = module.params['name']
 
     # Build import payload
-    payload = {
+    import_data = {
         'file': file_id,
         'name': name,
-        'preserve_macs': str(module.params['preserve_macs']).lower(),
-        'importing': 'true'
+        'preserve_macs': module.params['preserve_macs'],
+        'importing': True
     }
 
     # Add optional parameters
     if module.params['preserve_drive_format']:
-        payload['preserve_drive_format'] = str(module.params['preserve_drive_format']).lower()
+        import_data['preserve_drive_format'] = module.params['preserve_drive_format']
 
     if module.params['preferred_tier']:
-        payload['preferred_tier'] = module.params['preferred_tier']
+        import_data['preferred_tier'] = module.params['preferred_tier']
 
     if module.params['no_optical_drives']:
-        payload['no_optical_drives'] = str(module.params['no_optical_drives']).lower()
+        import_data['no_optical_drives'] = module.params['no_optical_drives']
 
     if module.params['override_drive_interface'] != 'default':
-        payload['override_drive_interface'] = module.params['override_drive_interface']
+        import_data['override_drive_interface'] = module.params['override_drive_interface']
 
     if module.params['override_nic_interface'] != 'default':
-        payload['override_nic_interface'] = module.params['override_nic_interface']
+        import_data['override_nic_interface'] = module.params['override_nic_interface']
 
     if module.check_mode:
         module.exit_json(
             changed=True,
             msg="Would create VM import (check mode)",
-            payload=payload
+            payload=import_data
         )
 
     # Create the import
-    try:
-        response = api.post('vm_imports', payload)
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to create VM import: {str(e)}")
+    import_obj = client.vm_imports.create(**import_data)
+    import_dict = dict(import_obj)
 
     # Extract import key
-    import_key = response.get('$key')
-    vm_response = response.get('response', {})
-    vm_id = vm_response.get('$key')
+    import_key = import_dict.get('$key')
+    vm_response = import_dict.get('response', {})
+    vm_id = vm_response.get('$key') if isinstance(vm_response, dict) else None
 
     if not import_key:
         module.fail_json(
             msg="Import created but no $key returned",
-            response=response
+            response=import_dict
         )
 
     # Wait for import to complete
     final_status = wait_for_import_completion(
-        api,
-        import_key,
+        client,
+        import_obj,
         module.params['poll_interval'],
         module.params['poll_timeout'],
         module
@@ -359,34 +361,24 @@ def create_vm_import(api, module):
     module.exit_json(**result)
 
 
-def delete_vm_import(api, module):
-    """Delete a VM import record."""
+def delete_vm_import(client, module):
+    """Delete a VM import record using SDK."""
     # We need to find the import by name since we don't have the key
     name = module.params['name']
 
     try:
-        # Query imports to find by name
-        imports = api.get(f"vm_imports?name={name}")
+        import_obj = client.vm_imports.get(name=name)
+    except NotFoundError:
+        module.exit_json(changed=False, msg="Import not found")
 
-        if not imports:
-            module.exit_json(changed=False, msg="Import not found")
+    import_key = str(dict(import_obj).get('$key'))
 
-        # Get the first matching import
-        import_record = imports[0] if isinstance(imports, list) else imports
-        import_key = import_record.get('id') or import_record.get('$key')
+    if module.check_mode:
+        module.exit_json(changed=True, msg="Would delete import (check mode)")
 
-        if not import_key:
-            module.fail_json(msg="Could not determine import key")
-
-        if module.check_mode:
-            module.exit_json(changed=True, msg="Would delete import (check mode)")
-
-        # Delete the import
-        api.delete(f"vm_imports/{import_key}")
-        module.exit_json(changed=True, msg="Import deleted", import_key=import_key)
-
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to delete import: {str(e)}")
+    # Delete the import
+    import_obj.delete()
+    module.exit_json(changed=True, msg="Import deleted", import_key=import_key)
 
 
 def main():
@@ -426,15 +418,17 @@ def main():
         ],
     )
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
 
     try:
         if module.params['state'] == 'present':
-            create_vm_import(api, module)
+            create_vm_import(client, module)
         else:
-            delete_vm_import(api, module)
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+            delete_vm_import(client, module)
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
+    except Exception as e:
+        module.fail_json(msg=f"Unexpected error: {str(e)}")
 
 
 if __name__ == '__main__':

@@ -162,36 +162,42 @@ operation:
 
 import time
 from ansible.module_utils.basic import AnsibleModule
-from ansible.module_utils.six.moves.urllib.parse import quote
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
 
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
-def get_vm_id(api, module, vm_name=None, vm_id=None):
-    """Get VM ID from name or validate provided ID."""
+
+def get_vm(client, module, vm_name=None, vm_id=None):
+    """Get VM from name or ID using SDK."""
     if vm_id:
-        return vm_id
+        try:
+            return client.vms.get(key=vm_id)
+        except NotFoundError:
+            module.fail_json(msg=f"VM with ID '{vm_id}' not found")
 
     if vm_name:
         try:
-            # Get all VMs and filter by name
-            vms = api.get('vms')
-            matching_vms = [vm for vm in vms if vm.get('name') == vm_name]
-            if not matching_vms:
-                module.fail_json(msg=f"VM '{vm_name}' not found")
-            vm = matching_vms[0]
-            return str(vm.get('$key') or vm.get('id'))
-        except VergeOSAPIError as e:
-            module.fail_json(msg=f"Failed to find VM: {str(e)}")
+            return client.vms.get(name=vm_name)
+        except NotFoundError:
+            module.fail_json(msg=f"VM '{vm_name}' not found")
 
     return None
 
 
-def create_snapshot(api, module):
-    """Create a VM snapshot."""
+def create_snapshot(client, module):
+    """Create a VM snapshot using SDK."""
     vm_name = module.params['vm_name']
     vm_id = module.params['vm_id']
     snapshot_name = module.params['snapshot_name']
@@ -201,19 +207,21 @@ def create_snapshot(api, module):
     if not snapshot_name:
         module.fail_json(msg="snapshot_name is required when creating a snapshot")
 
-    # Resolve VM ID
-    resolved_vm_id = get_vm_id(api, module, vm_name, vm_id)
-    if not resolved_vm_id:
+    # Get VM
+    vm = get_vm(client, module, vm_name, vm_id)
+    if not vm:
         module.fail_json(msg="Either vm_name or vm_id must be provided")
 
+    resolved_vm_id = str(dict(vm).get('$key'))
+
     # Build snapshot payload
-    payload = {
+    snapshot_data = {
         'name': snapshot_name,
     }
     if description:
-        payload['description'] = description
+        snapshot_data['description'] = description
     if expiration:
-        payload['expiration'] = expiration
+        snapshot_data['expiration'] = expiration
 
     if module.check_mode:
         module.exit_json(
@@ -223,17 +231,12 @@ def create_snapshot(api, module):
             snapshot_name=snapshot_name
         )
 
-    # Create the snapshot using POST /vms/{id}/snapshot endpoint
-    try:
-        response = api.post(f'vms/{resolved_vm_id}/snapshot', payload)
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to create snapshot: {str(e)}")
+    # Create the snapshot using VM's snapshot method
+    snapshot = vm.snapshot(**snapshot_data)
+    snapshot_dict = dict(snapshot) if snapshot else {}
 
     # Extract snapshot ID from response
-    snapshot_id = response.get('$key') or response.get('id')
-
-    # TODO: Add polling logic if needed to wait for snapshot completion
-    # For now, return immediately as snapshot creation is async
+    snapshot_id = snapshot_dict.get('$key') or snapshot_dict.get('id')
 
     module.exit_json(
         changed=True,
@@ -241,12 +244,12 @@ def create_snapshot(api, module):
         snapshot_id=str(snapshot_id) if snapshot_id else None,
         snapshot_name=snapshot_name,
         vm_id=resolved_vm_id,
-        response=response
+        response=snapshot_dict
     )
 
 
-def list_snapshots(api, module):
-    """List VM snapshots."""
+def list_snapshots(client, module):
+    """List VM snapshots using SDK."""
     vm_name = module.params.get('vm_name')
     vm_id = module.params.get('vm_id')
 
@@ -254,25 +257,14 @@ def list_snapshots(api, module):
         # Query for snapshots
         if vm_name or vm_id:
             # List snapshots for a specific VM
-            # First, get the VM to find its machine ID
-            resolved_vm_id = get_vm_id(api, module, vm_name, vm_id)
-            vm_data = api.get(f"vms/{resolved_vm_id}")
-            machine_id = vm_data.get('machine')
+            vm = get_vm(client, module, vm_name, vm_id)
+            if not vm:
+                module.fail_json(msg="Either vm_name or vm_id must be provided")
 
-            if not machine_id:
-                module.fail_json(msg=f"VM {resolved_vm_id} does not have a machine ID")
-
-            # Query machine_snapshots for this machine
-            filter_param = quote(f"machine eq {machine_id}")
-            snapshots = api.get(f"machine_snapshots?filter={filter_param}")
+            snapshots = [dict(s) for s in vm.snapshots.list()]
         else:
             # List all snapshots
-            snapshots = api.get("machine_snapshots")
-
-        if not snapshots:
-            snapshots = []
-        elif not isinstance(snapshots, list):
-            snapshots = [snapshots]
+            snapshots = [dict(s) for s in client.machine_snapshots.list()]
 
         module.exit_json(
             changed=False,
@@ -281,12 +273,12 @@ def list_snapshots(api, module):
             count=len(snapshots)
         )
 
-    except VergeOSAPIError as e:
+    except NotFoundError as e:
         module.fail_json(msg=f"Failed to list snapshots: {str(e)}")
 
 
-def restore_snapshot(api, module):
-    """Restore a VM from a snapshot."""
+def restore_snapshot(client, module):
+    """Restore a VM from a snapshot using SDK."""
     vm_name = module.params.get('vm_name')
     vm_id = module.params.get('vm_id')
     snapshot_id = module.params.get('snapshot_id')
@@ -294,18 +286,12 @@ def restore_snapshot(api, module):
     if not snapshot_id:
         module.fail_json(msg="snapshot_id is required for restore operation")
 
-    # Resolve VM ID if provided
-    resolved_vm_id = get_vm_id(api, module, vm_name, vm_id)
-    if not resolved_vm_id:
+    # Get VM
+    vm = get_vm(client, module, vm_name, vm_id)
+    if not vm:
         module.fail_json(msg="Either vm_name or vm_id must be provided for restore")
 
-    payload = {
-        'vm': resolved_vm_id,
-        'action': 'restore',
-        'params': {
-            'snapshot_id': snapshot_id
-        }
-    }
+    resolved_vm_id = str(dict(vm).get('$key'))
 
     if module.check_mode:
         module.exit_json(
@@ -317,24 +303,21 @@ def restore_snapshot(api, module):
 
     # Restore from snapshot
     try:
-        response = api.post('vm_actions', payload)
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to restore from snapshot: {str(e)}")
-
-    # TODO: Add polling logic to wait for restore completion
-    # Restore typically takes 5-15 minutes
+        snapshot = client.machine_snapshots.get(key=snapshot_id)
+        snapshot.restore()
+    except NotFoundError:
+        module.fail_json(msg=f"Snapshot '{snapshot_id}' not found")
 
     module.exit_json(
         changed=True,
         operation='restore',
         vm_id=resolved_vm_id,
-        snapshot_id=snapshot_id,
-        response=response
+        snapshot_id=snapshot_id
     )
 
 
-def delete_snapshot(api, module):
-    """Delete a snapshot."""
+def delete_snapshot(client, module):
+    """Delete a snapshot using SDK."""
     snapshot_id = module.params.get('snapshot_id')
 
     if not snapshot_id:
@@ -347,11 +330,12 @@ def delete_snapshot(api, module):
             snapshot_id=snapshot_id
         )
 
-    # Delete the snapshot from machine_snapshots endpoint
+    # Delete the snapshot
     try:
-        api.delete(f"machine_snapshots/{snapshot_id}")
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to delete snapshot: {str(e)}")
+        snapshot = client.machine_snapshots.get(key=snapshot_id)
+        snapshot.delete()
+    except NotFoundError:
+        module.fail_json(msg=f"Snapshot '{snapshot_id}' not found")
 
     module.exit_json(
         changed=True,
@@ -400,21 +384,23 @@ def main():
     else:
         operation = module.params['operation']
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
 
     try:
         if operation == 'create':
-            create_snapshot(api, module)
+            create_snapshot(client, module)
         elif operation == 'list':
-            list_snapshots(api, module)
+            list_snapshots(client, module)
         elif operation == 'restore':
-            restore_snapshot(api, module)
+            restore_snapshot(client, module)
         elif operation == 'delete':
-            delete_snapshot(api, module)
+            delete_snapshot(client, module)
         else:
             module.fail_json(msg=f"Invalid operation: {operation}")
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
+    except Exception as e:
+        module.fail_json(msg=f"Unexpected error: {str(e)}")
 
 
 if __name__ == '__main__':

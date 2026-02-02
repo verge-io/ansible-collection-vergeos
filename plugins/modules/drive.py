@@ -110,42 +110,46 @@ drive:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
 
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
-def get_vm_key(api, vm_name):
-    """Get VM key by name"""
+
+def get_vm(client, vm_name):
+    """Get VM by name using SDK"""
     try:
-        vms = api.get('vms')
-        for vm in vms:
-            if vm.get('name') == vm_name:
-                return vm.get('$key')
-        return None
-    except VergeOSAPIError:
+        return client.vms.get(name=vm_name)
+    except NotFoundError:
         return None
 
 
-def get_drive(api, machine_key, drive_name):
-    """Get drive by name"""
+def get_drive(client, vm, drive_name):
+    """Get drive by name using SDK"""
     try:
-        # Get all drives for this machine
-        drives = api.get('machine_drives')
+        drives = list(vm.drives.list())
         for drive in drives:
-            if drive.get('machine') == machine_key and drive.get('name') == drive_name:
+            if dict(drive).get('name') == drive_name:
                 return drive
         return None
-    except VergeOSAPIError:
+    except (NotFoundError, AttributeError):
         return None
 
 
-def create_drive(module, api, machine_key):
-    """Create a new drive"""
+def create_drive(module, client, vm):
+    """Create a new drive using SDK"""
     # Map our friendly parameter names to API field names
     drive_data = {
-        'machine': machine_key,
         'name': module.params['name'],
         'interface': module.params.get('drive_type', 'virtio'),
         'media': module.params.get('media_type', 'disk'),
@@ -161,15 +165,12 @@ def create_drive(module, api, machine_key):
     if module.check_mode:
         return True, drive_data
 
-    try:
-        result = api.post('machine_drives', drive_data)
-        return True, result
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to create drive: {str(e)}")
+    drive = vm.drives.create(**drive_data)
+    return True, dict(drive)
 
 
-def update_drive(module, api, drive):
-    """Update an existing drive"""
+def update_drive(module, client, drive):
+    """Update an existing drive using SDK"""
     changed = False
     update_data = {}
 
@@ -180,45 +181,41 @@ def update_drive(module, api, drive):
         'read_only': 'readonly'
     }
 
+    drive_dict = dict(drive)
     for param, api_field in param_mapping.items():
         if module.params.get(param) is not None:
-            if drive.get(api_field) != module.params[param]:
+            if drive_dict.get(api_field) != module.params[param]:
                 update_data[api_field] = module.params[param]
                 changed = True
 
     # Handle size separately (needs conversion to bytes)
     if module.params.get('size'):
         size_bytes = module.params['size'] * 1024 * 1024 * 1024
-        if drive.get('disksize') != size_bytes:
+        if drive_dict.get('disksize') != size_bytes:
             update_data['disksize'] = size_bytes
             changed = True
 
     if not changed:
-        return False, drive
+        return False, drive_dict
 
     if module.check_mode:
-        drive.update(update_data)
-        return True, drive
+        drive_dict.update(update_data)
+        return True, drive_dict
 
-    try:
-        drive_key = drive.get('$key')
-        result = api.put(f'machine_drives/{drive_key}', update_data)
-        return True, result
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to update drive: {str(e)}")
+    # Update drive attributes and save
+    for key, value in update_data.items():
+        setattr(drive, key, value)
+    drive.save()
+    return True, dict(drive)
 
 
-def delete_drive(module, api, drive):
-    """Delete a drive"""
+def delete_drive(module, client, drive):
+    """Delete a drive using SDK"""
     if module.check_mode:
         return True
 
-    try:
-        drive_key = drive.get('$key')
-        api.delete(f'machine_drives/{drive_key}')
-        return True
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to delete drive: {str(e)}")
+    drive.delete()
+    return True
 
 
 def main():
@@ -239,37 +236,37 @@ def main():
         supports_check_mode=True
     )
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
     vm_name = module.params['vm_name']
     drive_name = module.params['name']
     state = module.params['state']
 
     try:
-        # Get VM key
-        machine_key = get_vm_key(api, vm_name)
-        if not machine_key:
+        # Get VM
+        vm = get_vm(client, vm_name)
+        if not vm:
             module.fail_json(msg=f"VM '{vm_name}' not found")
 
         # Get existing drive
-        drive = get_drive(api, machine_key, drive_name)
+        drive = get_drive(client, vm, drive_name)
 
         if state == 'absent':
             if drive:
-                delete_drive(module, api, drive)
+                delete_drive(module, client, drive)
                 module.exit_json(changed=True, msg=f"Drive '{drive_name}' removed")
             else:
                 module.exit_json(changed=False, msg="Drive does not exist")
 
         elif state == 'present':
             if drive:
-                changed, updated_drive = update_drive(module, api, drive)
+                changed, updated_drive = update_drive(module, client, drive)
                 module.exit_json(changed=changed, drive=updated_drive)
             else:
-                changed, new_drive = create_drive(module, api, machine_key)
+                changed, new_drive = create_drive(module, client, vm)
                 module.exit_json(changed=changed, drive=new_drive)
 
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
     except Exception as e:
         module.fail_json(msg=f"Unexpected error: {str(e)}")
 

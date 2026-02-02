@@ -107,43 +107,42 @@ changed:
 '''
 
 from ansible.module_utils.basic import AnsibleModule
-try:
-    from urllib.parse import quote
-except ImportError:
-    from urllib import quote
-
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
 
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
-def get_vm_id(api, module, vm_name=None, vm_id=None):
-    """Get VM ID by name or return provided ID."""
+
+def get_vm(client, module, vm_name=None, vm_id=None):
+    """Get VM from name or ID using SDK."""
     if vm_id:
-        return vm_id
+        try:
+            return client.vms.get(key=vm_id)
+        except NotFoundError:
+            module.fail_json(msg=f"VM with ID '{vm_id}' not found")
 
     if not vm_name:
         module.fail_json(msg="Either vm_name or vm_id must be specified")
 
     try:
-        # Get all VMs and filter by name (API doesn't support ?name= filter)
-        vms = api.get('vms')
-        if not isinstance(vms, list):
-            vms = [vms] if vms else []
-
-        matching_vms = [vm for vm in vms if vm.get('name') == vm_name]
-        if not matching_vms:
-            module.fail_json(msg=f"VM '{vm_name}' not found")
-
-        return str(matching_vms[0].get('$key'))
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to query VMs: {str(e)}")
+        return client.vms.get(name=vm_name)
+    except NotFoundError:
+        module.fail_json(msg=f"VM '{vm_name}' not found")
 
 
-def enable_cloudinit_datasource(api, module, vm_id):
-    """Enable cloud-init datasource on the VM.
+def enable_cloudinit_datasource(client, module, vm):
+    """Enable cloud-init datasource on the VM using SDK.
 
     This is required even for Windows VMs to enable the cloudinit_files mechanism.
     The cloudinit_files endpoint provides files as virtual CD-ROM drives that both
@@ -152,91 +151,68 @@ def enable_cloudinit_datasource(api, module, vm_id):
     if module.check_mode:
         return True
 
-    payload = {'cloudinit_datasource': 'nocloud'}
+    vm.cloudinit_datasource = 'nocloud'
+    vm.save()
+    return True
 
+
+def get_cloudinit_files(client, module, vm):
+    """Get existing cloud-init files (including unattend.xml) for a VM using SDK."""
     try:
-        api.put(f"vms/{vm_id}", payload)
-        return True
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to enable cloudinit datasource on VM {vm_id}: {str(e)}")
+        files = list(vm.cloudinit_files.list())
+        return files
+    except (NotFoundError, AttributeError):
+        return []
 
 
-def get_cloudinit_files(api, module, vm_id):
-    """Get existing cloud-init files (including unattend.xml) for a VM."""
-    try:
-        filter_param = quote(f"owner eq 'vms/{vm_id}'")
-        files = api.get(f"cloudinit_files?filter={filter_param}")
-        if not files:
-            return []
-        return files if isinstance(files, list) else [files]
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to query cloudinit_files: {str(e)}")
-
-
-def create_unattend_file(api, module, vm_id):
-    """Create the /unattend.xml file if it doesn't exist."""
+def create_unattend_file(client, module, vm):
+    """Create the /unattend.xml file if it doesn't exist using SDK."""
     if module.check_mode:
         return "/unattend.xml"  # Return dummy ID in check mode
 
-    payload = {
-        'owner': f'vms/{vm_id}',
-        'name': '/unattend.xml'
-    }
-
-    try:
-        response = api.post('cloudinit_files', payload)
-        return str(response.get('$key'))
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to create /unattend.xml file: {str(e)}")
+    file_obj = vm.cloudinit_files.create(name='/unattend.xml')
+    return str(dict(file_obj).get('$key'))
 
 
-def update_unattend_file(api, module, file_id, contents):
-    """Update unattend.xml file contents."""
+def update_unattend_file(client, module, file_obj, contents):
+    """Update unattend.xml file contents using SDK."""
     if module.check_mode:
         return True
 
-    payload = {
-        'contents': contents,
-        'render': 'no'
-    }
-
-    try:
-        api.put(f"cloudinit_files/{file_id}", payload)
-        return True
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to update /unattend.xml file: {str(e)}")
+    file_obj.contents = contents
+    file_obj.render = 'no'
+    file_obj.save()
+    return True
 
 
-def delete_unattend_file(api, module, file_id):
-    """Delete the unattend.xml file."""
+def delete_unattend_file(client, module, file_obj):
+    """Delete the unattend.xml file using SDK."""
     if module.check_mode:
         return True
 
-    try:
-        api.delete(f"cloudinit_files/{file_id}")
-        return True
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to delete /unattend.xml file: {str(e)}")
+    file_obj.delete()
+    return True
 
 
-def configure_unattend(api, module):
-    """Configure Windows unattend.xml for a VM."""
+def configure_unattend(client, module):
+    """Configure Windows unattend.xml for a VM using SDK."""
     vm_name = module.params['vm_name']
     vm_id_param = module.params['vm_id']
     unattend_xml = module.params['unattend_xml']
     state = module.params['state']
 
-    # Resolve VM ID
-    vm_id = get_vm_id(api, module, vm_name, vm_id_param)
+    # Get VM
+    vm = get_vm(client, module, vm_name, vm_id_param)
+    vm_id = str(dict(vm).get('$key'))
 
     # Get existing files
-    existing_files = get_cloudinit_files(api, module, vm_id)
-    file_map = {f['name']: str(f['$key']) for f in existing_files}
+    existing_files = get_cloudinit_files(client, module, vm)
+    file_map = {dict(f)['name']: f for f in existing_files}
 
     if state == 'absent':
         # Remove unattend.xml if it exists
         if '/unattend.xml' in file_map:
-            delete_unattend_file(api, module, file_map['/unattend.xml'])
+            delete_unattend_file(client, module, file_map['/unattend.xml'])
             module.exit_json(
                 changed=True,
                 vm_id=vm_id,
@@ -256,21 +232,25 @@ def configure_unattend(api, module):
     changed = False
 
     # Enable cloudinit datasource (required for cloudinit_files to work)
-    enable_cloudinit_datasource(api, module, vm_id)
+    enable_cloudinit_datasource(client, module, vm)
     changed = True
 
     # Create or update /unattend.xml
     if '/unattend.xml' not in file_map:
         # Create the file
-        file_id = create_unattend_file(api, module, vm_id)
-        file_map['/unattend.xml'] = file_id
+        file_id = create_unattend_file(client, module, vm)
+        # Re-fetch files to get the new file object
+        existing_files = get_cloudinit_files(client, module, vm)
+        file_map = {dict(f)['name']: f for f in existing_files}
         changed = True
     else:
-        file_id = file_map['/unattend.xml']
+        file_id = str(dict(file_map['/unattend.xml']).get('$key'))
 
     # Update file contents
-    update_unattend_file(api, module, file_id, unattend_xml)
-    changed = True
+    file_obj = file_map.get('/unattend.xml')
+    if file_obj:
+        update_unattend_file(client, module, file_obj, unattend_xml)
+        changed = True
 
     module.exit_json(
         changed=changed,
@@ -302,12 +282,12 @@ def main():
         ],
     )
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
 
     try:
-        configure_unattend(api, module)
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+        configure_unattend(client, module)
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
     except Exception as e:
         module.fail_json(msg=f"Unexpected error: {str(e)}")
 
