@@ -253,28 +253,42 @@ def delete_vm(module, client, vm):
 def power_on_vm(module, client, vm):
     """Power on a VM using SDK"""
     vm_dict = dict(vm)
-    if vm_dict.get('power_state') == 'running':
+    if vm_dict.get('status') == 'running' or vm_dict.get('running'):
         return False, vm_dict
 
     if module.check_mode:
-        vm_dict['power_state'] = 'running'
+        vm_dict['status'] = 'running'
         return True, vm_dict
 
     vm.power_on()
+    # Wait for VM to start (up to 60 seconds)
+    import time
+    for _ in range(30):
+        time.sleep(2)
+        vm.refresh()
+        if dict(vm).get('status') == 'running':
+            break
     return True, dict(vm)
 
 
 def power_off_vm(module, client, vm):
     """Power off a VM using SDK"""
     vm_dict = dict(vm)
-    if vm_dict.get('power_state') == 'stopped':
+    if vm_dict.get('status') == 'stopped' and not vm_dict.get('running'):
         return False, vm_dict
 
     if module.check_mode:
-        vm_dict['power_state'] = 'stopped'
+        vm_dict['status'] = 'stopped'
         return True, vm_dict
 
-    vm.power_off()
+    vm.power_off(force=True)
+    # Wait for VM to stop (up to 60 seconds)
+    import time
+    for _ in range(30):
+        time.sleep(2)
+        vm.refresh()
+        if dict(vm).get('status') == 'stopped':
+            break
     return True, dict(vm)
 
 

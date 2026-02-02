@@ -1,0 +1,18 @@
+---
+# Integration tests for vergeio.vergeos.cluster_info module
+
+- name: "cluster_info: Get all clusters"
+  vergeio.vergeos.cluster_info:
+  register: cluster_result
+
+- name: "cluster_info: Verify results"
+  ansible.builtin.assert:
+    that:
+      - cluster_result is not changed
+      - cluster_result.clusters is defined
+      - cluster_result.clusters | length >= 1
+    fail_msg: "cluster_info did not return expected results"
+
+- name: "cluster_info: Display cluster count"
+  ansible.builtin.debug:
+    msg: "Found {{ cluster_result.clusters | length }} cluster(s)"

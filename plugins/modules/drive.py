@@ -148,19 +148,26 @@ def get_drive(client, vm, drive_name):
 
 def create_drive(module, client, vm):
     """Create a new drive using SDK"""
-    # Map our friendly parameter names to API field names
+    # Map our friendly drive_type names to SDK interface names
+    interface_mapping = {
+        'virtio': 'virtio-scsi',
+        'ide': 'ide',
+        'sata': 'ahci',
+        'scsi': 'virtio-scsi',
+    }
+
     drive_data = {
         'name': module.params['name'],
-        'interface': module.params.get('drive_type', 'virtio'),
+        'interface': interface_mapping.get(module.params.get('drive_type', 'virtio'), 'virtio-scsi'),
         'media': module.params.get('media_type', 'disk'),
         'readonly': module.params.get('read_only', False),
     }
 
     if module.params.get('size'):
-        # Convert GB to bytes (API expects disksize in bytes)
-        drive_data['disksize'] = module.params['size'] * 1024 * 1024 * 1024
+        # SDK expects size_gb (size in GB)
+        drive_data['size_gb'] = module.params['size']
     if module.params.get('tier') is not None:
-        drive_data['preferred_tier'] = module.params['tier']
+        drive_data['tier'] = module.params['tier']
 
     if module.check_mode:
         return True, drive_data
@@ -174,25 +181,33 @@ def update_drive(module, client, drive):
     changed = False
     update_data = {}
 
-    # Map parameter names to API fields
-    param_mapping = {
-        'drive_type': 'interface',
-        'tier': 'preferred_tier',
-        'read_only': 'readonly'
+    # Map our friendly drive_type names to SDK interface names
+    interface_mapping = {
+        'virtio': 'virtio-scsi',
+        'ide': 'ide',
+        'sata': 'ahci',
+        'scsi': 'virtio-scsi',
     }
 
     drive_dict = dict(drive)
-    for param, api_field in param_mapping.items():
-        if module.params.get(param) is not None:
-            if drive_dict.get(api_field) != module.params[param]:
-                update_data[api_field] = module.params[param]
-                changed = True
 
-    # Handle size separately (needs conversion to bytes)
-    if module.params.get('size'):
-        size_bytes = module.params['size'] * 1024 * 1024 * 1024
-        if drive_dict.get('disksize') != size_bytes:
-            update_data['disksize'] = size_bytes
+    # Check drive_type/interface
+    if module.params.get('drive_type') is not None:
+        target_interface = interface_mapping.get(module.params['drive_type'], 'virtio-scsi')
+        if drive_dict.get('interface') != target_interface:
+            update_data['interface'] = target_interface
+            changed = True
+
+    # Check tier
+    if module.params.get('tier') is not None:
+        if drive_dict.get('tier') != module.params['tier']:
+            update_data['tier'] = module.params['tier']
+            changed = True
+
+    # Check read_only
+    if module.params.get('read_only') is not None:
+        if drive_dict.get('readonly') != module.params['read_only']:
+            update_data['readonly'] = module.params['read_only']
             changed = True
 
     if not changed:

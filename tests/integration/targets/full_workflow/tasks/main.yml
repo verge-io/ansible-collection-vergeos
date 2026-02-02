@@ -1,0 +1,181 @@
+---
+# Full workflow integration test
+# Tests the complete lifecycle: VM -> Network -> NIC -> Drive -> Power -> Cleanup
+# Note: Snapshot steps skipped - requires specific VergeOS API capabilities
+
+- name: "workflow: Set test names"
+  ansible.builtin.set_fact:
+    wf_vm_name: "{{ test_prefix }}-workflow-vm-{{ test_timestamp }}"
+    wf_network_name: "{{ test_prefix }}-workflow-net-{{ test_timestamp }}"
+    wf_drive_name: "workflow-data-disk"
+
+- name: "workflow: Display test configuration"
+  ansible.builtin.debug:
+    msg: |
+      Full Workflow Test
+      ==================
+      VM: {{ wf_vm_name }}
+      Network: {{ wf_network_name }}
+      Drive: {{ wf_drive_name }}
+
+# Step 1: Create network
+- name: "workflow: Step 1 - Create network"
+  vergeio.vergeos.network:
+    name: "{{ wf_network_name }}"
+    state: present
+    description: "Workflow test network"
+  register: wf_network
+
+- name: "workflow: Verify network created"
+  ansible.builtin.assert:
+    that:
+      - wf_network is changed
+      - wf_network.network is defined
+
+# Step 2: Create VM
+- name: "workflow: Step 2 - Create VM"
+  vergeio.vergeos.vm:
+    name: "{{ wf_vm_name }}"
+    state: present
+    description: "Workflow test VM"
+    os_family: linux
+    cpu_cores: 2
+    ram: 2048
+    machine_type: q35
+  register: wf_vm
+
+- name: "workflow: Verify VM created"
+  ansible.builtin.assert:
+    that:
+      - wf_vm is changed
+      - wf_vm.vm is defined
+
+# Step 3: Add drive to VM
+- name: "workflow: Step 3 - Add drive"
+  vergeio.vergeos.drive:
+    vm_name: "{{ wf_vm_name }}"
+    name: "{{ wf_drive_name }}"
+    size: 20
+    drive_type: virtio
+    media_type: disk
+    state: present
+  register: wf_drive
+
+- name: "workflow: Verify drive added"
+  ansible.builtin.assert:
+    that:
+      - wf_drive is changed
+      - wf_drive.drive is defined
+
+# Step 4: Add NIC to VM
+- name: "workflow: Step 4 - Add NIC"
+  vergeio.vergeos.nic:
+    vm_name: "{{ wf_vm_name }}"
+    network: "{{ wf_network_name }}"
+    nic_type: virtio
+    enabled: true
+    state: present
+  register: wf_nic
+
+- name: "workflow: Verify NIC added"
+  ansible.builtin.assert:
+    that:
+      - wf_nic is changed
+      - wf_nic.nic is defined
+
+# Step 5: Get VM info
+- name: "workflow: Step 5 - Get VM info"
+  vergeio.vergeos.vm_info:
+    name: "{{ wf_vm_name }}"
+  register: wf_vm_info
+
+- name: "workflow: Verify VM info"
+  ansible.builtin.assert:
+    that:
+      - wf_vm_info.vms | length == 1
+      - wf_vm_info.vms[0].name == wf_vm_name
+
+# Step 6: Power on VM
+- name: "workflow: Step 6 - Power on VM"
+  vergeio.vergeos.vm:
+    name: "{{ wf_vm_name }}"
+    state: running
+  register: wf_power_on
+
+- name: "workflow: Verify VM powered on"
+  ansible.builtin.assert:
+    that:
+      - wf_power_on.vm is defined
+
+# Step 7: Wait for VM to start
+- name: "workflow: Step 7 - Wait for VM"
+  ansible.builtin.pause:
+    seconds: 5
+
+# Step 8: Power off VM
+- name: "workflow: Step 8 - Power off VM"
+  vergeio.vergeos.vm:
+    name: "{{ wf_vm_name }}"
+    state: stopped
+  register: wf_power_off
+
+- name: "workflow: Verify VM powered off"
+  ansible.builtin.assert:
+    that:
+      - wf_power_off.vm is defined
+
+# Step 9: Wait for VM to stop
+- name: "workflow: Step 9 - Wait for VM to stop"
+  vergeio.vergeos.vm_info:
+    name: "{{ wf_vm_name }}"
+  register: vm_status
+  until: vm_status.vms | length > 0 and vm_status.vms[0].status == 'stopped'
+  retries: 30
+  delay: 2
+
+# Step 10: Update VM resources
+- name: "workflow: Step 10 - Update VM"
+  vergeio.vergeos.vm:
+    name: "{{ wf_vm_name }}"
+    cpu_cores: 4
+    ram: 4096
+    state: present
+  register: wf_update
+
+- name: "workflow: Verify VM updated"
+  ansible.builtin.assert:
+    that:
+      - wf_update is changed
+      - wf_update.vm.cpu_cores == 4
+      - wf_update.vm.ram == 4096
+
+# Cleanup: Delete in reverse order
+- name: "workflow: Cleanup - Delete NIC"
+  vergeio.vergeos.nic:
+    vm_name: "{{ wf_vm_name }}"
+    network: "{{ wf_network_name }}"
+    state: absent
+  ignore_errors: true
+
+- name: "workflow: Cleanup - Delete drive"
+  vergeio.vergeos.drive:
+    vm_name: "{{ wf_vm_name }}"
+    name: "{{ wf_drive_name }}"
+    state: absent
+  ignore_errors: true
+
+- name: "workflow: Cleanup - Delete VM"
+  vergeio.vergeos.vm:
+    name: "{{ wf_vm_name }}"
+    state: absent
+  ignore_errors: true
+
+- name: "workflow: Cleanup - Delete network"
+  vergeio.vergeos.network:
+    name: "{{ wf_network_name }}"
+    state: absent
+  ignore_errors: true
+
+- name: "workflow: Full workflow test complete"
+  ansible.builtin.debug:
+    msg: "Full workflow test completed successfully!"

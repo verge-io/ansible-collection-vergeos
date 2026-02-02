@@ -21,11 +21,12 @@ options:
       - The name of the group.
     type: str
     required: true
-  username:
+  name:
     description:
       - The username of the member to add/remove.
     type: str
     required: true
+    aliases: [ member_name ]
   state:
     description:
       - The desired state of the membership.
@@ -41,20 +42,14 @@ author:
 EXAMPLES = r'''
 - name: Add a member to a group
   vergeio.vergeos.member:
-    host: "192.168.1.100"
-    username: "admin"
-    password: "password"
     group: "engineering"
-    username: "john.doe"
+    name: "john.doe"
     state: present
 
 - name: Remove a member from group
   vergeio.vergeos.member:
-    host: "192.168.1.100"
-    username: "admin"
-    password: "password"
     group: "engineering"
-    username: "old.member"
+    name: "old.member"
     state: absent
 '''
 
@@ -145,7 +140,7 @@ def main():
     argument_spec = vergeos_argument_spec()
     argument_spec.update(
         group=dict(type='str', required=True),
-        username=dict(type='str', required=True),
+        name=dict(type='str', required=True, aliases=['member_name']),
         state=dict(type='str', default='present', choices=['present', 'absent']),
     )
 
@@ -156,7 +151,7 @@ def main():
 
     client = get_vergeos_client(module)
     group_name = module.params['group']
-    member_username = module.params['username']
+    member_username = module.params['name']
     state = module.params['state']
 
     try:

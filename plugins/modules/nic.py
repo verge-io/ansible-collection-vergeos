@@ -147,9 +147,11 @@ def get_nic(client, vm, target_network):
         target_network_key = dict(target_network).get('$key')
 
         # First, check if any NIC is already on the target network
+        # The SDK may return either 'vnet' or 'network' as the field name
         for nic in nics:
             nic_dict = dict(nic)
-            if nic_dict.get('vnet') == target_network_key:
+            nic_network = nic_dict.get('vnet') or nic_dict.get('network')
+            if nic_network == target_network_key:
                 return nic
 
         # If no NIC is on the target network, return the first NIC for this VM
@@ -165,17 +167,23 @@ def get_nic(client, vm, target_network):
 
 def create_nic(module, client, vm, network):
     """Create a new NIC using SDK"""
-    network_key = dict(network).get('$key')
+    # Map our friendly nic_type names to SDK interface names
+    interface_mapping = {
+        'virtio': 'virtio',
+        'e1000': 'e1000',
+        'rtl8139': 'rtl8139',
+    }
 
-    # Map our friendly parameter names to API field names
+    # SDK accepts network name directly
+    network_name = module.params['network']
     nic_data = {
-        'vnet': network_key,
+        'network': network_name,
         'enabled': module.params.get('enabled', True),
-        'interface': module.params.get('nic_type', 'virtio-net-pci'),
+        'interface': interface_mapping.get(module.params.get('nic_type', 'virtio'), 'virtio'),
     }
 
     if module.params.get('mac_address'):
-        nic_data['macaddress'] = module.params['mac_address']
+        nic_data['mac_address'] = module.params['mac_address']
 
     if module.check_mode:
         return True, nic_data
@@ -192,23 +200,30 @@ def update_nic(module, client, nic, target_network):
     nic_dict = dict(nic)
     target_network_key = dict(target_network).get('$key')
 
-    # Check if vnet needs to be updated
-    if nic_dict.get('vnet') != target_network_key:
+    # Check if network needs to be updated (SDK may use 'vnet' or 'network')
+    current_network = nic_dict.get('vnet') or nic_dict.get('network')
+    if current_network != target_network_key:
         update_data['vnet'] = target_network_key
         changed = True
 
-    # Map parameter names to API fields
-    param_mapping = {
-        'enabled': 'enabled',
-        'nic_type': 'interface',
-        'mac_address': 'macaddress'
-    }
+    # Check enabled
+    if module.params.get('enabled') is not None:
+        if nic_dict.get('enabled') != module.params['enabled']:
+            update_data['enabled'] = module.params['enabled']
+            changed = True
 
-    for param, api_field in param_mapping.items():
-        if module.params.get(param) is not None:
-            if nic_dict.get(api_field) != module.params[param]:
-                update_data[api_field] = module.params[param]
-                changed = True
+    # Check interface type
+    if module.params.get('nic_type') is not None:
+        if nic_dict.get('interface') != module.params['nic_type']:
+            update_data['interface'] = module.params['nic_type']
+            changed = True
+
+    # Check MAC address (SDK uses 'mac_address' or 'macaddress')
+    if module.params.get('mac_address') is not None:
+        current_mac = nic_dict.get('mac_address') or nic_dict.get('macaddress')
+        if current_mac != module.params['mac_address']:
+            update_data['macaddress'] = module.params['mac_address']
+            changed = True
 
     if not changed:
         return False, nic_dict

@@ -1,0 +1,107 @@
+---
+# Integration tests for vergeio.vergeos.user module
+
+- name: "user: Set test user name"
+  ansible.builtin.set_fact:
+    test_user_name: "{{ test_prefix }}-user-{{ test_timestamp }}"
+    test_user_password: "TestP@ssw0rd123!"
+
+# Test: Create user
+- name: "user: Create test user"
+  vergeio.vergeos.user:
+    name: "{{ test_user_name }}"
+    user_password: "{{ test_user_password }}"
+    email: "{{ test_user_name }}@example.com"
+    full_name: "Test User {{ test_timestamp }}"
+    enabled: true
+    state: present
+  register: create_result
+
+- name: "user: Verify user was created"
+  ansible.builtin.assert:
+    that:
+      - create_result is changed
+      - create_result.user is defined
+      - create_result.user.name == test_user_name
+    fail_msg: "User creation failed"
+
+# Test: Idempotency
+- name: "user: Create same user again (idempotency)"
+  vergeio.vergeos.user:
+    name: "{{ test_user_name }}"
+    state: present
+  register: idempotent_result
+
+- name: "user: Verify idempotency"
+  ansible.builtin.assert:
+    that:
+      - idempotent_result is not changed
+    fail_msg: "User creation was not idempotent"
+
+# Test: Update user
+- name: "user: Update user email"
+  vergeio.vergeos.user:
+    name: "{{ test_user_name }}"
+    email: "updated-{{ test_user_name }}@example.com"
+    state: present
+  register: update_result
+
+- name: "user: Verify user was updated"
+  ansible.builtin.assert:
+    that:
+      - update_result is changed
+    fail_msg: "User update failed"
+
+# Test: Disable user
+- name: "user: Disable user"
+  vergeio.vergeos.user:
+    name: "{{ test_user_name }}"
+    enabled: false
+    state: present
+  register: disable_result
+
+- name: "user: Verify user was disabled"
+  ansible.builtin.assert:
+    that:
+      - disable_result is changed
+    fail_msg: "User disable failed"
+
+# Test: Check mode delete
+- name: "user: Delete user (check mode)"
+  vergeio.vergeos.user:
+    name: "{{ test_user_name }}"
+    state: absent
+  check_mode: true
+  register: check_delete
+
+- name: "user: Verify check mode reports change"
+  ansible.builtin.assert:
+    that:
+      - check_delete is changed
+    fail_msg: "Check mode did not report change"
+
+# Cleanup: Delete user
+- name: "user: Delete test user"
+  vergeio.vergeos.user:
+    name: "{{ test_user_name }}"
+    state: absent
+  register: delete_result
+
+- name: "user: Verify user was deleted"
+  ansible.builtin.assert:
+    that:
+      - delete_result is changed
+    fail_msg: "User deletion failed"
+
+# Test: Delete non-existent user (idempotency)
+- name: "user: Delete non-existent user"
+  vergeio.vergeos.user:
+    name: "{{ test_user_name }}"
+    state: absent
+  register: delete_again
+
+- name: "user: Verify no change for non-existent user"
+  ansible.builtin.assert:
+    that:
+      - delete_again is not changed
+    fail_msg: "Deleting non-existent user was not idempotent"

@@ -1,0 +1,98 @@
+---
+# Integration tests for vergeio.vergeos.drive module
+# Requires a VM to exist - creates one for testing
+
+- name: "drive: Set test names"
+  ansible.builtin.set_fact:
+    test_vm_name: "{{ test_prefix }}-drive-vm-{{ test_timestamp }}"
+    test_drive_name: "test-data-disk"
+
+# Setup: Create test VM
+- name: "drive: Create test VM for drive tests"
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: present
+    description: "VM for drive integration tests"
+    os_family: linux
+    cpu_cores: 1
+    ram: 1024
+    machine_type: q35
+  register: vm_result
+
+- name: "drive: Verify VM created"
+  ansible.builtin.assert:
+    that:
+      - vm_result.vm is defined
+    fail_msg: "Failed to create test VM for drive tests"
+
+# Test: Create drive
+- name: "drive: Add a drive to VM"
+  vergeio.vergeos.drive:
+    vm_name: "{{ test_vm_name }}"
+    name: "{{ test_drive_name }}"
+    size: 10
+    drive_type: virtio
+    media_type: disk
+    state: present
+  register: create_drive
+
+- name: "drive: Verify drive was created"
+  ansible.builtin.assert:
+    that:
+      - create_drive is changed
+      - create_drive.drive is defined
+    fail_msg: "Drive creation failed"
+
+# Test: Idempotency
+- name: "drive: Add same drive again (idempotency)"
+  vergeio.vergeos.drive:
+    vm_name: "{{ test_vm_name }}"
+    name: "{{ test_drive_name }}"
+    size: 10
+    drive_type: virtio
+    state: present
+  register: idempotent_drive
+
+- name: "drive: Verify idempotency"
+  ansible.builtin.assert:
+    that:
+      - idempotent_drive is not changed
+    fail_msg: "Drive creation was not idempotent"
+
+# Note: Drive resize is not tested as it requires special API handling
+# Most drive properties (tier, interface) cannot be changed after creation
+
+# Test: Check mode delete
+- name: "drive: Delete drive (check mode)"
+  vergeio.vergeos.drive:
+    vm_name: "{{ test_vm_name }}"
+    name: "{{ test_drive_name }}"
+    state: absent
+  check_mode: true
+  register: check_delete
+
+- name: "drive: Verify check mode reports change"
+  ansible.builtin.assert:
+    that:
+      - check_delete is changed
+    fail_msg: "Check mode did not report change"
+
+# Cleanup: Delete drive
+- name: "drive: Delete test drive"
+  vergeio.vergeos.drive:
+    vm_name: "{{ test_vm_name }}"
+    name: "{{ test_drive_name }}"
+    state: absent
+  register: delete_drive
+
+- name: "drive: Verify drive was deleted"
+  ansible.builtin.assert:
+    that:
+      - delete_drive is changed
+    fail_msg: "Drive deletion failed"
+
+# Cleanup: Delete test VM
+- name: "drive: Delete test VM"
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: absent

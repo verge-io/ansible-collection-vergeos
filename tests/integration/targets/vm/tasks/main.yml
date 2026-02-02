@@ -103,6 +103,14 @@
       - power_off_result.vm is defined
     fail_msg: "VM power off failed"
 
+- name: Wait for VM to be fully stopped
+  vergeio.vergeos.vm_info:
+    name: "{{ test_vm_name }}"
+  register: vm_status
+  until: vm_status.vms | length > 0 and vm_status.vms[0].status == 'stopped'
+  retries: 30
+  delay: 2
+
 # Test: Check mode
 - name: Delete VM (check mode)
   vergeio.vergeos.vm:

@@ -15,9 +15,9 @@ version_added: "1.0.0"
 description:
   - Create, update, and delete user accounts in VergeOS.
 options:
-  username:
+  name:
     description:
-      - The username for the user account.
+      - The username for the user account to manage.
     type: str
     required: true
   state:
@@ -26,7 +26,7 @@ options:
     type: str
     choices: [ present, absent ]
     default: present
-  password:
+  user_password:
     description:
       - Password for the user account.
       - Required when creating a new user.
@@ -64,11 +64,8 @@ author:
 EXAMPLES = r'''
 - name: Create a new admin user
   vergeio.vergeos.user:
-    host: "192.168.1.100"
-    username: "admin"
-    password: "admin_password"
-    username: "john.doe"
-    password: "user_password"
+    name: "john.doe"
+    user_password: "secure_password"
     email: "john.doe@example.com"
     full_name: "John Doe"
     role: admin
@@ -76,38 +73,26 @@ EXAMPLES = r'''
 
 - name: Create a readonly user
   vergeio.vergeos.user:
-    host: "192.168.1.100"
-    username: "admin"
-    password: "password"
-    username: "viewer"
-    password: "viewer_password"
+    name: "viewer"
+    user_password: "viewer_password"
     role: readonly
     state: present
 
 - name: Update user email
   vergeio.vergeos.user:
-    host: "192.168.1.100"
-    username: "admin"
-    password: "password"
-    username: "john.doe"
+    name: "john.doe"
     email: "john.new@example.com"
     state: present
 
 - name: Disable a user
   vergeio.vergeos.user:
-    host: "192.168.1.100"
-    username: "admin"
-    password: "password"
-    username: "john.doe"
+    name: "john.doe"
     enabled: false
     state: present
 
 - name: Delete a user
   vergeio.vergeos.user:
-    host: "192.168.1.100"
-    username: "admin"
-    password: "password"
-    username: "old.user"
+    name: "old.user"
     state: absent
 '''
 
@@ -143,29 +128,30 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_user(client, username):
-    """Get user by username using SDK"""
+def get_user(client, name):
+    """Get user by name using SDK"""
     try:
-        return client.users.get(username=username)
+        return client.users.get(name=name)
     except NotFoundError:
         return None
 
 
 def create_user(module, client):
     """Create a new user using SDK"""
-    if not module.params.get('password'):
-        module.fail_json(msg="Password is required when creating a new user")
+    if not module.params.get('user_password'):
+        module.fail_json(msg="user_password is required when creating a new user")
 
     user_data = {
-        'username': module.params['username'],
-        'password': module.params['password'],
+        'name': module.params['name'],
+        'password': module.params['user_password'],
         'enabled': module.params.get('enabled', True),
     }
 
-    optional_params = ['email', 'full_name', 'role', 'groups']
-    for param in optional_params:
-        if module.params.get(param) is not None:
-            user_data[param] = module.params[param]
+    # Map module params to SDK fields
+    if module.params.get('email'):
+        user_data['email'] = module.params['email']
+    if module.params.get('full_name'):
+        user_data['displayname'] = module.params['full_name']
 
     if module.check_mode:
         user_data_copy = user_data.copy()
@@ -182,16 +168,27 @@ def update_user(module, client, user):
     update_data = {}
 
     user_dict = dict(user)
-    fields_to_check = ['email', 'full_name', 'enabled', 'role', 'groups']
-    for field in fields_to_check:
-        if module.params.get(field) is not None:
-            if user_dict.get(field) != module.params[field]:
-                update_data[field] = module.params[field]
-                changed = True
+
+    # Check simple fields
+    if module.params.get('email') is not None:
+        if user_dict.get('email') != module.params['email']:
+            update_data['email'] = module.params['email']
+            changed = True
+
+    if module.params.get('enabled') is not None:
+        if user_dict.get('enabled') != module.params['enabled']:
+            update_data['enabled'] = module.params['enabled']
+            changed = True
+
+    # Map full_name to displayname
+    if module.params.get('full_name') is not None:
+        if user_dict.get('displayname') != module.params['full_name']:
+            update_data['displayname'] = module.params['full_name']
+            changed = True
 
     # Handle password update separately
-    if module.params.get('password'):
-        update_data['password'] = module.params['password']
+    if module.params.get('user_password'):
+        update_data['password'] = module.params['user_password']
         changed = True
 
     if not changed:
@@ -220,9 +217,9 @@ def delete_user(module, client, user):
 def main():
     argument_spec = vergeos_argument_spec()
     argument_spec.update(
-        username=dict(type='str', required=True),
+        name=dict(type='str', required=True),
         state=dict(type='str', default='present', choices=['present', 'absent']),
-        password=dict(type='str', no_log=True),
+        user_password=dict(type='str', no_log=True),
         email=dict(type='str'),
         full_name=dict(type='str'),
         enabled=dict(type='bool', default=True),
@@ -235,9 +232,7 @@ def main():
         supports_check_mode=True
     )
 
-    # Get the target username (note: module.params['username'] is the target user,
-    # while vergeos_argument_spec 'username' is for API auth - handled by env vars)
-    target_username = module.params['username']
+    target_username = module.params['name']
 
     client = get_vergeos_client(module)
     state = module.params['state']

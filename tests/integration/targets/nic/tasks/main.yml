@@ -1,0 +1,112 @@
+---
+# Integration tests for vergeio.vergeos.nic module
+# Requires a VM and network to exist
+
+- name: "nic: Set test names"
+  ansible.builtin.set_fact:
+    test_vm_name: "{{ test_prefix }}-nic-vm-{{ test_timestamp }}"
+    test_network_name: "{{ test_prefix }}-nic-net-{{ test_timestamp }}"
+
+# Setup: Create test network
+- name: "nic: Create test network"
+  vergeio.vergeos.network:
+    name: "{{ test_network_name }}"
+    state: present
+    description: "Network for NIC integration tests"
+  register: network_result
+
+- name: "nic: Verify network created"
+  ansible.builtin.assert:
+    that:
+      - network_result.network is defined
+    fail_msg: "Failed to create test network"
+
+# Setup: Create test VM
+- name: "nic: Create test VM"
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: present
+    description: "VM for NIC integration tests"
+    os_family: linux
+    cpu_cores: 1
+    ram: 1024
+    machine_type: q35
+  register: vm_result
+
+- name: "nic: Verify VM created"
+  ansible.builtin.assert:
+    that:
+      - vm_result.vm is defined
+    fail_msg: "Failed to create test VM"
+
+# Test: Add NIC
+- name: "nic: Add NIC to VM"
+  vergeio.vergeos.nic:
+    vm_name: "{{ test_vm_name }}"
+    network: "{{ test_network_name }}"
+    nic_type: virtio
+    enabled: true
+    state: present
+  register: create_nic
+
+- name: "nic: Verify NIC was created"
+  ansible.builtin.assert:
+    that:
+      - create_nic is changed
+      - create_nic.nic is defined
+    fail_msg: "NIC creation failed"
+
+# Test: Idempotency
+- name: "nic: Add same NIC again (idempotency)"
+  vergeio.vergeos.nic:
+    vm_name: "{{ test_vm_name }}"
+    network: "{{ test_network_name }}"
+    nic_type: virtio
+    state: present
+  register: idempotent_nic
+
+- name: "nic: Verify idempotency"
+  ansible.builtin.assert:
+    that:
+      - idempotent_nic is not changed
+    fail_msg: "NIC creation was not idempotent"
+
+# Test: Disable NIC
+- name: "nic: Disable NIC"
+  vergeio.vergeos.nic:
+    vm_name: "{{ test_vm_name }}"
+    network: "{{ test_network_name }}"
+    enabled: false
+    state: present
+  register: disable_nic
+
+- name: "nic: Verify NIC was disabled"
+  ansible.builtin.assert:
+    that:
+      - disable_nic is changed
+    fail_msg: "NIC disable failed"
+
+# Test: Delete NIC
+- name: "nic: Delete NIC"
+  vergeio.vergeos.nic:
+    vm_name: "{{ test_vm_name }}"
+    network: "{{ test_network_name }}"
+    state: absent
+  register: delete_nic
+
+- name: "nic: Verify NIC was deleted"
+  ansible.builtin.assert:
+    that:
+      - delete_nic is changed
+    fail_msg: "NIC deletion failed"
+
+# Cleanup: Delete VM and network
+- name: "nic: Delete test VM"
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: absent
+
+- name: "nic: Delete test network"
+  vergeio.vergeos.network:
+    name: "{{ test_network_name }}"
+    state: absent

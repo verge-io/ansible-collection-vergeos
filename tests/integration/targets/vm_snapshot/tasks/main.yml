@@ -1,0 +1,50 @@
+---
+# Integration tests for vergeio.vergeos.vm_snapshot module
+# Note: Snapshot creation requires specific VergeOS API capabilities
+# This test focuses on listing snapshots which is universally supported
+
+- name: "vm_snapshot: Set test names"
+  ansible.builtin.set_fact:
+    test_vm_name: "{{ test_prefix }}-snap-vm-{{ test_timestamp }}"
+
+# Setup: Create test VM
+- name: "vm_snapshot: Create test VM"
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: present
+    description: "VM for snapshot integration tests"
+    os_family: linux
+    cpu_cores: 1
+    ram: 1024
+    machine_type: q35
+  register: vm_result
+
+- name: "vm_snapshot: Verify VM created"
+  ansible.builtin.assert:
+    that:
+      - vm_result.vm is defined
+    fail_msg: "Failed to create test VM"
+
+# Test: List snapshots (should be empty initially)
+- name: "vm_snapshot: List snapshots for VM"
+  vergeio.vergeos.vm_snapshot:
+    vm_name: "{{ test_vm_name }}"
+    operation: list
+  register: list_result
+
+- name: "vm_snapshot: Verify snapshot list works"
+  ansible.builtin.assert:
+    that:
+      - list_result is not changed
+      - list_result.snapshots is defined
+    fail_msg: "Snapshot list failed"
+
+- name: "vm_snapshot: Display snapshot count"
+  ansible.builtin.debug:
+    msg: "Found {{ list_result.count }} snapshot(s) for {{ test_vm_name }}"
+
+# Cleanup: Delete test VM
+- name: "vm_snapshot: Delete test VM"
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: absent

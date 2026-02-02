@@ -1,0 +1,33 @@
+---
+# Integration tests for vergeio.vergeos.file_info module
+
+- name: "file_info: Get all files"
+  vergeio.vergeos.file_info:
+  register: all_files
+
+- name: "file_info: Verify results"
+  ansible.builtin.assert:
+    that:
+      - all_files is not changed
+      - all_files.files is defined
+      - all_files.count is defined
+    fail_msg: "file_info did not return expected results"
+
+- name: "file_info: Display file count"
+  ansible.builtin.debug:
+    msg: "Found {{ all_files.count }} file(s)"
+
+# Test filtering by type (if files exist)
+- name: "file_info: Filter by OVA type"
+  vergeio.vergeos.file_info:
+    file_type: ova
+  register: ova_files
+  when: all_files.count > 0
+
+- name: "file_info: Verify OVA filter"
+  ansible.builtin.assert:
+    that:
+      - ova_files is not changed
+      - ova_files.files is defined
+    fail_msg: "file_info OVA filter failed"
+  when: all_files.count > 0

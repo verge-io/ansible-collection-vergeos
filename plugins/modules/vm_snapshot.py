@@ -201,7 +201,6 @@ def create_snapshot(client, module):
     vm_name = module.params['vm_name']
     vm_id = module.params['vm_id']
     snapshot_name = module.params['snapshot_name']
-    description = module.params.get('description', '')
     expiration = module.params.get('expiration')
 
     if not snapshot_name:
@@ -214,14 +213,18 @@ def create_snapshot(client, module):
 
     resolved_vm_id = str(dict(vm).get('$key'))
 
-    # Build snapshot payload
+    # Build snapshot payload - SDK uses name and retention (in seconds)
     snapshot_data = {
         'name': snapshot_name,
     }
-    if description:
-        snapshot_data['description'] = description
+    # Convert expiration timestamp to retention duration if provided
     if expiration:
-        snapshot_data['expiration'] = expiration
+        current_time = int(time.time())
+        if expiration > current_time:
+            snapshot_data['retention'] = expiration - current_time
+        else:
+            # If expiration is in the past, use a minimal retention
+            snapshot_data['retention'] = 3600  # 1 hour default
 
     if module.check_mode:
         module.exit_json(
@@ -232,19 +235,15 @@ def create_snapshot(client, module):
         )
 
     # Create the snapshot using VM's snapshot method
-    snapshot = vm.snapshot(**snapshot_data)
-    snapshot_dict = dict(snapshot) if snapshot else {}
-
-    # Extract snapshot ID from response
-    snapshot_id = snapshot_dict.get('$key') or snapshot_dict.get('id')
+    result = vm.snapshot(**snapshot_data)
+    result_dict = dict(result) if result and hasattr(result, '__iter__') else {}
 
     module.exit_json(
         changed=True,
         operation='create',
-        snapshot_id=str(snapshot_id) if snapshot_id else None,
         snapshot_name=snapshot_name,
         vm_id=resolved_vm_id,
-        response=snapshot_dict
+        response=result_dict
     )
 
 
