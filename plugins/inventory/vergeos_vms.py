@@ -181,10 +181,7 @@ from ansible.plugins.inventory import BaseInventoryPlugin, Constructable, Cachea
 try:
     from pyvergeos import VergeClient
     from pyvergeos.exceptions import (
-        NotFoundError,
         AuthenticationError,
-        ValidationError,
-        APIError,
         VergeConnectionError,
     )
     HAS_PYVERGEOS = True
