@@ -1,0 +1,67 @@
+# Multi-site VergeOS Inventory Plugin Configuration
+# Copy this file and rename to *.vergeos_vms.yml
+#
+# This is an API-only inventory plugin - it does NOT set ansible_host
+# and does not support SSH connections to VMs. Use the host variables
+# (vergeos_site_url, vergeos_vm_id, vergeos_name) with VergeOS modules.
+
+plugin: vergeio.vergeos.vergeos_vms
+
+# Required: List of VergeOS sites to query
+sites:
+  - name: production
+    host: vergeos.example.com
+    username: admin
+    password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+    # Or use API key instead of username/password:
+    # api_key: "{{ lookup('env', 'VERGEOS_API_KEY') }}"
+    insecure: false  # Set to true for self-signed certificates
+
+# Optional: Add more sites for multi-site inventory
+#  - name: disaster-recovery
+#    host: dr.vergeos.example.com
+#    api_key: "{{ lookup('env', 'DR_API_KEY') }}"
+#    insecure: true
+
+# Optional: Filter VMs
+# filters:
+#   status: running
+#   name_pattern: ".*web.*"
+
+# Optional: Group hosts by these dimensions
+# Choices: site, tags, status, tenant, os_family, cluster
+group_by:
+  - site
+  - status
+  - tags
+
+# Optional: Caching (recommended for large deployments)
+# cache: true
+# cache_plugin: jsonfile
+# cache_connection: ~/.cache/vergeos_inventory
+# cache_timeout: 900
+
+# Optional: Concurrency settings
+# max_workers: 10
+# site_timeout: 60
+
+# Optional: Hostname template (default: {site}_{name})
+# hostname_template: '{site}_{name}'
+
+# Optional: Host variable prefix (default: vergeos_)
+# hostvar_prefix: 'vergeos_'
+
+# Optional: Include stopped VMs (default: true)
+# include_stopped: true
+
+# Optional: Constructed groups and variables
+# See: https://docs.ansible.com/ansible/latest/plugins/inventory.html#using-inventory-plugins
+# groups:
+#   production: "'prod' in (vergeos_tags | default([]))"
+#   webservers: "'web' in vergeos_name"
+#
+# keyed_groups:
+#   - key: vergeos_site
+#     prefix: site
+#   - key: vergeos_os_family
+#     prefix: os
