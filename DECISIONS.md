@@ -26,7 +26,7 @@ This document captures key design decisions made during the development of the V
 - External dependency on pyvergeos package
 - Users must install pyvergeos via pip before using the collection
 - Existing playbooks continue to work (API unchanged at module level)
-- Legacy `VergeOSAPI` class retained but deprecated for backward compatibility
+- Legacy `VergeOSAPI` class removed (see ADR-004)
 
 ---
 
@@ -82,22 +82,25 @@ This document captures key design decisions made during the development of the V
 
 **Date:** 2026-02-02
 
-**Status:** Accepted
+**Status:** Rejected
 
 **Context:** The existing `VergeOSAPI` and `VergeOSAPIError` classes in `module_utils/vergeos.py` may be used by external code or custom modules. Removing them immediately would be a harder breaking change.
 
-**Decision:** Retain the legacy classes with deprecation warnings, scheduled for removal in a future version.
+**Decision:** ~~Retain the legacy classes with deprecation warnings, scheduled for removal in a future version.~~
+
+**Rejected:** Remove the legacy HTTP client classes entirely. Go all-in on the pyvergeos SDK with no backward compatibility shim.
 
 **Rationale:**
-- Provides migration path for any external code depending on these classes
-- Follows deprecation best practices (warn before remove)
-- Low maintenance burden to keep unused code temporarily
-- Clear documentation that new code should use SDK
+- Clean break simplifies the codebase
+- No known external dependencies on the legacy classes
+- v2.0.0 is already a breaking change, so bundle all breaking changes together
+- Reduces maintenance burden and potential confusion
+- Users upgrading to v2.0.0 must adapt to SDK regardless
 
 **Consequences:**
-- Slightly larger module_utils file
-- Must remember to remove in future version (e.g., 3.0.0)
-- Deprecation notices in class docstrings
+- Cleaner, smaller module_utils file
+- No deprecated code to maintain or eventually remove
+- Any external code using legacy classes must migrate immediately to SDK
 
 ---
 
@@ -172,5 +175,30 @@ This document captures key design decisions made during the development of the V
 - Incremental, testable progress
 - Early validation of SDK integration patterns
 - Can commit working modules as completed
+
+---
+
+## ADR-008: Use GPL-3.0-or-later License
+
+**Date:** 2026-02-03
+
+**Status:** Accepted
+
+**Context:** The collection was initially using MIT license headers. During sanity testing, Ansible's `validate-modules` test flagged all modules with `missing-gplv3-license` errors. While this check can be ignored, we needed to decide on the appropriate license for an Ansible collection.
+
+**Decision:** Use GPL-3.0-or-later license for all modules, plugins, and module utilities.
+
+**Rationale:**
+- Ansible's `validate-modules` sanity test requires GPL-3.0+ headers by default
+- Aligns with Ansible ecosystem standards and community collections
+- Enables potential future inclusion in Ansible Galaxy certified content
+- Passes all sanity checks without requiring ignore entries
+- GPL-3.0 is compatible with the pyvergeos SDK dependency
+
+**Consequences:**
+- All module files include GPL-3.0-or-later SPDX header
+- `galaxy.yml` specifies GPL-3.0-or-later license
+- Users and contributors must comply with GPL-3.0 terms
+- Derivative works must also be GPL-3.0 licensed
 
 ---

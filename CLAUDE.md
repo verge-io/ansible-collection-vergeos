@@ -31,22 +31,23 @@ ansible-playbook -i inventory/vergeos.yml examples/test_inventory.yml
 
 ## Architecture
 
-This is an Ansible collection (`vergeio.vergeos`) for managing VergeOS infrastructure via its v4 REST API.
+This is an Ansible collection (`vergeio.vergeos`) for managing VergeOS infrastructure via the pyvergeos Python SDK.
 
 ### Module Utilities (`plugins/module_utils/vergeos.py`)
 
-- `VergeOSAPI`: Base HTTP client with Basic Auth, provides `get()`, `post()`, `put()`, `delete()` methods
+- `get_vergeos_client(module)`: Factory function that creates a pyvergeos `VergeClient` from module params
+- `sdk_error_handler(module, e)`: Maps SDK exceptions to `module.fail_json()` calls
 - `vergeos_argument_spec()`: Shared argument spec for authentication (host, username, password, insecure) with environment variable fallbacks
-- `VergeOSAPIError`: Custom exception for API errors
 
 ### Module Pattern
 
 All modules follow this structure:
 1. Merge `vergeos_argument_spec()` with module-specific arguments
-2. Implement `get_*()` lookup, `create_*()`, `update_*()`, `delete_*()` helper functions
-3. Handle state-based operations (present/absent, running/stopped)
-4. Support `check_mode` for dry-run operations
-5. Long-running operations (imports, snapshots) use polling with configurable `timeout` parameter
+2. Create SDK client via `get_vergeos_client(module)`
+3. Use SDK resource managers (e.g., `client.vms`, `client.networks`) for API operations
+4. Handle state-based operations (present/absent, running/stopped)
+5. Support `check_mode` for dry-run operations
+6. Wrap SDK calls in try/except with `sdk_error_handler()` for consistent error messages
 
 ### Modules
 

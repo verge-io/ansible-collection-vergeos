@@ -1,8 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2025, VergeIO
-# MIT License
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
@@ -79,7 +79,7 @@ options:
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
-  - VergeIO
+  - VergeIO (@vergeio)
 '''
 
 EXAMPLES = r'''
@@ -216,9 +216,11 @@ def update_vm(module, client, vm):
     update_data = {}
 
     # Check which fields need updating
-    fields_to_check = ['description', 'enabled', 'os_family', 'cpu_cores',
-                      'ram', 'machine_type', 'machine_subtype', 'bios_type',
-                      'network', 'boot_order']
+    fields_to_check = [
+        'description', 'enabled', 'os_family', 'cpu_cores',
+        'ram', 'machine_type', 'machine_subtype', 'bios_type',
+        'network', 'boot_order'
+    ]
 
     vm_dict = dict(vm)
     for field in fields_to_check:
@@ -263,7 +265,7 @@ def power_on_vm(module, client, vm):
     vm.power_on()
     # Wait for VM to start (up to 60 seconds)
     import time
-    for _ in range(30):
+    for _attempt in range(30):
         time.sleep(2)
         vm.refresh()
         if dict(vm).get('status') == 'running':
@@ -284,7 +286,7 @@ def power_off_vm(module, client, vm):
     vm.power_off(force=True)
     # Wait for VM to stop (up to 60 seconds)
     import time
-    for _ in range(30):
+    for _attempt in range(30):
         time.sleep(2)
         vm.refresh()
         if dict(vm).get('status') == 'stopped':
@@ -296,8 +298,10 @@ def main():
     argument_spec = vergeos_argument_spec()
     argument_spec.update(
         name=dict(type='str', required=True),
-        state=dict(type='str', default='present',
-                  choices=['present', 'absent', 'running', 'stopped']),
+        state=dict(
+            type='str', default='present',
+            choices=['present', 'absent', 'running', 'stopped']
+        ),
         description=dict(type='str'),
         enabled=dict(type='bool', default=True),
         os_family=dict(type='str', choices=['linux', 'windows', 'other']),

@@ -1,8 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2025, VergeIO
-# MIT License
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
@@ -39,19 +39,19 @@ options:
     description:
       - Contents of the /user-data cloud-init file.
       - Typically contains #cloud-config YAML.
-      - Example C(#cloud-config\\nmanage_etc_hosts: true\\nhostname: myhost)
+      - "Example C(#cloud-config\\nmanage_etc_hosts: true\\nhostname: myhost)"
     type: str
   meta_data:
     description:
       - Contents of the /meta-data cloud-init file.
       - Typically contains instance-id and local-hostname.
-      - Example C(instance-id: myhost-001\\nlocal-hostname: myhost)
+      - "Example C(instance-id: myhost-001\\nlocal-hostname: myhost)"
     type: str
   network_config:
     description:
       - Contents of the /network-config cloud-init file.
       - Defines network configuration in Netplan v2 format.
-      - Example C(version: 2\\nethernets:\\n  eth0:\\n    dhcp4: false\\n    addresses: [10.0.0.5/24])
+      - "Example C(version: 2\\nethernets:\\n  eth0:\\n    dhcp4: false\\n    addresses: [10.0.0.5/24])"
     type: str
   hostname:
     description:
@@ -94,7 +94,7 @@ options:
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
-  - VergeIO
+  - VergeIO (@vergeio)
 '''
 
 EXAMPLES = r'''

@@ -7,7 +7,7 @@ authors:
   - VergeIO
 description: Ansible collection for managing VergeOS virtualization infrastructure
 license:
-  - MIT
+  - GPL-3.0-or-later
 license_file: ''
 tags:
   - vergeio
@@ -29,4 +29,5 @@ build_ignore:
   - '*.tar.gz'
   - __pycache__
   - '*.pyc'
+  - .venv
   - tests/

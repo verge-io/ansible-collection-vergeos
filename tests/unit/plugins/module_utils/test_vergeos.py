@@ -3,7 +3,6 @@
 
 """Unit tests for module_utils/vergeos.py"""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 

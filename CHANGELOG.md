@@ -21,11 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved error handling with specific exception types from the SDK
 - Simplified module code by leveraging SDK resource objects
 
-### Deprecated
+### Removed
 
-- `VergeOSAPI` class in `module_utils/vergeos.py` is deprecated and will be removed in v3.0.0
-- `VergeOSAPIError` exception is deprecated and will be removed in v3.0.0
-- Use `get_vergeos_client()` and pyvergeos SDK instead
+- `VergeOSAPI` class removed from `module_utils/vergeos.py` (use pyvergeos SDK instead)
+- `VergeOSAPIError` exception removed (SDK provides specific exception types)
 
 ### Added
 
@@ -50,14 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 4. **Existing playbooks**: No changes required to playbooks - the module interface remains the same
 
-5. **Custom modules using VergeOSAPI**: Migrate to using `get_vergeos_client()`:
+5. **Custom modules using legacy VergeOSAPI**: The legacy HTTP client has been removed. Migrate to the SDK:
    ```python
-   # Before (deprecated)
+   # v1.x (removed)
    from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import VergeOSAPI
    api = VergeOSAPI(module)
    vms = api.get('vms')
 
-   # After (recommended)
+   # v2.x (required)
    from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import get_vergeos_client
    client = get_vergeos_client(module)
    vms = [dict(vm) for vm in client.vms.list()]

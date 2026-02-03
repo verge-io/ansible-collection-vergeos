@@ -1,8 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2025, VergeIO
-# MIT License
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
@@ -64,21 +64,21 @@ options:
   poll_timeout:
     description:
       - Maximum time in seconds to wait for operation to complete.
-      - Snapshot creation: 2-5 minutes typical.
-      - Snapshot restore: 5-15 minutes typical.
+      - Snapshot creation is typically 2-5 minutes.
+      - Snapshot restore is typically 5-15 minutes.
     type: int
     default: 600
   state:
     description:
       - C(present) creates a snapshot (same as operation=create).
       - C(absent) deletes a snapshot (same as operation=delete).
-      - C(list) lists snapshots (same as operation=list).
+      - Use I(operation=list) to list snapshots.
     type: str
-    choices: [ present, absent, list ]
+    choices: [ present, absent ]
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
-  - VergeIO
+  - VergeIO (@vergeio)
 '''
 
 EXAMPLES = r'''
@@ -360,7 +360,7 @@ def main():
         ),
         poll_interval=dict(type='int', default=5),
         poll_timeout=dict(type='int', default=600),
-        state=dict(type='str', choices=['present', 'absent', 'list']),
+        state=dict(type='str', choices=['present', 'absent']),
     )
 
     module = AnsibleModule(
@@ -377,7 +377,6 @@ def main():
         state_to_operation = {
             'present': 'create',
             'absent': 'delete',
-            'list': 'list'
         }
         operation = state_to_operation[module.params['state']]
     else:

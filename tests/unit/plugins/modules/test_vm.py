@@ -4,7 +4,7 @@
 """Unit tests for vm module"""
 
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 
 @pytest.fixture(autouse=True)

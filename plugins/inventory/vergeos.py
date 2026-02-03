@@ -1,19 +1,17 @@
-#!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2025, VergeIO
-# MIT License
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
 DOCUMENTATION = r'''
 name: vergeos
-plugin_type: inventory
 short_description: VergeOS dynamic inventory plugin
 version_added: "1.0.0"
 author:
-  - VergeIO
+  - VergeIO (@vergeio)
 description:
   - Builds Ansible inventory from VergeOS platform.
   - Queries VMs, networks, snapshots, and other resources via the VergeOS API.
@@ -178,7 +176,7 @@ groups:
   development: "'dev' in (vergeos_tags | default([]))"
 '''
 
-from ansible.errors import AnsibleError, AnsibleParserError
+from ansible.errors import AnsibleError
 from ansible.plugins.inventory import BaseInventoryPlugin, Constructable, Cacheable
 
 # SDK Integration
@@ -348,7 +346,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         # Fallback to name or machine ID
         return vm.get('name') or str(vm.get('$key', vm.get('machine', 'unknown')))
 
-    def _populate_host_vars(self, host, vm, networks_map, nics_map):
+    def _set_host_vars(self, host, vm, networks_map, nics_map):
         """Populate host variables"""
         # Core VM properties
         self.inventory.set_variable(host, 'vergeos_vm_id', vm.get('$key'))
@@ -533,7 +531,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             self.inventory.add_host(hostname)
 
             # Populate host variables
-            self._populate_host_vars(hostname, vm, networks_map, nics_map)
+            self._set_host_vars(hostname, vm, networks_map, nics_map)
 
             # Add to groups
             self._add_to_groups(hostname, vm)
