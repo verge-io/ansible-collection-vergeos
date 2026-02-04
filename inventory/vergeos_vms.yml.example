@@ -35,11 +35,11 @@ group_by:
   - status
   - tags
 
-# Optional: Caching (recommended for large deployments)
-# cache: true
-# cache_plugin: jsonfile
-# cache_connection: ~/.cache/vergeos_inventory
-# cache_timeout: 900
+# Caching (recommended for production use)
+cache: true
+cache_plugin: jsonfile
+cache_connection: ~/.cache/vergeos_inventory
+cache_timeout: 3600  # 1 hour in seconds
 
 # Optional: Concurrency settings
 # max_workers: 10
