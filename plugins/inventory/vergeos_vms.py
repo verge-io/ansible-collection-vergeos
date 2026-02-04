@@ -87,10 +87,6 @@ options:
     description: Timeout for each site query in seconds.
     type: int
     default: 60
-  vm_max_workers:
-    description: Maximum concurrent VM detail queries (tags, NICs) per site.
-    type: int
-    default: 10
   hostname_template:
     description: Template for inventory hostname. Use {site} and {name} placeholders.
     type: str
@@ -215,34 +211,15 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 return True
         return False
 
-    def _fetch_vm_details(self, vm):
-        """Fetch tags and NICs for a single VM.
-
-        Args:
-            vm: VM resource object from SDK.
-
-        Returns:
-            Dictionary with VM data including _tags and _nics.
-        """
-        vm_dict = dict(vm)
-
-        # Get tags
-        try:
-            raw_tags = vm.get_tags()
-            vm_dict['_tags'] = [t.get('tag_name') for t in raw_tags if t.get('tag_name')]
-        except Exception:
-            vm_dict['_tags'] = []
-
-        # Get NICs (accessed via vm.nics, not client.nics)
-        try:
-            vm_dict['_nics'] = [dict(nic) for nic in vm.nics.list()]
-        except Exception:
-            vm_dict['_nics'] = []
-
-        return vm_dict
-
     def _fetch_site(self, site_config):
         """Fetch VMs from a single site via VergeOS API.
+
+        Uses batch API calls to fetch all VMs, tags, and NICs efficiently.
+        This makes only 4 API calls regardless of VM count:
+        1. vms.list() - all VMs
+        2. tags.list() - tag definitions (for name mapping)
+        3. tag_members - all tag-to-VM assignments
+        4. machine_nics - all NICs
 
         Args:
             site_config: Dictionary with site connection details.
@@ -276,30 +253,61 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         try:
             client = VergeClient(**conn_kwargs)
 
-            # Get VMs as resource objects to use vm.get_tags() and vm.nics
+            # === BATCH FETCH: 4 API calls total ===
+
+            # 1. Get all VMs
             vms = list(client.vms.list())
 
-            # Fetch tags and NICs for each VM in parallel
-            vm_max_workers = self.get_option('vm_max_workers')
+            # Build machine ID -> VM index mapping for joins
+            vm_by_machine = {}
             vm_data = []
+            for vm in vms:
+                vm_dict = dict(vm)
+                vm_dict['_tags'] = []
+                vm_dict['_nics'] = []
+                machine_id = vm_dict.get('machine')
+                if machine_id:
+                    vm_by_machine[machine_id] = vm_dict
+                vm_data.append(vm_dict)
 
-            with ThreadPoolExecutor(max_workers=vm_max_workers) as executor:
-                future_to_vm = {
-                    executor.submit(self._fetch_vm_details, vm): vm
-                    for vm in vms
-                }
+            # 2. Get tag definitions (for ID -> name mapping)
+            tag_name_map = {}
+            try:
+                tags = list(client.tags.list())
+                tag_name_map = {dict(t)['$key']: dict(t)['name'] for t in tags}
+            except Exception:
+                pass  # Tags not available, continue without them
 
-                for future in as_completed(future_to_vm):
-                    try:
-                        vm_dict = future.result()
-                        vm_data.append(vm_dict)
-                    except Exception:
-                        # If VM detail fetch fails, still include VM with empty tags/nics
-                        vm = future_to_vm[future]
-                        vm_dict = dict(vm)
-                        vm_dict['_tags'] = []
-                        vm_dict['_nics'] = []
-                        vm_data.append(vm_dict)
+            # 3. Get all tag memberships in one call
+            try:
+                tag_members = client._request('GET', 'tag_members', params={'fields': 'all'})
+                for tm in tag_members:
+                    tag_id = tm.get('tag')
+                    member = tm.get('member', '')  # format: 'vms/34'
+                    if member.startswith('vms/'):
+                        try:
+                            vm_key = int(member.split('/')[1])
+                            # Find the VM by $key and add the tag
+                            for vm_dict in vm_data:
+                                if vm_dict.get('$key') == vm_key:
+                                    tag_name = tag_name_map.get(tag_id)
+                                    if tag_name:
+                                        vm_dict['_tags'].append(tag_name)
+                                    break
+                        except (ValueError, IndexError):
+                            pass
+            except Exception:
+                pass  # Tag members not available, continue without them
+
+            # 4. Get all NICs in one call
+            try:
+                all_nics = client._request('GET', 'machine_nics', params={'fields': 'all'})
+                for nic in all_nics:
+                    machine_id = nic.get('machine')
+                    if machine_id in vm_by_machine:
+                        vm_by_machine[machine_id]['_nics'].append(nic)
+            except Exception:
+                pass  # NICs not available, continue without them
 
             return {
                 'site': site_name,
@@ -313,7 +321,6 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 'site': site_name,
                 'site_url': site_config['host'],
                 'vms': [],
-                'nics': [],
                 'error': f"Authentication failed: {e}"
             }
         except VergeConnectionError as e:
@@ -321,7 +328,6 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 'site': site_name,
                 'site_url': site_config['host'],
                 'vms': [],
-                'nics': [],
                 'error': f"Connection failed: {e}"
             }
         except Exception as e:
@@ -329,7 +335,6 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 'site': site_name,
                 'site_url': site_config['host'],
                 'vms': [],
-                'nics': [],
                 'error': str(e)
             }
 
