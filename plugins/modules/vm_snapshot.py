@@ -234,8 +234,10 @@ def create_snapshot(client, module):
             snapshot_name=snapshot_name
         )
 
-    # Create the snapshot using VM's snapshot method
-    result = vm.snapshot(**snapshot_data)
+    # Create the snapshot using VM's snapshots manager (POST to machine_snapshots)
+    # Note: vm.snapshot() uses vm_actions which doesn't work for snapshot creation
+    # vm.snapshots.create() uses the correct machine_snapshots endpoint
+    result = vm.snapshots.create(**snapshot_data)
     result_dict = dict(result) if result and hasattr(result, '__iter__') else {}
 
     module.exit_json(

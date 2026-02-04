@@ -1,0 +1,75 @@
+---
+# Apply tags to VMs based on naming patterns using dynamic inventory
+#
+# This playbook demonstrates using the vergeos_vms inventory plugin to:
+# - Discover VMs across multiple sites
+# - Apply tags based on VM name patterns
+#
+# Prerequisites:
+#   1. Run setup_tags.yml first to create tag infrastructure
+#   2. Create inventory file (inventory.vergeos_vms.yml)
+#
+# Usage:
+#   export VERGEOS_PASSWORD="your-password"
+#   ansible-playbook -i inventory.vergeos_vms.yml examples/apply_tags.yml
+#
+- name: Apply tags to VMs based on name patterns
+  hosts: all
+  connection: local
+  gather_facts: false
+
+  vars:
+    vergeos_username: admin
+    vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') | default('changemelater', true) }}"
+    vergeos_insecure: true
+
+  tasks:
+    - name: Tag VMs with 'db' in name as database servers
+      vergeio.vergeos.tag:
+        host: "{{ vergeos_site_url }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: DB
+        category: App
+        vm_name: "{{ vergeos_name }}"
+        state: present
+      delegate_to: localhost
+      when: "'db' in vergeos_name | lower"
+      register: db_tag_result
+
+    - name: Tag VMs with 'web' in name as web servers
+      vergeio.vergeos.tag:
+        host: "{{ vergeos_site_url }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: WEB
+        category: App
+        vm_name: "{{ vergeos_name }}"
+        state: present
+      delegate_to: localhost
+      when: "'web' in vergeos_name | lower"
+      register: web_tag_result
+
+- name: Summary
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Display tagging summary
+      ansible.builtin.debug:
+        msg: |
+          Tag application complete!
+
+          To verify tag groups in inventory:
+            ansible-inventory -i inventory.vergeos_vms.yml --graph
+
+          Expected groups:
+            @tag_db - All VMs with 'db' in name
+            @tag_web - All VMs with 'web' in name
+
+          To run playbooks against tagged VMs:
+            ansible-playbook -i inventory.vergeos_vms.yml playbook.yml --limit tag_db
+            ansible-playbook -i inventory.vergeos_vms.yml playbook.yml --limit tag_web

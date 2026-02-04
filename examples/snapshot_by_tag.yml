@@ -1,0 +1,90 @@
+---
+# Snapshot VMs by tag or site using dynamic inventory
+#
+# This playbook demonstrates using the vergeos_vms inventory plugin to:
+# - Target VMs by tag groups (tag_db, tag_web)
+# - Target VMs by site (site_sitea, site_siteb)
+# - Create snapshots with timestamped names
+#
+# Prerequisites:
+#   1. Run setup_tags.yml to create tag infrastructure
+#   2. Run apply_tags.yml to tag VMs
+#   3. Create inventory file (inventory.vergeos_vms.yml)
+#
+# Usage examples:
+#   # Snapshot all DB VMs across all sites
+#   ansible-playbook -i inventory.vergeos_vms.yml examples/snapshot_by_tag.yml --limit tag_db
+#
+#   # Snapshot all VMs at Site A
+#   ansible-playbook -i inventory.vergeos_vms.yml examples/snapshot_by_tag.yml --limit site_sitea
+#
+#   # Snapshot all running VMs
+#   ansible-playbook -i inventory.vergeos_vms.yml examples/snapshot_by_tag.yml --limit status_running
+#
+#   # Snapshot specific VM
+#   ansible-playbook -i inventory.vergeos_vms.yml examples/snapshot_by_tag.yml --limit sitea_testdbvm
+#
+- name: Create VM snapshots
+  hosts: all
+  connection: local
+  gather_facts: false
+
+  vars:
+    vergeos_username: admin
+    vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') | default('changemelater', true) }}"
+    vergeos_insecure: true
+    snapshot_prefix: "ansible-snapshot"
+
+  tasks:
+    - name: Generate timestamp for snapshot name
+      ansible.builtin.set_fact:
+        snapshot_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+      run_once: true
+      delegate_to: localhost
+
+    - name: Create snapshot of VM
+      vergeio.vergeos.vm_snapshot:
+        host: "{{ vergeos_site_url }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        vm_name: "{{ vergeos_name }}"
+        snapshot_name: "{{ snapshot_prefix }}-{{ snapshot_timestamp }}"
+        state: present
+      delegate_to: localhost
+      register: snapshot_result
+      ignore_errors: true
+
+    - name: Display snapshot result
+      ansible.builtin.debug:
+        msg: "Created snapshot '{{ snapshot_prefix }}-{{ snapshot_timestamp }}' for VM '{{ vergeos_name }}' at {{ vergeos_site }}"
+      when: snapshot_result.changed | default(false)
+
+    - name: Display snapshot error
+      ansible.builtin.debug:
+        msg: "Failed to snapshot VM '{{ vergeos_name }}': {{ snapshot_result.msg | default('Unknown error') }}"
+      when: snapshot_result.failed | default(false)
+
+- name: Summary
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Display snapshot summary
+      ansible.builtin.debug:
+        msg: |
+          Snapshot operation complete!
+
+          Snapshots created with name: {{ snapshot_prefix }}-{{ snapshot_timestamp | default('N/A') }}
+
+          To manage snapshots:
+            - List: Use VergeOS UI or vm_snapshot module with state: info
+            - Delete: ansible-playbook examples/delete_snapshot.yml
+
+          Example targeting patterns:
+            --limit tag_db           # All database VMs
+            --limit tag_web          # All web VMs
+            --limit site_sitea       # All VMs at Site A
+            --limit status_running   # All running VMs
+            --limit 'tag_db:&site_sitea'  # DB VMs at Site A only
