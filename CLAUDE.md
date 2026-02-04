@@ -56,10 +56,16 @@ All modules follow this structure:
 - **Storage**: `drive`
 - **Config**: `cloud_init`, `windows_unattend`
 - **System**: `user`, `member`, `cluster_info`, `file_info`
+- **Tags**: `tag`, `tag_category`
 
-### Inventory Plugin (`plugins/inventory/vergeos.py`)
+### Inventory Plugin (`plugins/inventory/vergeos_vms.py`)
 
-Dynamic inventory with tenant/cluster filtering, constructed groups, caching support, and hostname templating.
+Multi-site dynamic inventory with:
+- Concurrent site queries (ThreadPoolExecutor)
+- Batch API fetching for tags/NICs (O(1) API calls per site)
+- Group by: site, status, tags, tenant, os_family, cluster
+- JSON file caching (recommended: 1 hour timeout)
+- Hostname templating
 
 ### Documentation Fragment (`plugins/doc_fragments/vergeos.py`)
 

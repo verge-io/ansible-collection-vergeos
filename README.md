@@ -123,11 +123,11 @@ filters:
   status: running
   name_pattern: ".*web.*"
 
-# Optional: Caching (recommended for large deployments)
+# Caching (recommended for production use)
 cache: true
 cache_plugin: jsonfile
 cache_connection: ~/.cache/vergeos_inventory
-cache_timeout: 900
+cache_timeout: 3600  # 1 hour
 
 # Optional: Concurrency settings
 max_workers: 10
@@ -193,4 +193,59 @@ ansible-playbook -i inventory.vergeos_vms.yml playbook.yml --limit site_denver
 
 # Refresh cache
 ansible-inventory -i inventory.vergeos_vms.yml --list --refresh-cache
+```
+
+## Tag Management
+
+The collection includes modules for managing tags, which integrate with the inventory plugin's `group_by: tags` feature.
+
+### Create Tag Infrastructure
+
+```yaml
+# Create a tag category
+- vergeio.vergeos.tag_category:
+    host: "{{ vergeos_host }}"
+    username: "{{ vergeos_username }}"
+    password: "{{ vergeos_password }}"
+    name: Environment
+    description: "Environment classification"
+    taggable_vms: true
+    state: present
+
+# Create tags in the category
+- vergeio.vergeos.tag:
+    host: "{{ vergeos_host }}"
+    username: "{{ vergeos_username }}"
+    password: "{{ vergeos_password }}"
+    name: Production
+    category: Environment
+    description: "Production servers"
+    state: present
+```
+
+### Apply Tags to VMs
+
+```yaml
+# Apply a tag to a VM
+- vergeio.vergeos.tag:
+    host: "{{ vergeos_host }}"
+    username: "{{ vergeos_username }}"
+    password: "{{ vergeos_password }}"
+    name: Production
+    category: Environment
+    vm_name: my-web-server
+    state: present
+```
+
+### Tag Examples
+
+```bash
+# Setup tag infrastructure (categories and tags)
+ansible-playbook examples/setup_tags.yml
+
+# Apply tags to VMs based on name patterns
+ansible-playbook -i inventory.vergeos_vms.yml examples/apply_tags.yml
+
+# Snapshot VMs by tag
+ansible-playbook -i inventory.vergeos_vms.yml examples/snapshot_by_tag.yml --limit tag_production
 ```
