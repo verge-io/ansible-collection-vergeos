@@ -202,3 +202,39 @@ This document captures key design decisions made during the development of the V
 - Derivative works must also be GPL-3.0 licensed
 
 ---
+
+## ADR-009: Use ansible-test for Unit Tests Instead of Plain pytest
+
+**Date:** 2026-02-04
+
+**Status:** Accepted
+
+**Context:** Unit tests for the inventory plugin failed when run with plain `pytest` due to YAML parsing errors. Importing Ansible modules triggers loading of `ansible/config/base.yml`, which uses custom YAML tags that require Ansible's special loader. Plain pytest doesn't set up this environment correctly.
+
+**Decision:** Use `ansible-test units` to run unit tests instead of invoking pytest directly.
+
+**Rationale:**
+- `ansible-test units` properly initializes the Ansible environment before running tests
+- It handles the namespace package structure (`ansible_collections/vergeio/vergeos/`)
+- It installs required test dependencies automatically with `--requirements`
+- It's the standard testing approach for Ansible collections
+- Plain pytest fails with `yaml.constructor.ConstructorError: could not determine a constructor for the tag None`
+
+**Test Command:**
+```bash
+# From collection root, sync to ansible_collections structure
+rsync -a . /tmp/ansible_collections/vergeio/vergeos/
+
+# Run unit tests
+cd /tmp/ansible_collections/vergeio/vergeos
+ansible-test units tests/unit/plugins/inventory/ --local --python 3.13 --requirements
+```
+
+**Consequences:**
+- Tests must be run from an `ansible_collections/{namespace}/{collection}/` directory structure
+- Python version limited to ansible-test supported versions (3.8-3.13 as of ansible-core 2.20)
+- Cannot use plain `pytest` command directly from project root
+- CI/CD pipelines must use `ansible-test units` for unit test execution
+- Local development requires syncing to `/tmp/ansible_collections/` or similar
+
+---
