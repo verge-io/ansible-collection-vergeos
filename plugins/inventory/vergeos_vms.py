@@ -87,6 +87,10 @@ options:
     description: Timeout for each site query in seconds.
     type: int
     default: 60
+  vm_max_workers:
+    description: Maximum concurrent VM detail queries (tags, NICs) per site.
+    type: int
+    default: 10
   hostname_template:
     description: Template for inventory hostname. Use {site} and {name} placeholders.
     type: str
@@ -211,6 +215,32 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 return True
         return False
 
+    def _fetch_vm_details(self, vm):
+        """Fetch tags and NICs for a single VM.
+
+        Args:
+            vm: VM resource object from SDK.
+
+        Returns:
+            Dictionary with VM data including _tags and _nics.
+        """
+        vm_dict = dict(vm)
+
+        # Get tags
+        try:
+            raw_tags = vm.get_tags()
+            vm_dict['_tags'] = [t.get('tag_name') for t in raw_tags if t.get('tag_name')]
+        except Exception:
+            vm_dict['_tags'] = []
+
+        # Get NICs (accessed via vm.nics, not client.nics)
+        try:
+            vm_dict['_nics'] = [dict(nic) for nic in vm.nics.list()]
+        except Exception:
+            vm_dict['_nics'] = []
+
+        return vm_dict
+
     def _fetch_site(self, site_config):
         """Fetch VMs from a single site via VergeOS API.
 
@@ -249,25 +279,27 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             # Get VMs as resource objects to use vm.get_tags() and vm.nics
             vms = list(client.vms.list())
 
-            # Fetch tags and NICs for each VM
+            # Fetch tags and NICs for each VM in parallel
+            vm_max_workers = self.get_option('vm_max_workers')
             vm_data = []
-            for vm in vms:
-                vm_dict = dict(vm)
 
-                # Get tags
-                try:
-                    raw_tags = vm.get_tags()
-                    vm_dict['_tags'] = [t.get('tag_name') for t in raw_tags if t.get('tag_name')]
-                except Exception:
-                    vm_dict['_tags'] = []
+            with ThreadPoolExecutor(max_workers=vm_max_workers) as executor:
+                future_to_vm = {
+                    executor.submit(self._fetch_vm_details, vm): vm
+                    for vm in vms
+                }
 
-                # Get NICs (accessed via vm.nics, not client.nics)
-                try:
-                    vm_dict['_nics'] = [dict(nic) for nic in vm.nics.list()]
-                except Exception:
-                    vm_dict['_nics'] = []
-
-                vm_data.append(vm_dict)
+                for future in as_completed(future_to_vm):
+                    try:
+                        vm_dict = future.result()
+                        vm_data.append(vm_dict)
+                    except Exception:
+                        # If VM detail fetch fails, still include VM with empty tags/nics
+                        vm = future_to_vm[future]
+                        vm_dict = dict(vm)
+                        vm_dict['_tags'] = []
+                        vm_dict['_nics'] = []
+                        vm_data.append(vm_dict)
 
             return {
                 'site': site_name,
