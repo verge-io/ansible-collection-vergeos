@@ -510,7 +510,6 @@ class TestCacheOperations:
 class TestFetchAllSites:
     """Tests for _fetch_all_sites concurrent fetching"""
 
-    @patch.object(MagicMock, '_fetch_site')
     def test_concurrent_fetch_multiple_sites(self, inventory_module):
         """Test that multiple sites are fetched concurrently"""
         inventory_module._options['sites'] = [
