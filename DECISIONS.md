@@ -238,3 +238,51 @@ ansible-test units tests/unit/plugins/inventory/ --local --python 3.13 --require
 - Local development requires syncing to `/tmp/ansible_collections/` or similar
 
 ---
+
+## ADR-010: Batch API Fetching for Inventory Plugin Performance
+
+**Date:** 2026-02-04
+
+**Status:** Accepted
+
+**Context:** The inventory plugin needs to fetch VMs, their tags, and their NICs from each VergeOS site. The initial implementation used per-VM API calls: after fetching the VM list, it called `vm.get_tags()` and `vm.nics.list()` for each VM. This resulted in `1 + 2N` API calls per site (where N = number of VMs). For a site with 100 VMs, this meant 201 API calls, causing significant latency especially over high-latency networks.
+
+**Alternatives Considered:**
+1. **Per-VM sequential** - Simple but O(n) API calls, poor performance
+2. **Per-VM parallel** - ThreadPoolExecutor for concurrent per-VM calls, still O(n) API calls but better latency
+3. **Batch API fetching** - Use bulk endpoints to fetch all data in constant API calls
+
+**Decision:** Use batch API fetching via the SDK's internal `_request()` method to access bulk endpoints (`tag_members`, `machine_nics`) that return all data in single calls, then join data client-side.
+
+**Implementation:**
+```python
+# 4 API calls total per site (constant, regardless of VM count):
+vms = client.vms.list()                                    # 1. All VMs
+tags = client.tags.list()                                  # 2. Tag definitions
+tag_members = client._request('GET', 'tag_members', ...)   # 3. All tag->VM mappings
+all_nics = client._request('GET', 'machine_nics', ...)     # 4. All NICs
+# Then join data client-side by machine ID
+```
+
+**Rationale:**
+- Reduces API calls from O(n) to O(1) per site
+- For 100 VMs: 201 calls → 4 calls (50x reduction)
+- For 500 VMs: 1001 calls → 4 calls (250x reduction)
+- Network latency impact reduced dramatically for geographically distributed sites
+- Client-side joins are fast (in-memory dictionary lookups)
+
+**Consequences:**
+- Uses SDK internal method `_request()` which could change in future SDK versions
+- Requires understanding of VergeOS API structure (`tag_members` uses `member: "vms/34"` format)
+- Graceful degradation: if batch endpoints fail, tags/NICs are simply empty (not fatal)
+- Site-level parallelism (ThreadPoolExecutor) still used for multi-site queries
+- Per-VM parallelism no longer needed and was removed
+
+**Performance Results (46 VMs across 2 sites):**
+| Approach | API Calls | Time |
+|----------|-----------|------|
+| Sequential | 98 | ~0.93s |
+| Per-VM parallel | 98 | ~0.5-1.0s |
+| Batch fetching | 8 | ~0.35-0.45s |
+
+---
