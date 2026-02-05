@@ -6,7 +6,7 @@ Ansible collection for managing VergeOS virtualization infrastructure via the Ve
 
 - **Python**: >= 3.9
 - **Ansible**: >= 2.14.0
-- **pyvergeos**: >= 1.0.0 (VergeOS Python SDK)
+- **pyvergeos**: >= 1.0.1 (VergeOS Python SDK)
 
 ## Installation
 
@@ -33,7 +33,7 @@ ansible-galaxy collection install vergeio-vergeos-*.tar.gz --force
 
 Add to your `requirements.txt`:
 ```
-pyvergeos>=1.0.0
+pyvergeos>=1.0.1
 ```
 
 ## Basic Setup
