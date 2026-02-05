@@ -240,9 +240,13 @@ def create_snapshot(client, module):
     result = vm.snapshots.create(**snapshot_data)
     result_dict = dict(result) if result and hasattr(result, '__iter__') else {}
 
+    # Extract snapshot ID from the API response
+    created_snapshot_id = str(result_dict.get('$key', '')) if result_dict else ''
+
     module.exit_json(
         changed=True,
         operation='create',
+        snapshot_id=created_snapshot_id,
         snapshot_name=snapshot_name,
         vm_id=resolved_vm_id,
         response=result_dict
@@ -264,8 +268,9 @@ def list_snapshots(client, module):
 
             snapshots = [dict(s) for s in vm.snapshots.list()]
         else:
-            # List all snapshots
-            snapshots = [dict(s) for s in client.machine_snapshots.list()]
+            # List all snapshots using direct API call (no per-VM manager needed)
+            result = client._request('GET', 'machine_snapshots', params={'fields': 'all'})
+            snapshots = [dict(s) for s in result] if result else []
 
         module.exit_json(
             changed=False,
@@ -302,9 +307,9 @@ def restore_snapshot(client, module):
             snapshot_id=snapshot_id
         )
 
-    # Restore from snapshot
+    # Restore from snapshot using per-VM snapshot manager
     try:
-        snapshot = client.machine_snapshots.get(key=snapshot_id)
+        snapshot = vm.snapshots.get(key=snapshot_id)
         snapshot.restore()
     except NotFoundError:
         module.fail_json(msg=f"Snapshot '{snapshot_id}' not found")
@@ -331,10 +336,9 @@ def delete_snapshot(client, module):
             snapshot_id=snapshot_id
         )
 
-    # Delete the snapshot
+    # Delete the snapshot using direct API call (no VM context needed)
     try:
-        snapshot = client.machine_snapshots.get(key=snapshot_id)
-        snapshot.delete()
+        client._request('DELETE', f'machine_snapshots/{snapshot_id}')
     except NotFoundError:
         module.fail_json(msg=f"Snapshot '{snapshot_id}' not found")
 
