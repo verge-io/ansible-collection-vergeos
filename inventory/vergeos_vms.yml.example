@@ -29,7 +29,8 @@ sites:
 #   name_pattern: ".*web.*"
 
 # Optional: Group hosts by these dimensions
-# Choices: site, tags, status, tenant, os_family, cluster
+# Choices: site, tags, status, tenant, os_family, cluster, node
+# Note: 'node' groups only include running VMs (stopped VMs have no node)
 group_by:
   - site
   - status

@@ -14,11 +14,14 @@ author:
   - VergeIO (@vergeio)
 description:
   - Queries multiple VergeOS sites concurrently for VMs.
-  - Groups by site, tags, tenant, status, os_family, and cluster.
+  - Groups by site, tags, tenant, status, os_family, cluster, and node.
   - Supports caching for large deployments (100+ sites).
   - Uses pyvergeos SDK for API operations.
   - API-only plugin - does NOT set ansible_host or support SSH to VMs.
   - All operations are performed via the VergeOS API, not direct VM connections.
+  - "Host variables include: site info, VM identification, status, resources (RAM/CPU),
+    OS info, organization (tenant/cluster/node), tags, network (NICs/IPs/MACs),
+    storage (drives), timestamps (created/modified), and machine type."
 requirements:
   - python >= 3.9
   - pyvergeos >= 1.0.0
@@ -75,7 +78,10 @@ options:
         description: Regex pattern to filter VM names.
         type: str
   group_by:
-    description: Dimensions to group hosts by.
+    description:
+      - Dimensions to group hosts by.
+      - "Available dimensions: site, status, tags, tenant, os_family, cluster, node."
+      - "Note: 'node' groups only include running VMs (stopped VMs have no node assignment)."
     type: list
     elements: str
     default: ['site', 'status']
@@ -265,6 +271,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 vm_dict = dict(vm)
                 vm_dict['_tags'] = []
                 vm_dict['_nics'] = []
+                vm_dict['_drives'] = []
                 machine_id = vm_dict.get('machine')
                 if machine_id:
                     vm_by_machine[machine_id] = vm_dict
@@ -308,6 +315,16 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                         vm_by_machine[machine_id]['_nics'].append(nic)
             except Exception:
                 pass  # NICs not available, continue without them
+
+            # 5. Get all drives in one call
+            try:
+                all_drives = client._request('GET', 'machine_drives', params={'fields': 'all'})
+                for drive in all_drives:
+                    machine_id = drive.get('machine')
+                    if machine_id in vm_by_machine:
+                        vm_by_machine[machine_id]['_drives'].append(drive)
+            except Exception:
+                pass  # Drives not available, continue without them
 
             return {
                 'site': site_name,
@@ -513,6 +530,13 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 self.inventory.add_group(group)
                 self.inventory.add_child(group, hostname)
 
+        if 'node' in group_by:
+            node = vm.get('node_name')
+            if node:
+                group = f"node_{self._sanitize_group_name(node)}"
+                self.inventory.add_group(group)
+                self.inventory.add_child(group, hostname)
+
     def _set_hostvars(self, hostname, vm, site_name, site_url):
         """Set all host variables for a VM.
 
@@ -535,7 +559,13 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         # VM identification
         self.inventory.set_variable(hostname, f'{prefix}vm_id', vm.get('$key'))
         self.inventory.set_variable(hostname, f'{prefix}name', vm.get('name'))
+        self.inventory.set_variable(hostname, f'{prefix}description', vm.get('description'))
         self.inventory.set_variable(hostname, f'{prefix}machine', vm.get('machine'))
+        self.inventory.set_variable(hostname, f'{prefix}machine_type', vm.get('machine_type'))
+
+        # Timestamps (Unix epoch)
+        self.inventory.set_variable(hostname, f'{prefix}created', vm.get('created'))
+        self.inventory.set_variable(hostname, f'{prefix}modified', vm.get('modified'))
 
         # Status
         self.inventory.set_variable(hostname, f'{prefix}status', vm.get('status'))
@@ -553,11 +583,15 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         self.inventory.set_variable(hostname, f'{prefix}tenant', vm.get('tenant'))
         self.inventory.set_variable(hostname, f'{prefix}cluster', vm.get('cluster'))
 
+        # Node info (None if VM is stopped)
+        self.inventory.set_variable(hostname, f'{prefix}node_name', vm.get('node_name'))
+        self.inventory.set_variable(hostname, f'{prefix}node_key', vm.get('node_key'))
+
         # Tags (fetched during _fetch_site via vm.get_tags())
         self.inventory.set_variable(hostname, f'{prefix}tags', vm.get('_tags', []))
 
         # Network info (for reference, NOT for SSH)
-        # NICs are fetched per-VM during _fetch_site via vm.nics.list()
+        # NICs are fetched via batch API call during _fetch_site
         vm_nics = vm.get('_nics', [])
         if vm_nics:
             self.inventory.set_variable(hostname, f'{prefix}nics', vm_nics)
@@ -567,8 +601,17 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 if ip:
                     self.inventory.set_variable(hostname, f'{prefix}ip', ip)
                     break
+            # Extract MAC addresses
+            mac_addresses = [nic.get('macaddress') for nic in vm_nics if nic.get('macaddress')]
+            if mac_addresses:
+                self.inventory.set_variable(hostname, f'{prefix}mac_addresses', mac_addresses)
 
-        # Raw VM data for advanced use (excluding internal _tags/_nics fields)
+        # Storage info - drives fetched via batch API call during _fetch_site
+        vm_drives = vm.get('_drives', [])
+        if vm_drives:
+            self.inventory.set_variable(hostname, f'{prefix}drives', vm_drives)
+
+        # Raw VM data for advanced use (excluding internal _tags/_nics/_drives fields)
         vm_copy = {k: v for k, v in vm.items() if not k.startswith('_')}
         self.inventory.set_variable(hostname, f'{prefix}vm_data', vm_copy)
 

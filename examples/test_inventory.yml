@@ -12,30 +12,56 @@
           ========================================
           VM ID: {{ vergeos_vm_id | default('N/A') }}
           VM Name: {{ vergeos_name | default('N/A') }}
-          CPU Cores: {{ cpu_cores | default('N/A') }}
-          RAM: {{ ram | default('N/A') }} MB
-          OS Family: {{ os_family | default('N/A') }}
-          Power State: {{ vergeos_power_state | default('N/A') }}
-          Is Snapshot: {{ vergeos_is_snapshot | default('N/A') }}
+          Description: {{ vergeos_description | default('N/A') }}
+          Status: {{ vergeos_status | default('N/A') }}
+          CPU Cores: {{ vergeos_cpu_cores | default('N/A') }}
+          RAM: {{ vergeos_ram | default('N/A') }} MB
+          OS Family: {{ vergeos_os_family | default('N/A') }}
+          Machine Type: {{ vergeos_machine_type | default('N/A') }}
           Machine ID: {{ vergeos_machine | default('N/A') }}
-          IP Address: {{ vergeos_ip | default(ansible_host) | default('N/A') }}
+
+          Node: {{ vergeos_node_name | default('N/A (stopped)') }}
+          Cluster: {{ vergeos_cluster | default('N/A') }}
+          Tenant: {{ vergeos_tenant | default('N/A') }}
+
+          IP Address: {{ vergeos_ip | default('N/A') }}
+          MAC Addresses: {{ vergeos_mac_addresses | default([]) | join(', ') or 'N/A' }}
+          Drives: {{ vergeos_drives | default([]) | length }} attached
+
+          Created: {{ vergeos_created | default('N/A') }}
+          Modified: {{ vergeos_modified | default('N/A') }}
+          Tags: {{ vergeos_tags | default([]) | join(', ') or 'None' }}
 
           Groups: {{ group_names | join(', ') }}
 
-- name: Show VMs by Power State
+- name: Show VMs by Status
   hosts: localhost
   gather_facts: false
 
   tasks:
-    - name: List powered on VMs
+    - name: List running VMs
       ansible.builtin.debug:
-        msg: "Powered On VMs: {{ groups['powered_on'] | default([]) | length }}"
-      when: "'powered_on' in groups"
+        msg: "Running VMs: {{ groups['status_running'] | default([]) | length }}"
+      when: "'status_running' in groups"
 
-    - name: List powered off VMs
+    - name: List stopped VMs
       ansible.builtin.debug:
-        msg: "Powered Off VMs: {{ groups['powered_off'] | default([]) | length }}"
-      when: "'powered_off' in groups"
+        msg: "Stopped VMs: {{ groups['status_stopped'] | default([]) | length }}"
+      when: "'status_stopped' in groups"
+
+- name: Show VMs by Node
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Display node groups
+      ansible.builtin.debug:
+        msg: |
+          Available Node Groups:
+          {% for group in groups.keys() | select('match', '^node_.*') %}
+          - {{ group }}: {{ groups[group] | length }} VMs
+          {% endfor %}
+      when: groups.keys() | select('match', '^node_.*') | list | length > 0
 
 - name: Show VMs by Cluster
   hosts: localhost

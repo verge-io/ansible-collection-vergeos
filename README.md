@@ -117,6 +117,7 @@ group_by:
   - tenant
   - os_family
   - cluster
+  - node      # node_node1, node_node2 (running VMs only)
 
 # Optional: Filter VMs
 filters:
@@ -144,14 +145,22 @@ Each host in the inventory has these variables (with `vergeos_` prefix by defaul
 | `vergeos_site_url` | Site API URL (use with modules) |
 | `vergeos_vm_id` | VM ID (use with modules) |
 | `vergeos_name` | VM name |
+| `vergeos_description` | VM description/notes |
 | `vergeos_status` | VM status (running, stopped, etc.) |
+| `vergeos_created` | Creation timestamp (Unix epoch) |
+| `vergeos_modified` | Last modified timestamp (Unix epoch) |
+| `vergeos_machine_type` | QEMU machine type (e.g., "pc-q35-10.0") |
 | `vergeos_tags` | List of tag names |
 | `vergeos_ip` | First IP address (for reference) |
+| `vergeos_mac_addresses` | List of MAC addresses |
 | `vergeos_nics` | List of NIC details |
+| `vergeos_drives` | List of drive details |
 | `vergeos_ram` | RAM in MB |
 | `vergeos_cpu_cores` | Number of CPU cores |
 | `vergeos_tenant` | Tenant name |
 | `vergeos_cluster` | Cluster name |
+| `vergeos_node_name` | Node running VM (None if stopped) |
+| `vergeos_node_key` | Node resource key (None if stopped) |
 | `vergeos_vm_data` | Full VM data dictionary |
 
 ### Example Playbook with Inventory

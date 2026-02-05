@@ -62,8 +62,9 @@ All modules follow this structure:
 
 Multi-site dynamic inventory with:
 - Concurrent site queries (ThreadPoolExecutor)
-- Batch API fetching for tags/NICs (O(1) API calls per site)
-- Group by: site, status, tags, tenant, os_family, cluster
+- Batch API fetching for tags/NICs/drives (O(1) API calls per site - 5 calls total)
+- Group by: site, status, tags, tenant, os_family, cluster, node
+- Host variables: site info, VM identification, timestamps (created/modified), machine_type, status, resources, OS, organization (tenant/cluster/node), tags, NICs, MAC addresses, drives, IP
 - JSON file caching (recommended: 1 hour timeout)
 - Hostname templating
 
