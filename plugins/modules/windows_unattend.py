@@ -141,8 +141,8 @@ def get_vm(client, module, vm_name=None, vm_id=None):
         module.fail_json(msg=f"VM '{vm_name}' not found")
 
 
-def enable_cloudinit_datasource(client, module, vm):
-    """Enable cloud-init datasource on the VM using SDK.
+def enable_cloudinit_datasource(client, module, vm_key):
+    """Enable cloud-init datasource on the VM.
 
     This is required even for Windows VMs to enable the cloudinit_files mechanism.
     The cloudinit_files endpoint provides files as virtual CD-ROM drives that both
@@ -151,37 +151,42 @@ def enable_cloudinit_datasource(client, module, vm):
     if module.check_mode:
         return True
 
-    vm.cloudinit_datasource = 'nocloud'
-    vm.save()
+    client._request('PUT', f'vms/{vm_key}', json_data={'cloudinit_datasource': 'nocloud'})
     return True
 
 
-def get_cloudinit_files(client, module, vm):
-    """Get existing cloud-init files (including unattend.xml) for a VM using SDK."""
+def get_cloudinit_files(client, module, vm_key):
+    """Get existing cloud-init files (including unattend.xml) for a VM."""
     try:
-        files = list(vm.cloudinit_files.list())
-        return files
+        return list(client.cloudinit_files.list_for_vm(int(vm_key)))
     except (NotFoundError, AttributeError):
         return []
 
 
-def create_unattend_file(client, module, vm):
-    """Create the /unattend.xml file if it doesn't exist using SDK."""
+def create_unattend_file(client, module, vm_key, contents):
+    """Create the /unattend.xml file with contents using SDK."""
     if module.check_mode:
         return "/unattend.xml"  # Return dummy ID in check mode
 
-    file_obj = vm.cloudinit_files.create(name='/unattend.xml')
+    file_obj = client.cloudinit_files.create(
+        vm_key=int(vm_key),
+        name='/unattend.xml',
+        contents=contents,
+        render='No'
+    )
     return str(dict(file_obj).get('$key'))
 
 
-def update_unattend_file(client, module, file_obj, contents):
+def update_unattend_file(client, module, file_key, contents):
     """Update unattend.xml file contents using SDK."""
     if module.check_mode:
         return True
 
-    file_obj.contents = contents
-    file_obj.render = 'no'
-    file_obj.save()
+    client.cloudinit_files.update(
+        key=int(file_key),
+        contents=contents,
+        render='No'
+    )
     return True
 
 
@@ -203,25 +208,26 @@ def configure_unattend(client, module):
 
     # Get VM
     vm = get_vm(client, module, vm_name, vm_id_param)
-    vm_id = str(dict(vm).get('$key'))
+    vm_key = str(dict(vm).get('$key'))
 
     # Get existing files
-    existing_files = get_cloudinit_files(client, module, vm)
-    file_map = {dict(f)['name']: f for f in existing_files}
+    existing_files = get_cloudinit_files(client, module, vm_key)
+    file_map = {dict(f)['name']: str(dict(f).get('$key')) for f in existing_files}
+    file_objs = {dict(f)['name']: f for f in existing_files}
 
     if state == 'absent':
         # Remove unattend.xml if it exists
-        if '/unattend.xml' in file_map:
-            delete_unattend_file(client, module, file_map['/unattend.xml'])
+        if '/unattend.xml' in file_objs:
+            delete_unattend_file(client, module, file_objs['/unattend.xml'])
             module.exit_json(
                 changed=True,
-                vm_id=vm_id,
+                vm_id=vm_key,
                 msg="Unattend.xml file removed"
             )
         else:
             module.exit_json(
                 changed=False,
-                vm_id=vm_id,
+                vm_id=vm_key,
                 msg="Unattend.xml file does not exist"
             )
 
@@ -232,29 +238,23 @@ def configure_unattend(client, module):
     changed = False
 
     # Enable cloudinit datasource (required for cloudinit_files to work)
-    enable_cloudinit_datasource(client, module, vm)
+    enable_cloudinit_datasource(client, module, vm_key)
     changed = True
 
     # Create or update /unattend.xml
     if '/unattend.xml' not in file_map:
-        # Create the file
-        file_id = create_unattend_file(client, module, vm)
-        # Re-fetch files to get the new file object
-        existing_files = get_cloudinit_files(client, module, vm)
-        file_map = {dict(f)['name']: f for f in existing_files}
+        # Create the file with contents in one call
+        file_id = create_unattend_file(client, module, vm_key, unattend_xml)
         changed = True
     else:
-        file_id = str(dict(file_map['/unattend.xml']).get('$key'))
-
-    # Update file contents
-    file_obj = file_map.get('/unattend.xml')
-    if file_obj:
-        update_unattend_file(client, module, file_obj, unattend_xml)
+        # Update existing file
+        file_id = file_map['/unattend.xml']
+        update_unattend_file(client, module, file_id, unattend_xml)
         changed = True
 
     module.exit_json(
         changed=changed,
-        vm_id=vm_id,
+        vm_id=vm_key,
         unattend_file={
             'key': file_id,
             'name': '/unattend.xml'

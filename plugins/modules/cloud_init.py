@@ -204,48 +204,53 @@ def get_vm(client, module, vm_name=None, vm_id=None):
     module.fail_json(msg="Either vm_name or vm_id must be provided")
 
 
-def enable_cloudinit_datasource(client, module, vm, datasource):
-    """Enable cloud-init datasource on the VM using SDK."""
+def enable_cloudinit_datasource(client, module, vm_key, datasource):
+    """Enable cloud-init datasource on the VM."""
     if module.check_mode:
         return True
 
-    vm.cloudinit_datasource = datasource
-    vm.save()
+    client._request('PUT', f'vms/{vm_key}', json_data={'cloudinit_datasource': datasource})
     return True
 
 
-def get_cloudinit_files(client, module, vm):
+def get_cloudinit_files(client, module, vm_key):
     """Get existing cloud-init files for a VM using SDK."""
     try:
-        files = list(vm.cloudinit_files.list())
-        return files
+        return list(client.cloudinit_files.list_for_vm(int(vm_key)))
     except (NotFoundError, AttributeError):
         return []
 
 
-def create_cloudinit_file(client, module, vm, filename):
-    """Create a cloud-init file if it doesn't exist using SDK."""
+def create_cloudinit_file(client, module, vm_key, filename, contents):
+    """Create a cloud-init file using SDK."""
     if module.check_mode:
         return filename  # Return dummy ID in check mode
 
-    file_obj = vm.cloudinit_files.create(name=filename)
+    file_obj = client.cloudinit_files.create(
+        vm_key=int(vm_key),
+        name=filename,
+        contents=contents,
+        render='No'
+    )
     return str(dict(file_obj).get('$key'))
 
 
-def update_cloudinit_file(client, module, file_obj, contents):
+def update_cloudinit_file(client, module, file_key, contents):
     """Update cloud-init file contents using SDK."""
     if module.check_mode:
         return True
 
-    file_obj.contents = contents
-    file_obj.render = 'no'
-    file_obj.save()
+    client.cloudinit_files.update(
+        key=int(file_key),
+        contents=contents,
+        render='No'
+    )
     return True
 
 
-def delete_cloudinit_files(client, module, vm):
+def delete_cloudinit_files(client, module, vm_key):
     """Delete all cloud-init files for a VM using SDK."""
-    files = get_cloudinit_files(client, module, vm)
+    files = get_cloudinit_files(client, module, vm_key)
 
     if module.check_mode:
         return len(files) > 0
@@ -298,23 +303,23 @@ def configure_cloudinit(client, module):
 
     # Get VM
     vm = get_vm(client, module, vm_name, vm_id_param)
-    vm_id = str(dict(vm).get('$key'))
+    vm_key = str(dict(vm).get('$key'))
 
     changed = False
     result = {
-        'vm_id': vm_id,
+        'vm_id': vm_key,
         'cloudinit_files': []
     }
 
     # Enable cloud-init datasource
     if datasource:
-        enable_cloudinit_datasource(client, module, vm, datasource)
+        enable_cloudinit_datasource(client, module, vm_key, datasource)
         changed = True
         result['datasource'] = datasource
 
     # Get existing cloud-init files
-    existing_files = get_cloudinit_files(client, module, vm)
-    file_map = {dict(f)['name']: f for f in existing_files}
+    existing_files = get_cloudinit_files(client, module, vm_key)
+    file_map = {dict(f)['name']: str(dict(f).get('$key')) for f in existing_files}
 
     # Prepare content
     user_data_content = module.params.get('user_data')
@@ -344,20 +349,14 @@ def configure_cloudinit(client, module):
         files_to_update.append(('/network-config', network_config_content))
 
     for filename, content in files_to_update:
-        # Create file if it doesn't exist
         if filename not in file_map:
-            file_id = create_cloudinit_file(client, module, vm, filename)
-            # Re-fetch to get the file object
-            existing_files = get_cloudinit_files(client, module, vm)
-            file_map = {dict(f)['name']: f for f in existing_files}
+            # Create file with contents in one call
+            file_id = create_cloudinit_file(client, module, vm_key, filename, content)
             changed = True
         else:
-            file_id = str(dict(file_map[filename]).get('$key'))
-
-        # Update file contents
-        file_obj = file_map.get(filename)
-        if file_obj:
-            update_cloudinit_file(client, module, file_obj, content)
+            # Update existing file
+            file_id = file_map[filename]
+            update_cloudinit_file(client, module, file_id, content)
             changed = True
 
         result['cloudinit_files'].append({
@@ -376,17 +375,17 @@ def remove_cloudinit(client, module):
 
     # Get VM
     vm = get_vm(client, module, vm_name, vm_id_param)
-    vm_id = str(dict(vm).get('$key'))
+    vm_key = str(dict(vm).get('$key'))
 
     # Disable cloud-init datasource
-    enable_cloudinit_datasource(client, module, vm, '')
+    enable_cloudinit_datasource(client, module, vm_key, '')
 
     # Delete cloud-init files
-    changed = delete_cloudinit_files(client, module, vm)
+    changed = delete_cloudinit_files(client, module, vm_key)
 
     module.exit_json(
         changed=changed,
-        vm_id=vm_id,
+        vm_id=vm_key,
         msg="Cloud-init disabled and files removed"
     )
 

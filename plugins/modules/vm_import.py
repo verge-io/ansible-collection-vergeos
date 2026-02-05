@@ -185,14 +185,16 @@ if HAS_PYVERGEOS:
     )
 
 
-def wait_for_import_completion(client, import_obj, poll_interval, poll_timeout, module):
+def wait_for_import_completion(client, import_key, poll_interval, poll_timeout, module):
     """
     Poll the import status until it completes or times out.
+
+    Uses client._request() directly for raw API responses matching the
+    exact behavior of the original REST-based implementation.
 
     Returns the final import status dict when complete.
     """
     start_time = time.time()
-    import_key = dict(import_obj).get('$key')
 
     while True:
         elapsed = time.time() - start_time
@@ -202,10 +204,9 @@ def wait_for_import_completion(client, import_obj, poll_interval, poll_timeout, 
                 import_key=import_key
             )
 
-        # Refresh import status
+        # Query import status via raw API call
         try:
-            import_obj.refresh()
-            import_status = dict(import_obj)
+            import_status = client._request('GET', f'vm_imports/{import_key}')
         except Exception as e:
             module.fail_json(
                 msg=f"Failed to query import status: {str(e)}",
@@ -280,56 +281,60 @@ def create_vm_import(client, module):
 
     name = module.params['name']
 
-    # Build import payload
-    import_data = {
+    # Build import payload - use raw API format matching the VergeOS REST API.
+    # The 'importing' field tells the API to start importing immediately.
+    payload = {
         'file': file_id,
         'name': name,
-        'preserve_macs': module.params['preserve_macs'],
-        'importing': True
+        'preserve_macs': str(module.params['preserve_macs']).lower(),
+        'importing': 'true'
     }
 
     # Add optional parameters
     if module.params['preserve_drive_format']:
-        import_data['preserve_drive_format'] = module.params['preserve_drive_format']
+        payload['preserve_drive_format'] = str(module.params['preserve_drive_format']).lower()
 
     if module.params['preferred_tier']:
-        import_data['preferred_tier'] = module.params['preferred_tier']
+        payload['preferred_tier'] = module.params['preferred_tier']
 
     if module.params['no_optical_drives']:
-        import_data['no_optical_drives'] = module.params['no_optical_drives']
+        payload['no_optical_drives'] = str(module.params['no_optical_drives']).lower()
 
     if module.params['override_drive_interface'] != 'default':
-        import_data['override_drive_interface'] = module.params['override_drive_interface']
+        payload['override_drive_interface'] = module.params['override_drive_interface']
 
     if module.params['override_nic_interface'] != 'default':
-        import_data['override_nic_interface'] = module.params['override_nic_interface']
+        payload['override_nic_interface'] = module.params['override_nic_interface']
 
     if module.check_mode:
         module.exit_json(
             changed=True,
             msg="Would create VM import (check mode)",
-            payload=import_data
+            payload=payload
         )
 
-    # Create the import
-    import_obj = client.vm_imports.create(**import_data)
-    import_dict = dict(import_obj)
+    # Create the import via raw API call (SDK create() doesn't support
+    # the 'importing' field that auto-starts the import process)
+    try:
+        response = client._request('POST', 'vm_imports', json_data=payload)
+    except Exception as e:
+        module.fail_json(msg=f"Failed to create VM import: {str(e)}")
 
     # Extract import key
-    import_key = import_dict.get('$key')
-    vm_response = import_dict.get('response', {})
+    import_key = response.get('$key')
+    vm_response = response.get('response', {})
     vm_id = vm_response.get('$key') if isinstance(vm_response, dict) else None
 
     if not import_key:
         module.fail_json(
             msg="Import created but no $key returned",
-            response=import_dict
+            response=response
         )
 
     # Wait for import to complete
     final_status = wait_for_import_completion(
         client,
-        import_obj,
+        import_key,
         module.params['poll_interval'],
         module.params['poll_timeout'],
         module
