@@ -71,3 +71,9 @@ Multi-site dynamic inventory with:
 ### Documentation Fragment (`plugins/doc_fragments/vergeos.py`)
 
 Shared documentation for authentication options, included in all modules via `extends_documentation_fragment: vergeio.vergeos.vergeos`.
+
+## Commit Message Guidelines
+
+- **Never include IP addresses, hostnames, or other infrastructure details** in commit messages
+- Use generic terms like "test environment", "live API", or "development system" instead
+- This prevents leaking internal network topology in public repository history

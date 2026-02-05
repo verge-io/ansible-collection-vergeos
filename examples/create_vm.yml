@@ -5,9 +5,10 @@
   gather_facts: false
 
   vars:
-    vergeos_host: "192.168.1.1"
-    vergeos_username: "admin"
-    vergeos_password: "password"
+    vergeos_host: "{{ lookup('env', 'VERGEOS_HOST') | default('vergeos.example.com', true) }}"
+    vergeos_username: "{{ lookup('env', 'VERGEOS_USERNAME') | default('admin', true) }}"
+    vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+    vergeos_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true) }}"
 
   tasks:
     - name: Create an internal network
@@ -15,6 +16,7 @@
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
         name: "production-network"
         description: "Production internal network"
         network_type: internal
@@ -34,6 +36,7 @@
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
         name: "web-server-01"
         description: "Production web server"
         enabled: true
@@ -49,6 +52,7 @@
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
         vm_name: "web-server-01"
         name: "os-disk"
         size: 100
@@ -60,6 +64,7 @@
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
         vm_name: "web-server-01"
         name: "data-disk"
         size: 500
@@ -71,6 +76,7 @@
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
         vm_name: "web-server-01"
         network: "production-network"
         nic_type: virtio
@@ -81,6 +87,7 @@
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
         name: "web-server-01"
         state: running
 

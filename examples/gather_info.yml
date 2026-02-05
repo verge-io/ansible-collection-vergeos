@@ -5,9 +5,10 @@
   gather_facts: false
 
   vars:
-    vergeos_host: "192.168.1.100"
-    vergeos_username: "admin"
-    vergeos_password: "password"
+    vergeos_host: "{{ lookup('env', 'VERGEOS_HOST') | default('vergeos.example.com', true) }}"
+    vergeos_username: "{{ lookup('env', 'VERGEOS_USERNAME') | default('admin', true) }}"
+    vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+    vergeos_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true) }}"
 
   tasks:
     - name: Get all VMs
@@ -15,6 +16,7 @@
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
       register: all_vms
 
     - name: Display all VMs
@@ -26,6 +28,7 @@
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
         name: "web-server-01"
       register: vm_info
 
@@ -38,6 +41,7 @@
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
       register: all_networks
 
     - name: Display networks
@@ -49,6 +53,7 @@
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
       register: cluster_info
 
     - name: Display cluster info
