@@ -1,8 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2025, VergeIO
-# MIT License
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
@@ -24,7 +24,7 @@ options:
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
-  - VergeIO
+  - VergeIO (@vergeio)
 '''
 
 EXAMPLES = r'''
@@ -60,10 +60,20 @@ networks:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
+
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
 
 def main():
@@ -77,20 +87,25 @@ def main():
         supports_check_mode=True
     )
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
     name = module.params.get('name')
 
     try:
-        networks = api.get('vnets')
-
         if name:
-            filtered_networks = [net for net in networks if net.get('name') == name]
-            module.exit_json(changed=False, networks=filtered_networks)
+            # Get specific network by name
+            try:
+                network = client.networks.get(name=name)
+                networks = [dict(network)]
+            except NotFoundError:
+                networks = []
         else:
-            module.exit_json(changed=False, networks=networks)
+            # Get all networks
+            networks = [dict(net) for net in client.networks.list()]
 
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+        module.exit_json(changed=False, networks=networks)
+
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
     except Exception as e:
         module.fail_json(msg=f"Unexpected error: {str(e)}")
 

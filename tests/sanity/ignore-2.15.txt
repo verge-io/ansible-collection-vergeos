@@ -1,0 +1,4 @@
+.claude/hooks/format-on-save.sh shebang!skip
+.claude/hooks/log-bash-commands.sh shebang!skip
+.claude/hooks/log-bash-commands.sh shellcheck!skip
+.claude/hooks/protect-sensitive-files.sh shebang!skip

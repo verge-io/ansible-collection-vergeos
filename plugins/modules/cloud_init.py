@@ -1,8 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2025, VergeIO
-# MIT License
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
@@ -39,19 +39,19 @@ options:
     description:
       - Contents of the /user-data cloud-init file.
       - Typically contains #cloud-config YAML.
-      - Example C(#cloud-config\\nmanage_etc_hosts: true\\nhostname: myhost)
+      - "Example C(#cloud-config\\nmanage_etc_hosts: true\\nhostname: myhost)"
     type: str
   meta_data:
     description:
       - Contents of the /meta-data cloud-init file.
       - Typically contains instance-id and local-hostname.
-      - Example C(instance-id: myhost-001\\nlocal-hostname: myhost)
+      - "Example C(instance-id: myhost-001\\nlocal-hostname: myhost)"
     type: str
   network_config:
     description:
       - Contents of the /network-config cloud-init file.
       - Defines network configuration in Netplan v2 format.
-      - Example C(version: 2\\nethernets:\\n  eth0:\\n    dhcp4: false\\n    addresses: [10.0.0.5/24])
+      - "Example C(version: 2\\nethernets:\\n  eth0:\\n    dhcp4: false\\n    addresses: [10.0.0.5/24])"
     type: str
   hostname:
     description:
@@ -94,7 +94,7 @@ options:
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
-  - VergeIO
+  - VergeIO (@vergeio)
 '''
 
 EXAMPLES = r'''
@@ -170,112 +170,99 @@ datasource:
 '''
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible.module_utils.six.moves.urllib.parse import quote
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
 
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
-def get_vm_id(api, module, vm_name=None, vm_id=None):
-    """Get VM ID from name or validate provided ID."""
+
+def get_vm(client, module, vm_name=None, vm_id=None):
+    """Get VM from name or ID using SDK."""
     if vm_id:
-        return vm_id
+        try:
+            return client.vms.get(key=vm_id)
+        except NotFoundError:
+            module.fail_json(msg=f"VM with ID '{vm_id}' not found")
 
     if vm_name:
         try:
-            # Get all VMs and filter by name (API doesn't support ?name= filter)
-            vms = api.get('vms')
-            matching_vms = [vm for vm in vms if vm.get('name') == vm_name]
-            if not matching_vms:
-                module.fail_json(msg=f"VM '{vm_name}' not found")
-            vm = matching_vms[0]
-            return str(vm.get('$key') or vm.get('id'))
-        except VergeOSAPIError as e:
-            module.fail_json(msg=f"Failed to find VM: {str(e)}")
+            return client.vms.get(name=vm_name)
+        except NotFoundError:
+            module.fail_json(msg=f"VM '{vm_name}' not found")
 
     module.fail_json(msg="Either vm_name or vm_id must be provided")
 
 
-def enable_cloudinit_datasource(api, module, vm_id, datasource):
+def enable_cloudinit_datasource(client, module, vm_key, datasource):
     """Enable cloud-init datasource on the VM."""
-    payload = {'cloudinit_datasource': datasource}
-
     if module.check_mode:
         return True
 
-    # Debug: log what we're trying to do
-    module.warn(f"Attempting PUT to vms/{vm_id} with payload: {payload}")
+    client._request('PUT', f'vms/{vm_key}', json_data={'cloudinit_datasource': datasource})
+    return True
 
+
+def get_cloudinit_files(client, module, vm_key):
+    """Get existing cloud-init files for a VM using SDK."""
     try:
-        api.put(f"vms/{vm_id}", payload)
-        return True
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to enable cloud-init datasource on VM {vm_id}: {str(e)}")
+        return list(client.cloudinit_files.list_for_vm(int(vm_key)))
+    except (NotFoundError, AttributeError):
+        return []
 
 
-def get_cloudinit_files(api, module, vm_id):
-    """Get existing cloud-init files for a VM."""
-    try:
-        filter_param = quote(f"owner eq 'vms/{vm_id}'")
-        files = api.get(f"cloudinit_files?filter={filter_param}")
-        if not files:
-            return []
-        return files if isinstance(files, list) else [files]
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to query cloud-init files: {str(e)}")
-
-
-def create_cloudinit_file(api, module, vm_id, filename):
-    """Create a cloud-init file if it doesn't exist."""
+def create_cloudinit_file(client, module, vm_key, filename, contents):
+    """Create a cloud-init file using SDK."""
     if module.check_mode:
         return filename  # Return dummy ID in check mode
 
-    payload = {
-        'owner': f'vms/{vm_id}',
-        'name': filename
-    }
-
-    try:
-        response = api.post('cloudinit_files', payload)
-        return str(response.get('$key'))
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to create cloud-init file {filename}: {str(e)}")
+    file_obj = client.cloudinit_files.create(
+        vm_key=int(vm_key),
+        name=filename,
+        contents=contents,
+        render='No'
+    )
+    return str(dict(file_obj).get('$key'))
 
 
-def update_cloudinit_file(api, module, file_id, contents):
-    """Update cloud-init file contents."""
+def update_cloudinit_file(client, module, file_key, contents):
+    """Update cloud-init file contents using SDK."""
     if module.check_mode:
         return True
 
-    payload = {
-        'contents': contents,
-        'render': 'no'
-    }
-
-    try:
-        api.put(f"cloudinit_files/{file_id}", payload)
-        return True
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to update cloud-init file: {str(e)}")
+    client.cloudinit_files.update(
+        key=int(file_key),
+        contents=contents,
+        render='No'
+    )
+    return True
 
 
-def delete_cloudinit_files(api, module, vm_id):
-    """Delete all cloud-init files for a VM."""
-    files = get_cloudinit_files(api, module, vm_id)
+def delete_cloudinit_files(client, module, vm_key):
+    """Delete all cloud-init files for a VM using SDK."""
+    files = get_cloudinit_files(client, module, vm_key)
 
     if module.check_mode:
         return len(files) > 0
 
     changed = False
     for file_obj in files:
-        file_id = str(file_obj.get('$key'))
         try:
-            api.delete(f"cloudinit_files/{file_id}")
+            file_obj.delete()
             changed = True
-        except VergeOSAPIError as e:
-            module.warn(f"Failed to delete cloud-init file {file_id}: {str(e)}")
+        except Exception as e:
+            file_dict = dict(file_obj)
+            module.warn(f"Failed to delete cloud-init file {file_dict.get('$key')}: {str(e)}")
 
     return changed
 
@@ -306,32 +293,33 @@ def generate_network_config(interface, address, gateway, nameservers):
     )
 
 
-def configure_cloudinit(api, module):
-    """Configure cloud-init for a VM."""
+def configure_cloudinit(client, module):
+    """Configure cloud-init for a VM using SDK."""
     vm_name = module.params['vm_name']
     vm_id_param = module.params['vm_id']
     datasource = module.params.get('datasource', 'nocloud')
     hostname = module.params.get('hostname')
     network = module.params.get('network')
 
-    # Resolve VM ID
-    vm_id = get_vm_id(api, module, vm_name, vm_id_param)
+    # Get VM
+    vm = get_vm(client, module, vm_name, vm_id_param)
+    vm_key = str(dict(vm).get('$key'))
 
     changed = False
     result = {
-        'vm_id': vm_id,
+        'vm_id': vm_key,
         'cloudinit_files': []
     }
 
     # Enable cloud-init datasource
     if datasource:
-        enable_cloudinit_datasource(api, module, vm_id, datasource)
+        enable_cloudinit_datasource(client, module, vm_key, datasource)
         changed = True
         result['datasource'] = datasource
 
     # Get existing cloud-init files
-    existing_files = get_cloudinit_files(api, module, vm_id)
-    file_map = {f['name']: str(f['$key']) for f in existing_files}
+    existing_files = get_cloudinit_files(client, module, vm_key)
+    file_map = {dict(f)['name']: str(dict(f).get('$key')) for f in existing_files}
 
     # Prepare content
     user_data_content = module.params.get('user_data')
@@ -361,17 +349,15 @@ def configure_cloudinit(api, module):
         files_to_update.append(('/network-config', network_config_content))
 
     for filename, content in files_to_update:
-        # Create file if it doesn't exist
         if filename not in file_map:
-            file_id = create_cloudinit_file(api, module, vm_id, filename)
-            file_map[filename] = file_id
+            # Create file with contents in one call
+            file_id = create_cloudinit_file(client, module, vm_key, filename, content)
             changed = True
         else:
+            # Update existing file
             file_id = file_map[filename]
-
-        # Update file contents
-        update_cloudinit_file(api, module, file_id, content)
-        changed = True
+            update_cloudinit_file(client, module, file_id, content)
+            changed = True
 
         result['cloudinit_files'].append({
             'key': file_id,
@@ -382,23 +368,24 @@ def configure_cloudinit(api, module):
     module.exit_json(**result)
 
 
-def remove_cloudinit(api, module):
-    """Remove cloud-init configuration from a VM."""
+def remove_cloudinit(client, module):
+    """Remove cloud-init configuration from a VM using SDK."""
     vm_name = module.params['vm_name']
     vm_id_param = module.params['vm_id']
 
-    # Resolve VM ID
-    vm_id = get_vm_id(api, module, vm_name, vm_id_param)
+    # Get VM
+    vm = get_vm(client, module, vm_name, vm_id_param)
+    vm_key = str(dict(vm).get('$key'))
 
     # Disable cloud-init datasource
-    enable_cloudinit_datasource(api, module, vm_id, '')
+    enable_cloudinit_datasource(client, module, vm_key, '')
 
     # Delete cloud-init files
-    changed = delete_cloudinit_files(api, module, vm_id)
+    changed = delete_cloudinit_files(client, module, vm_key)
 
     module.exit_json(
         changed=changed,
-        vm_id=vm_id,
+        vm_id=vm_key,
         msg="Cloud-init disabled and files removed"
     )
 
@@ -459,15 +446,17 @@ def main():
                 msg="At least one of user_data, meta_data, network_config, hostname, or network must be provided"
             )
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
 
     try:
         if module.params['state'] == 'present':
-            configure_cloudinit(api, module)
+            configure_cloudinit(client, module)
         else:
-            remove_cloudinit(api, module)
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+            remove_cloudinit(client, module)
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
+    except Exception as e:
+        module.fail_json(msg=f"Unexpected error: {str(e)}")
 
 
 if __name__ == '__main__':

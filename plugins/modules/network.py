@@ -1,8 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2025, VergeIO
-# MIT License
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
@@ -74,7 +74,7 @@ options:
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
-  - VergeIO
+  - VergeIO (@vergeio)
 '''
 
 EXAMPLES = r'''
@@ -141,26 +141,32 @@ changed:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
 
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
-def get_network(api, name):
-    """Get network by name"""
+
+def get_network(client, name):
+    """Get network by name using SDK"""
     try:
-        networks = api.get('vnets')
-        for network in networks:
-            if network.get('name') == name:
-                return network
-        return None
-    except VergeOSAPIError:
+        return client.networks.get(name=name)
+    except NotFoundError:
         return None
 
 
-def create_network(module, api):
-    """Create a new network"""
+def build_network_data(module):
+    """Build network data dict from module params"""
     network_data = {
         'name': module.params['name'],
     }
@@ -183,18 +189,22 @@ def create_network(module, api):
         if module.params.get(param) is not None:
             network_data[api_field] = module.params[param]
 
+    return network_data
+
+
+def create_network(module, client):
+    """Create a new network using SDK"""
+    network_data = build_network_data(module)
+
     if module.check_mode:
         return True, network_data
 
-    try:
-        result = api.post('vnets', network_data)
-        return True, result
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to create network: {str(e)}")
+    network = client.networks.create(**network_data)
+    return True, dict(network)
 
 
-def update_network(module, api, network):
-    """Update an existing network"""
+def update_network(module, client, network):
+    """Update an existing network using SDK"""
     changed = False
     update_data = {}
 
@@ -212,38 +222,34 @@ def update_network(module, api, network):
         'dns_servers': 'dns_servers'
     }
 
+    network_dict = dict(network)
     for param, api_field in param_mapping.items():
         if module.params.get(param) is not None:
-            if network.get(api_field) != module.params[param]:
+            if network_dict.get(api_field) != module.params[param]:
                 update_data[api_field] = module.params[param]
                 changed = True
 
     if not changed:
-        return False, network
+        return False, network_dict
 
     if module.check_mode:
-        network.update(update_data)
-        return True, network
+        network_dict.update(update_data)
+        return True, network_dict
 
-    try:
-        network_key = network.get('$key')
-        result = api.put(f'vnets/{network_key}', update_data)
-        return True, result
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to update network: {str(e)}")
+    # Update network attributes and save
+    for key, value in update_data.items():
+        setattr(network, key, value)
+    network.save()
+    return True, dict(network)
 
 
-def delete_network(module, api, network):
-    """Delete a network"""
+def delete_network(module, client, network):
+    """Delete a network using SDK"""
     if module.check_mode:
         return True
 
-    try:
-        network_key = network.get('$key')
-        api.delete(f'vnets/{network_key}')
-        return True
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to delete network: {str(e)}")
+    network.delete()
+    return True
 
 
 def main():
@@ -268,30 +274,30 @@ def main():
         supports_check_mode=True
     )
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
     name = module.params['name']
     state = module.params['state']
 
     try:
-        network = get_network(api, name)
+        network = get_network(client, name)
 
         if state == 'absent':
             if network:
-                delete_network(module, api, network)
+                delete_network(module, client, network)
                 module.exit_json(changed=True, msg=f"Network '{name}' deleted")
             else:
                 module.exit_json(changed=False, msg=f"Network '{name}' does not exist")
 
         elif state == 'present':
             if network:
-                changed, updated_network = update_network(module, api, network)
+                changed, updated_network = update_network(module, client, network)
                 module.exit_json(changed=changed, network=updated_network)
             else:
-                changed, new_network = create_network(module, api)
+                changed, new_network = create_network(module, client)
                 module.exit_json(changed=changed, network=new_network)
 
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
     except Exception as e:
         module.fail_json(msg=f"Unexpected error: {str(e)}")
 

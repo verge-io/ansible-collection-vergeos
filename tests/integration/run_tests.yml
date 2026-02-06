@@ -1,0 +1,73 @@
+---
+# Master integration test playbook for vergeio.vergeos collection
+# Runs all module tests against a live VergeOS environment
+#
+# Requirements:
+#   - VERGEOS_HOST, VERGEOS_USERNAME, VERGEOS_PASSWORD environment variables
+#   - Network connectivity to VergeOS
+#
+# Usage:
+#   source .venv/bin/activate
+#   ansible-playbook tests/integration/run_tests.yml
+
+- name: VergeOS Collection Integration Tests
+  hosts: localhost
+  gather_facts: false
+  vars:
+    test_prefix: "ansible-test"
+    test_timestamp: "{{ lookup('pipe', 'date +%s') }}"
+  environment:
+    VERGEOS_INSECURE: "true"
+
+  tasks:
+    - name: Display test configuration
+      ansible.builtin.debug:
+        msg: |
+          VergeOS Integration Tests
+          ========================
+          Host: {{ lookup('env', 'VERGEOS_HOST') }}
+          Timestamp: {{ test_timestamp }}
+          Test prefix: {{ test_prefix }}
+
+    # Info modules (read-only, safe to run first)
+    - name: Run cluster_info tests
+      ansible.builtin.include_tasks: targets/cluster_info/tasks/main.yml
+
+    - name: Run file_info tests
+      ansible.builtin.include_tasks: targets/file_info/tasks/main.yml
+
+    - name: Run network_info tests
+      ansible.builtin.include_tasks: targets/network_info/tasks/main.yml
+
+    - name: Run vm_info tests
+      ansible.builtin.include_tasks: targets/vm_info/tasks/main.yml
+
+    # Resource modules (create/update/delete)
+    - name: Run user tests
+      ansible.builtin.include_tasks: targets/user/tasks/main.yml
+
+    - name: Run network tests
+      ansible.builtin.include_tasks: targets/network/tasks/main.yml
+
+    - name: Run vm tests
+      ansible.builtin.include_tasks: targets/vm/tasks/main.yml
+
+    - name: Run drive tests
+      ansible.builtin.include_tasks: targets/drive/tasks/main.yml
+
+    - name: Run nic tests
+      ansible.builtin.include_tasks: targets/nic/tasks/main.yml
+
+    - name: Run vm_snapshot tests
+      ansible.builtin.include_tasks: targets/vm_snapshot/tasks/main.yml
+
+    - name: Run cloud_init tests
+      ansible.builtin.include_tasks: targets/cloud_init/tasks/main.yml
+
+    # Full workflow test (end-to-end)
+    - name: Run full workflow test
+      ansible.builtin.include_tasks: targets/full_workflow/tasks/main.yml
+
+    - name: Tests complete
+      ansible.builtin.debug:
+        msg: "All integration tests passed!"

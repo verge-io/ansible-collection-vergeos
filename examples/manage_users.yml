@@ -1,66 +1,63 @@
 ---
 # Example playbook: Manage users and organization members
+#
+# The 'user' module uses 'name' for the target username and 'user_password'
+# for the user's password. Auth credentials (username/password) are separate.
+# The 'member' module uses 'name' for the target member username.
 - name: Manage VergeIO users and members
   hosts: localhost
   gather_facts: false
 
   vars:
-    vergeos_host: "192.168.1.100"
-    vergeos_username: "admin"
-    vergeos_password: "password"
+    vergeos_host: "{{ lookup('env', 'VERGEOS_HOST') | default('vergeos.example.com', true) }}"
+    vergeos_username: "{{ lookup('env', 'VERGEOS_USERNAME') | default('admin', true) }}"
+    vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+    vergeos_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true) }}"
 
   tasks:
-    # Note: The 'user' module has a known parameter name conflict where 'username'
-    # is used for both authentication and the target user. This is being addressed.
-    # For now, use environment variables for authentication to avoid the conflict.
-
     - name: Create a new admin user
       vergeio.vergeos.user:
         host: "{{ vergeos_host }}"
-        username: "john.doe"
-        password: "secure_password"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: "john.doe"
+        user_password: "secure_password"
         email: "john.doe@example.com"
         full_name: "John Doe"
         role: admin
         enabled: true
         state: present
-      environment:
-        VERGEOS_USERNAME: "{{ vergeos_username }}"
-        VERGEOS_PASSWORD: "{{ vergeos_password }}"
 
     - name: Create a readonly user
       vergeio.vergeos.user:
         host: "{{ vergeos_host }}"
-        username: "viewer"
-        password: "viewer_password"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: "viewer"
+        user_password: "viewer_password"
         email: "viewer@example.com"
         full_name: "Read Only User"
         role: readonly
         state: present
-      environment:
-        VERGEOS_USERNAME: "{{ vergeos_username }}"
-        VERGEOS_PASSWORD: "{{ vergeos_password }}"
-
-    # Note: The 'member' module also has a parameter name conflict where 'username'
-    # is used for both authentication and the target member username.
-    # Using environment variables for authentication to avoid the conflict.
 
     - name: Add user to group
       vergeio.vergeos.member:
         host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
         group: "engineering"
-        username: "john.doe"
+        name: "john.doe"
         state: present
-      environment:
-        VERGEOS_USERNAME: "{{ vergeos_username }}"
-        VERGEOS_PASSWORD: "{{ vergeos_password }}"
 
     - name: Add another user to group
       vergeio.vergeos.member:
         host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
         group: "engineering"
-        username: "viewer"
+        name: "viewer"
         state: present
-      environment:
-        VERGEOS_USERNAME: "{{ vergeos_username }}"
-        VERGEOS_PASSWORD: "{{ vergeos_password }}"

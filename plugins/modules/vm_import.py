@@ -1,8 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2025, VergeIO
-# MIT License
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
@@ -91,7 +91,7 @@ options:
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
-  - VergeIO
+  - VergeIO (@vergeio)
 '''
 
 EXAMPLES = r'''
@@ -168,17 +168,29 @@ import_info:
 
 import time
 from ansible.module_utils.basic import AnsibleModule
-from ansible.module_utils.six.moves.urllib.parse import quote
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
 
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
-def wait_for_import_completion(api, import_key, poll_interval, poll_timeout, module):
+
+def wait_for_import_completion(client, import_key, poll_interval, poll_timeout, module):
     """
     Poll the import status until it completes or times out.
+
+    Uses client._request() directly for raw API responses matching the
+    exact behavior of the original REST-based implementation.
 
     Returns the final import status dict when complete.
     """
@@ -192,10 +204,10 @@ def wait_for_import_completion(api, import_key, poll_interval, poll_timeout, mod
                 import_key=import_key
             )
 
-        # Query import status
+        # Query import status via raw API call
         try:
-            import_status = api.get(f"vm_imports/{import_key}")
-        except VergeOSAPIError as e:
+            import_status = client._request('GET', f'vm_imports/{import_key}')
+        except Exception as e:
             module.fail_json(
                 msg=f"Failed to query import status: {str(e)}",
                 import_key=import_key
@@ -238,24 +250,16 @@ def wait_for_import_completion(api, import_key, poll_interval, poll_timeout, mod
         time.sleep(poll_interval)
 
 
-def get_file_id_by_name(api, file_name):
-    """Look up file ID by name."""
+def get_file_by_name(client, file_name):
+    """Look up file by name using SDK."""
     try:
-        files = api.get('files')
-        if not isinstance(files, list):
-            files = [files] if files else []
-
-        for file_obj in files:
-            if file_obj.get('name') == file_name:
-                return str(file_obj.get('$key'))
-
-        return None
-    except VergeOSAPIError:
+        return client.files.get(name=file_name)
+    except NotFoundError:
         return None
 
 
-def create_vm_import(api, module):
-    """Create a new VM import and wait for completion."""
+def create_vm_import(client, module):
+    """Create a new VM import and wait for completion using SDK."""
     # Determine file_id from ova_file_id, ova_file_name, or deprecated file_id
     ova_file_id = module.params.get('ova_file_id')
     ova_file_name = module.params.get('ova_file_name')
@@ -265,9 +269,10 @@ def create_vm_import(api, module):
     if ova_file_id:
         file_id = ova_file_id
     elif ova_file_name:
-        file_id = get_file_id_by_name(api, ova_file_name)
-        if not file_id:
+        file_obj = get_file_by_name(client, ova_file_name)
+        if not file_obj:
             module.fail_json(msg=f"OVA file '{ova_file_name}' not found in VergeOS files")
+        file_id = str(dict(file_obj).get('$key'))
     elif deprecated_file_id:
         file_id = deprecated_file_id
         module.warn("Parameter 'file_id' is deprecated, use 'ova_file_id' instead")
@@ -276,7 +281,8 @@ def create_vm_import(api, module):
 
     name = module.params['name']
 
-    # Build import payload
+    # Build import payload - use raw API format matching the VergeOS REST API.
+    # The 'importing' field tells the API to start importing immediately.
     payload = {
         'file': file_id,
         'name': name,
@@ -307,16 +313,17 @@ def create_vm_import(api, module):
             payload=payload
         )
 
-    # Create the import
+    # Create the import via raw API call (SDK create() doesn't support
+    # the 'importing' field that auto-starts the import process)
     try:
-        response = api.post('vm_imports', payload)
-    except VergeOSAPIError as e:
+        response = client._request('POST', 'vm_imports', json_data=payload)
+    except Exception as e:
         module.fail_json(msg=f"Failed to create VM import: {str(e)}")
 
     # Extract import key
     import_key = response.get('$key')
     vm_response = response.get('response', {})
-    vm_id = vm_response.get('$key')
+    vm_id = vm_response.get('$key') if isinstance(vm_response, dict) else None
 
     if not import_key:
         module.fail_json(
@@ -326,7 +333,7 @@ def create_vm_import(api, module):
 
     # Wait for import to complete
     final_status = wait_for_import_completion(
-        api,
+        client,
         import_key,
         module.params['poll_interval'],
         module.params['poll_timeout'],
@@ -359,34 +366,24 @@ def create_vm_import(api, module):
     module.exit_json(**result)
 
 
-def delete_vm_import(api, module):
-    """Delete a VM import record."""
+def delete_vm_import(client, module):
+    """Delete a VM import record using SDK."""
     # We need to find the import by name since we don't have the key
     name = module.params['name']
 
     try:
-        # Query imports to find by name
-        imports = api.get(f"vm_imports?name={name}")
+        import_obj = client.vm_imports.get(name=name)
+    except NotFoundError:
+        module.exit_json(changed=False, msg="Import not found")
 
-        if not imports:
-            module.exit_json(changed=False, msg="Import not found")
+    import_key = str(dict(import_obj).get('$key'))
 
-        # Get the first matching import
-        import_record = imports[0] if isinstance(imports, list) else imports
-        import_key = import_record.get('id') or import_record.get('$key')
+    if module.check_mode:
+        module.exit_json(changed=True, msg="Would delete import (check mode)")
 
-        if not import_key:
-            module.fail_json(msg="Could not determine import key")
-
-        if module.check_mode:
-            module.exit_json(changed=True, msg="Would delete import (check mode)")
-
-        # Delete the import
-        api.delete(f"vm_imports/{import_key}")
-        module.exit_json(changed=True, msg="Import deleted", import_key=import_key)
-
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to delete import: {str(e)}")
+    # Delete the import
+    import_obj.delete()
+    module.exit_json(changed=True, msg="Import deleted", import_key=import_key)
 
 
 def main():
@@ -426,15 +423,17 @@ def main():
         ],
     )
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
 
     try:
         if module.params['state'] == 'present':
-            create_vm_import(api, module)
+            create_vm_import(client, module)
         else:
-            delete_vm_import(api, module)
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+            delete_vm_import(client, module)
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
+    except Exception as e:
+        module.fail_json(msg=f"Unexpected error: {str(e)}")
 
 
 if __name__ == '__main__':

@@ -1,8 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2025, VergeIO
-# MIT License
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
@@ -79,7 +79,7 @@ options:
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
-  - VergeIO
+  - VergeIO (@vergeio)
 '''
 
 EXAMPLES = r'''
@@ -156,153 +156,152 @@ changed:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
 
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
-def get_vm(api, name):
-    """Get VM by name"""
+
+def get_vm(client, name):
+    """Get VM by name using SDK"""
     try:
-        vms = api.get('vms')
-        for vm in vms:
-            if vm.get('name') == name:
-                return vm
-        return None
-    except VergeOSAPIError as e:
+        return client.vms.get(name=name)
+    except NotFoundError:
         return None
 
 
-def create_vm(module, api):
-    """Create a new VM"""
+def build_vm_data(module):
+    """Build VM data dict from module params"""
     vm_data = {
         'name': module.params['name'],
     }
 
-    if module.params.get('description'):
-        vm_data['description'] = module.params['description']
-    if module.params.get('enabled') is not None:
-        vm_data['enabled'] = module.params['enabled']
-    if module.params.get('os_family'):
-        vm_data['os_family'] = module.params['os_family']
-    if module.params.get('cpu_cores'):
-        vm_data['cpu_cores'] = module.params['cpu_cores']
-    if module.params.get('ram'):
-        vm_data['ram'] = module.params['ram']
-    if module.params.get('machine_type'):
-        vm_data['machine_type'] = module.params['machine_type']
-    if module.params.get('machine_subtype'):
-        vm_data['machine_subtype'] = module.params['machine_subtype']
-    if module.params.get('bios_type'):
-        vm_data['bios_type'] = module.params['bios_type']
-    if module.params.get('network'):
-        vm_data['network'] = module.params['network']
-    if module.params.get('boot_order'):
-        vm_data['boot_order'] = module.params['boot_order']
+    optional_fields = [
+        'description', 'enabled', 'os_family', 'cpu_cores',
+        'ram', 'machine_type', 'machine_subtype', 'bios_type',
+        'network', 'boot_order'
+    ]
+
+    for field in optional_fields:
+        if module.params.get(field) is not None:
+            vm_data[field] = module.params[field]
+
+    return vm_data
+
+
+def create_vm(module, client):
+    """Create a new VM using SDK"""
+    vm_data = build_vm_data(module)
 
     if module.check_mode:
         return True, vm_data
 
-    try:
-        result = api.post('vms', vm_data)
-        return True, result
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to create VM: {str(e)}")
+    vm = client.vms.create(**vm_data)
+    return True, dict(vm)
 
 
-def update_vm(module, api, vm):
-    """Update an existing VM"""
+def update_vm(module, client, vm):
+    """Update an existing VM using SDK"""
     changed = False
     update_data = {}
 
     # Check which fields need updating
-    fields_to_check = ['description', 'enabled', 'os_family', 'cpu_cores',
-                      'ram', 'machine_type', 'machine_subtype', 'bios_type',
-                      'network', 'boot_order']
+    fields_to_check = [
+        'description', 'enabled', 'os_family', 'cpu_cores',
+        'ram', 'machine_type', 'machine_subtype', 'bios_type',
+        'network', 'boot_order'
+    ]
 
+    vm_dict = dict(vm)
     for field in fields_to_check:
         if module.params.get(field) is not None:
-            if vm.get(field) != module.params[field]:
+            if vm_dict.get(field) != module.params[field]:
                 update_data[field] = module.params[field]
                 changed = True
 
     if not changed:
-        return False, vm
+        return False, vm_dict
 
     if module.check_mode:
-        vm.update(update_data)
-        return True, vm
+        vm_dict.update(update_data)
+        return True, vm_dict
 
-    try:
-        vm_key = vm.get('$key')
-        result = api.put(f'vms/{vm_key}', update_data)
-        return True, result
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to update VM: {str(e)}")
+    # Update VM attributes and save
+    for key, value in update_data.items():
+        setattr(vm, key, value)
+    vm.save()
+    return True, dict(vm)
 
 
-def delete_vm(module, api, vm):
-    """Delete a VM"""
+def delete_vm(module, client, vm):
+    """Delete a VM using SDK"""
     if module.check_mode:
         return True
 
-    try:
-        vm_key = vm.get('$key')
-        api.delete(f'vms/{vm_key}')
-        return True
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to delete VM: {str(e)}")
+    vm.delete()
+    return True
 
 
-def power_on_vm(module, api, vm):
-    """Power on a VM"""
-    if vm.get('power_state') == 'running':
-        return False, vm
+def power_on_vm(module, client, vm):
+    """Power on a VM using SDK"""
+    vm_dict = dict(vm)
+    if vm_dict.get('status') == 'running' or vm_dict.get('running'):
+        return False, vm_dict
 
     if module.check_mode:
-        vm['power_state'] = 'running'
-        return True, vm
+        vm_dict['status'] = 'running'
+        return True, vm_dict
 
-    try:
-        vm_key = vm.get('$key')
-        action_data = {
-            'vm': vm_key,
-            'action': 'poweron'
-        }
-        result = api.post('vm_actions', action_data)
-        return True, vm
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to power on VM: {str(e)}")
+    vm.power_on()
+    # Wait for VM to start (up to 60 seconds)
+    import time
+    for _attempt in range(30):
+        time.sleep(2)
+        vm.refresh()
+        if dict(vm).get('status') == 'running':
+            break
+    return True, dict(vm)
 
 
-def power_off_vm(module, api, vm):
-    """Power off a VM"""
-    if vm.get('power_state') == 'stopped':
-        return False, vm
+def power_off_vm(module, client, vm):
+    """Power off a VM using SDK"""
+    vm_dict = dict(vm)
+    if vm_dict.get('status') == 'stopped' and not vm_dict.get('running'):
+        return False, vm_dict
 
     if module.check_mode:
-        vm['power_state'] = 'stopped'
-        return True, vm
+        vm_dict['status'] = 'stopped'
+        return True, vm_dict
 
-    try:
-        vm_key = vm.get('$key')
-        action_data = {
-            'vm': vm_key,
-            'action': 'poweroff'
-        }
-        result = api.post('vm_actions', action_data)
-        return True, vm
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to power off VM: {str(e)}")
+    vm.power_off(force=True)
+    # Wait for VM to stop (up to 60 seconds)
+    import time
+    for _attempt in range(30):
+        time.sleep(2)
+        vm.refresh()
+        if dict(vm).get('status') == 'stopped':
+            break
+    return True, dict(vm)
 
 
 def main():
     argument_spec = vergeos_argument_spec()
     argument_spec.update(
         name=dict(type='str', required=True),
-        state=dict(type='str', default='present',
-                  choices=['present', 'absent', 'running', 'stopped']),
+        state=dict(
+            type='str', default='present',
+            choices=['present', 'absent', 'running', 'stopped']
+        ),
         description=dict(type='str'),
         enabled=dict(type='bool', default=True),
         os_family=dict(type='str', choices=['linux', 'windows', 'other']),
@@ -320,17 +319,17 @@ def main():
         supports_check_mode=True
     )
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
     name = module.params['name']
     state = module.params['state']
 
     try:
         # Get existing VM
-        vm = get_vm(api, name)
+        vm = get_vm(client, name)
 
         if state == 'absent':
             if vm:
-                delete_vm(module, api, vm)
+                delete_vm(module, client, vm)
                 module.exit_json(changed=True, msg=f"VM '{name}' deleted")
             else:
                 module.exit_json(changed=False, msg=f"VM '{name}' does not exist")
@@ -338,32 +337,34 @@ def main():
         elif state == 'present':
             if vm:
                 # Update existing VM
-                changed, updated_vm = update_vm(module, api, vm)
+                changed, updated_vm = update_vm(module, client, vm)
                 module.exit_json(changed=changed, vm=updated_vm)
             else:
                 # Create new VM
-                changed, new_vm = create_vm(module, api)
+                changed, new_vm = create_vm(module, client)
                 module.exit_json(changed=changed, vm=new_vm)
 
         elif state == 'running':
             if not vm:
                 # Create VM first
-                changed, vm = create_vm(module, api)
+                changed, vm_data = create_vm(module, client)
                 # Re-fetch VM after creation (skip in check mode)
                 if not module.check_mode:
-                    vm = get_vm(api, name)
+                    vm = get_vm(client, name)
+                else:
+                    vm = None
             else:
                 # Check if updates needed
-                update_changed, updated_vm = update_vm(module, api, vm)
+                update_changed, updated_vm = update_vm(module, client, vm)
                 changed = update_changed
                 # Re-fetch VM after update to get fresh state (skip in check mode)
                 if update_changed and not module.check_mode:
-                    vm = get_vm(api, name)
+                    vm = get_vm(client, name)
 
             # Ensure VM is running (only if we have a VM object)
             if vm:
-                power_changed, vm = power_on_vm(module, api, vm)
-                module.exit_json(changed=changed or power_changed, vm=vm)
+                power_changed, vm_dict = power_on_vm(module, client, vm)
+                module.exit_json(changed=changed or power_changed, vm=vm_dict)
             else:
                 # Check mode - no actual VM object
                 module.exit_json(changed=True, msg=f"Would power on VM '{name}' (check mode)")
@@ -373,17 +374,17 @@ def main():
                 module.fail_json(msg=f"VM '{name}' does not exist")
 
             # Check if updates needed
-            update_changed, updated_vm = update_vm(module, api, vm)
+            update_changed, updated_vm = update_vm(module, client, vm)
             # Re-fetch VM after update to get fresh state
-            if update_changed:
-                vm = get_vm(api, name)
+            if update_changed and not module.check_mode:
+                vm = get_vm(client, name)
 
             # Ensure VM is stopped
-            power_changed, vm = power_off_vm(module, api, vm)
-            module.exit_json(changed=update_changed or power_changed, vm=vm)
+            power_changed, vm_dict = power_off_vm(module, client, vm)
+            module.exit_json(changed=update_changed or power_changed, vm=vm_dict)
 
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
     except Exception as e:
         module.fail_json(msg=f"Unexpected error: {str(e)}")
 

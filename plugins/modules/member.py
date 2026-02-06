@@ -1,8 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2025, VergeIO
-# MIT License
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
@@ -21,11 +21,12 @@ options:
       - The name of the group.
     type: str
     required: true
-  username:
+  name:
     description:
       - The username of the member to add/remove.
     type: str
     required: true
+    aliases: [ member_name ]
   state:
     description:
       - The desired state of the membership.
@@ -35,26 +36,20 @@ options:
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
-  - VergeIO
+  - VergeIO (@vergeio)
 '''
 
 EXAMPLES = r'''
 - name: Add a member to a group
   vergeio.vergeos.member:
-    host: "192.168.1.100"
-    username: "admin"
-    password: "password"
     group: "engineering"
-    username: "john.doe"
+    name: "john.doe"
     state: present
 
 - name: Remove a member from group
   vergeio.vergeos.member:
-    host: "192.168.1.100"
-    username: "admin"
-    password: "password"
     group: "engineering"
-    username: "old.member"
+    name: "old.member"
     state: absent
 '''
 
@@ -71,91 +66,81 @@ member:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
-    VergeOSAPI,
-    VergeOSAPIError,
-    vergeos_argument_spec
+    get_vergeos_client,
+    sdk_error_handler,
+    vergeos_argument_spec,
+    HAS_PYVERGEOS,
 )
 
+if HAS_PYVERGEOS:
+    from pyvergeos.exceptions import (
+        NotFoundError,
+        AuthenticationError,
+        ValidationError,
+        APIError,
+        VergeConnectionError,
+    )
 
-def get_group_key(api, group_name):
-    """Get group key by name"""
+
+def get_group(client, group_name):
+    """Get group by name using SDK"""
     try:
-        groups = api.get('groups')
-        for group in groups:
-            if group.get('name') == group_name:
-                return group.get('$key')
-        return None
-    except VergeOSAPIError:
+        return client.groups.get(name=group_name)
+    except NotFoundError:
         return None
 
 
-def get_user_name(api, username):
-    """Verify user exists and return username"""
+def get_user(client, username):
+    """Verify user exists using SDK"""
     try:
-        users = api.get('users')
-        for user in users:
-            if user.get('username') == username:
-                return user.get('username')
-        return None
-    except VergeOSAPIError:
+        return client.users.get(username=username)
+    except NotFoundError:
         return None
 
 
-def get_member(api, group_key, member_username):
-    """Get member by group and username"""
+def get_member(client, group, member_username):
+    """Get member by group and username using SDK"""
     try:
-        # Get all members for this group
-        members = api.get('members')
+        members = list(group.members.list())
         for member in members:
-            if member.get('parent_group') == group_key and member.get('member') == member_username:
+            member_dict = dict(member)
+            if member_dict.get('member') == member_username:
                 return member
         return None
-    except VergeOSAPIError:
+    except (NotFoundError, AttributeError):
         return None
 
 
-def add_member(module, api, group_key, member_username):
-    """Add a member to a group"""
-    member_data = {
-        'parent_group': group_key,
-        'member': member_username,
-    }
-
+def add_member(module, client, group, member_username):
+    """Add a member to a group using SDK"""
     if module.check_mode:
-        return True, member_data
+        return True, {'member': member_username}
 
-    try:
-        result = api.post('members', member_data)
-        return True, result
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to add member: {str(e)}")
+    member = group.members.create(member=member_username)
+    return True, dict(member)
 
 
-def update_member(module, api, member):
-    """Update a member"""
+def update_member(module, client, member):
+    """Update a member using SDK"""
     # Note: Based on Terraform provider, members don't have updatable fields beyond parent_group and member
     # This function is kept for consistency but may not need to do anything
-    return False, member
+    return False, dict(member)
 
 
-def remove_member(module, api, member):
-    """Remove a member from a group"""
+def remove_member(module, client, member):
+    """Remove a member from a group using SDK"""
     if module.check_mode:
         return True
 
-    try:
-        member_key = member.get('$key')
-        api.delete(f'members/{member_key}')
-        return True
-    except VergeOSAPIError as e:
-        module.fail_json(msg=f"Failed to remove member: {str(e)}")
+    member.delete()
+    return True
 
 
 def main():
     argument_spec = vergeos_argument_spec()
     argument_spec.update(
         group=dict(type='str', required=True),
-        username=dict(type='str', required=True),
+        name=dict(type='str', required=True, aliases=['member_name']),
         state=dict(type='str', default='present', choices=['present', 'absent']),
     )
 
@@ -164,42 +149,42 @@ def main():
         supports_check_mode=True
     )
 
-    api = VergeOSAPI(module)
+    client = get_vergeos_client(module)
     group_name = module.params['group']
-    member_username = module.params['username']
+    member_username = module.params['name']
     state = module.params['state']
 
     try:
-        # Get group key
-        group_key = get_group_key(api, group_name)
-        if not group_key:
+        # Get group
+        group = get_group(client, group_name)
+        if not group:
             module.fail_json(msg=f"Group '{group_name}' not found")
 
         # Verify user exists
-        user_exists = get_user_name(api, member_username)
-        if not user_exists:
+        user = get_user(client, member_username)
+        if not user:
             module.fail_json(msg=f"User '{member_username}' not found")
 
         # Get existing member
-        member = get_member(api, group_key, member_username)
+        member = get_member(client, group, member_username)
 
         if state == 'absent':
             if member:
-                remove_member(module, api, member)
+                remove_member(module, client, member)
                 module.exit_json(changed=True, msg=f"Member '{member_username}' removed from group '{group_name}'")
             else:
                 module.exit_json(changed=False, msg="Member does not exist in group")
 
         elif state == 'present':
             if member:
-                changed, updated_member = update_member(module, api, member)
+                changed, updated_member = update_member(module, client, member)
                 module.exit_json(changed=changed, member=updated_member)
             else:
-                changed, new_member = add_member(module, api, group_key, member_username)
+                changed, new_member = add_member(module, client, group, member_username)
                 module.exit_json(changed=changed, member=new_member)
 
-    except VergeOSAPIError as e:
-        module.fail_json(msg=str(e))
+    except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
     except Exception as e:
         module.fail_json(msg=f"Unexpected error: {str(e)}")
 

@@ -1,0 +1,163 @@
+---
+# Integration tests for vergeio.vergeos.vm module
+# Requires VERGEOS_HOST, VERGEOS_USERNAME, VERGEOS_PASSWORD environment variables
+
+- name: Set test VM name
+  ansible.builtin.set_fact:
+    test_vm_name: "ansible-test-vm-{{ lookup('pipe', 'date +%s') }}"
+
+# Test: Create VM
+- name: Create a test VM
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: present
+    description: "Integration test VM"
+    enabled: true
+    os_family: linux
+    cpu_cores: 2
+    ram: 2048
+    machine_type: q35
+  register: create_result
+
+- name: Verify VM was created
+  ansible.builtin.assert:
+    that:
+      - create_result.changed
+      - create_result.vm is defined
+      - create_result.vm.name == test_vm_name
+      - create_result.vm.cpu_cores == 2
+      - create_result.vm.ram == 2048
+    fail_msg: "VM creation failed"
+
+# Test: Idempotency - Create same VM again
+- name: Create same VM again (idempotency check)
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: present
+    cpu_cores: 2
+    ram: 2048
+  register: idempotent_result
+
+- name: Verify no change on second create
+  ansible.builtin.assert:
+    that:
+      - not idempotent_result.changed
+    fail_msg: "VM creation was not idempotent"
+
+# Test: Update VM
+- name: Update VM resources
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: present
+    cpu_cores: 4
+    ram: 4096
+  register: update_result
+
+- name: Verify VM was updated
+  ansible.builtin.assert:
+    that:
+      - update_result.changed
+      - update_result.vm.cpu_cores == 4
+      - update_result.vm.ram == 4096
+    fail_msg: "VM update failed"
+
+# Test: Get VM info
+- name: Get VM information
+  vergeio.vergeos.vm_info:
+    name: "{{ test_vm_name }}"
+  register: info_result
+
+- name: Verify VM info returned
+  ansible.builtin.assert:
+    that:
+      - info_result.vms | length == 1
+      - info_result.vms[0].name == test_vm_name
+    fail_msg: "VM info retrieval failed"
+
+# Test: Power operations (if VM supports it)
+- name: Power on VM
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: running
+  register: power_on_result
+
+- name: Verify power on
+  ansible.builtin.assert:
+    that:
+      - power_on_result.vm is defined
+    fail_msg: "VM power on failed"
+
+- name: Wait for VM to start
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Power off VM
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: stopped
+  register: power_off_result
+
+- name: Verify power off
+  ansible.builtin.assert:
+    that:
+      - power_off_result.vm is defined
+    fail_msg: "VM power off failed"
+
+- name: Wait for VM to be fully stopped
+  vergeio.vergeos.vm_info:
+    name: "{{ test_vm_name }}"
+  register: vm_status
+  until: vm_status.vms | length > 0 and vm_status.vms[0].status == 'stopped'
+  retries: 30
+  delay: 2
+
+# Test: Check mode
+- name: Delete VM (check mode)
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: absent
+  check_mode: true
+  register: check_mode_result
+
+- name: Verify check mode reports change
+  ansible.builtin.assert:
+    that:
+      - check_mode_result.changed
+    fail_msg: "Check mode did not report change"
+
+- name: Verify VM still exists after check mode
+  vergeio.vergeos.vm_info:
+    name: "{{ test_vm_name }}"
+  register: verify_exists
+
+- name: Verify VM was not deleted in check mode
+  ansible.builtin.assert:
+    that:
+      - verify_exists.vms | length == 1
+    fail_msg: "VM was deleted during check mode"
+
+# Cleanup: Delete test VM
+- name: Delete test VM
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: absent
+  register: delete_result
+
+- name: Verify VM was deleted
+  ansible.builtin.assert:
+    that:
+      - delete_result.changed
+    fail_msg: "VM deletion failed"
+
+# Test: Delete non-existent VM (idempotency)
+- name: Delete non-existent VM
+  vergeio.vergeos.vm:
+    name: "{{ test_vm_name }}"
+    state: absent
+  register: delete_again_result
+
+- name: Verify no change when deleting non-existent VM
+  ansible.builtin.assert:
+    that:
+      - not delete_again_result.changed
+    fail_msg: "Deleting non-existent VM was not idempotent"

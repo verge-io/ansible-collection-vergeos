@@ -1,0 +1,90 @@
+---
+# Integration tests for vergeio.vergeos.network module
+# Requires VERGEOS_HOST, VERGEOS_USERNAME, VERGEOS_PASSWORD environment variables
+
+- name: Set test network name
+  ansible.builtin.set_fact:
+    test_network_name: "ansible-test-net-{{ lookup('pipe', 'date +%s') }}"
+
+# Test: Create network
+- name: Create a test network
+  vergeio.vergeos.network:
+    name: "{{ test_network_name }}"
+    state: present
+    description: "Integration test network"
+  register: create_result
+
+- name: Verify network was created
+  ansible.builtin.assert:
+    that:
+      - create_result.changed
+      - create_result.network is defined
+      - create_result.network.name == test_network_name
+    fail_msg: "Network creation failed"
+
+# Test: Idempotency
+- name: Create same network again (idempotency check)
+  vergeio.vergeos.network:
+    name: "{{ test_network_name }}"
+    state: present
+    description: "Integration test network"
+  register: idempotent_result
+
+- name: Verify no change on second create
+  ansible.builtin.assert:
+    that:
+      - not idempotent_result.changed
+    fail_msg: "Network creation was not idempotent"
+
+# Test: Get network info
+- name: Get network information
+  vergeio.vergeos.network_info:
+    name: "{{ test_network_name }}"
+  register: info_result
+
+- name: Verify network info returned
+  ansible.builtin.assert:
+    that:
+      - info_result.networks | length == 1
+      - info_result.networks[0].name == test_network_name
+    fail_msg: "Network info retrieval failed"
+
+# Test: Update network
+- name: Update network description
+  vergeio.vergeos.network:
+    name: "{{ test_network_name }}"
+    state: present
+    description: "Updated integration test network"
+  register: update_result
+
+- name: Verify network was updated
+  ansible.builtin.assert:
+    that:
+      - update_result.changed
+    fail_msg: "Network update failed"
+
+# Cleanup: Delete test network
+- name: Delete test network
+  vergeio.vergeos.network:
+    name: "{{ test_network_name }}"
+    state: absent
+  register: delete_result
+
+- name: Verify network was deleted
+  ansible.builtin.assert:
+    that:
+      - delete_result.changed
+    fail_msg: "Network deletion failed"
+
+# Test: Delete non-existent network (idempotency)
+- name: Delete non-existent network
+  vergeio.vergeos.network:
+    name: "{{ test_network_name }}"
+    state: absent
+  register: delete_again_result
+
+- name: Verify no change when deleting non-existent network
+  ansible.builtin.assert:
+    that:
+      - not delete_again_result.changed
+    fail_msg: "Deleting non-existent network was not idempotent"

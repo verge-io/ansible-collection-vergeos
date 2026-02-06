@@ -4,17 +4,17 @@
   gather_facts: false
 
   vars:
-    vergeos_host: "{{ lookup('env', 'VERGEOS_HOST') | default('192.168.1.100') }}"
-    vergeos_username: "{{ lookup('env', 'VERGEOS_USERNAME') | default('admin') }}"
-    vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') | default('password') }}"
+    vergeos_host: "{{ lookup('env', 'VERGEOS_HOST') | default('vergeos.example.com', true) }}"
+    vergeos_username: "{{ lookup('env', 'VERGEOS_USERNAME') | default('admin', true) }}"
+    vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
     vergeos_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true) }}"
 
   tasks:
     - name: Validate required variables
       ansible.builtin.assert:
         that:
-          - snapshot_id is defined or snapshot_name is defined
-        fail_msg: "Either snapshot_id or snapshot_name must be provided via -e"
+          - snapshot_id is defined
+        fail_msg: "snapshot_id must be provided via -e (e.g., -e snapshot_id=123)"
 
     - name: Delete snapshot by ID
       vergeio.vergeos.vm_snapshot:

@@ -1,0 +1,51 @@
+---
+# Integration tests for vergeio.vergeos.network_info module
+
+- name: "network_info: Get all networks"
+  vergeio.vergeos.network_info:
+  register: all_networks
+
+- name: "network_info: Verify results"
+  ansible.builtin.assert:
+    that:
+      - all_networks is not changed
+      - all_networks.networks is defined
+      - all_networks.networks | length >= 1
+    fail_msg: "network_info did not return expected results"
+
+- name: "network_info: Display network count"
+  ansible.builtin.debug:
+    msg: "Found {{ all_networks.networks | length }} network(s)"
+
+# Store first network name for specific lookup test
+- name: "network_info: Store first network name"
+  ansible.builtin.set_fact:
+    first_network_name: "{{ all_networks.networks[0].name }}"
+  when: all_networks.networks | length > 0
+
+- name: "network_info: Get specific network by name"
+  vergeio.vergeos.network_info:
+    name: "{{ first_network_name }}"
+  register: specific_network
+  when: first_network_name is defined
+
+- name: "network_info: Verify specific network lookup"
+  ansible.builtin.assert:
+    that:
+      - specific_network is not changed
+      - specific_network.networks | length == 1
+      - specific_network.networks[0].name == first_network_name
+    fail_msg: "network_info specific lookup failed"
+  when: first_network_name is defined
+
+- name: "network_info: Query non-existent network"
+  vergeio.vergeos.network_info:
+    name: "nonexistent-network-{{ test_timestamp }}"
+  register: missing_network
+
+- name: "network_info: Verify empty result for missing network"
+  ansible.builtin.assert:
+    that:
+      - missing_network is not changed
+      - missing_network.networks | length == 0
+    fail_msg: "network_info should return empty list for missing network"

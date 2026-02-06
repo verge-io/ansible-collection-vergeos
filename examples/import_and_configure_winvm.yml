@@ -4,10 +4,10 @@
   gather_facts: false
 
   vars:
-    vergeos_host: "192.168.1.216"
-    vergeos_username: "admin"
-    vergeos_password: "password"
-    vergeos_insecure: true
+    vergeos_host: "{{ lookup('env', 'VERGEOS_HOST') | default('vergeos.example.com', true) }}"
+    vergeos_username: "{{ lookup('env', 'VERGEOS_USERNAME') | default('admin', true) }}"
+    vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+    vergeos_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true) }}"
 
     # VM configuration
     vm_name: "win2022-server"
