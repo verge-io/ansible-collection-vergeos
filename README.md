@@ -201,7 +201,7 @@ ansible-playbook -i inventory.vergeos_vms.yml playbook.yml --limit tag_productio
 ansible-playbook -i inventory.vergeos_vms.yml playbook.yml --limit site_denver
 
 # Refresh cache
-ansible-inventory -i inventory.vergeos_vms.yml --list --refresh-cache
+ansible-inventory -i inventory.vergeos_vms.yml --list --flush-cache
 ```
 
 ## Tag Management
