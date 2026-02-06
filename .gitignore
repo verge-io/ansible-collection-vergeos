@@ -19,3 +19,7 @@ venv/
 
 # Temporary test files
 tests/integration/test_*.yml
+
+# Local inventory with credentials
+inventory/vergeos_vms.yml
+inventory/demo.vergeos_vms.yml
