@@ -1,0 +1,51 @@
+---
+# Manage per-user API keys (bearer tokens) as code.
+#
+# The secret is generated server-side and returned exactly once, at
+# creation — register the creating task with no_log and persist the
+# secret immediately; it cannot be retrieved later.
+
+- name: API keys as code
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vergeos_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+
+  tasks:
+    - name: Automation key with an IP allow list
+      vergeio.vergeos.api_key:
+        user: automation
+        name: ansible-runner
+        description: "key used by the Ansible control node"
+        ip_allow_list:
+          - 192.0.2.0/24
+        state: present
+      register: runner_key
+      no_log: true
+
+    - name: Persist the secret (only present on creation)
+      ansible.builtin.copy:
+        content: "{{ runner_key.secret }}"
+        dest: /root/.vergeos_token
+        mode: "0600"
+      when: runner_key.secret is defined
+      no_log: true
+
+    - name: Audit all keys (secrets are never returned)
+      vergeio.vergeos.api_key_info:
+      register: all_keys
+
+    - name: Show who has keys and when they were last used
+      ansible.builtin.debug:
+        msg: "{{ all_keys.api_keys
+                 | map(attribute='user_name') | zip(
+                   all_keys.api_keys | map(attribute='name'),
+                   all_keys.api_keys | map(attribute='last_login'))
+                 | list }}"
+
+    - name: Revoke a departed service's key
+      vergeio.vergeos.api_key:
+        user: automation
+        name: retired-service
+        state: absent
