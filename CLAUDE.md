@@ -39,6 +39,16 @@ This is an Ansible collection (`vergeio.vergeos`) for managing VergeOS infrastru
 - `sdk_error_handler(module, e)`: Maps SDK exceptions to `module.fail_json()` calls
 - `vergeos_argument_spec()`: Shared argument spec for authentication (host, username, password, insecure) with environment variable fallbacks
 
+### Recipe Module Utilities
+
+- `plugins/module_utils/recipe_answers.py`: pure answer-resolution and
+  simulate-log scanning. No Ansible, no pyvergeos, no network - so it is
+  directly unit-testable. Lifted from the platform `recipe_deploy` role.
+- `plugins/module_utils/vm_recipes.py`: the SDK-facing glue. Holds the
+  collection's only `client._request()` calls, because pyvergeos has no
+  `simulate` support and `vm_recipe_instances.create()` discards the POST
+  body that reports the new VM's key.
+
 ### Module Pattern
 
 All modules follow this structure:
@@ -52,6 +62,7 @@ All modules follow this structure:
 ### Modules
 
 - **VM**: `vm`, `vm_info`, `vm_import`, `vm_snapshot`
+- **Recipe**: `vm_recipe_info`, `vm_recipe_deploy`
 - **Network**: `network`, `network_info`, `nic`
 - **Storage**: `drive`
 - **Config**: `cloud_init`, `windows_unattend`

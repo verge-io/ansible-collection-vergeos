@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`vm_recipe_info` module**: list VM recipes, and return a recipe's question
+  set with the valid values of table-backed questions resolved from the tables
+  they point at. Recipe plumbing (hidden, `database_*`, `$database` section) is
+  reported separately from answerable questions, and questions carrying
+  credentials are named so callers can `no_log` them.
+- **`vm_recipe_deploy` module**: deploy a VM from a native VergeOS recipe.
+  Answers are validated against the recipe's own questions before anything is
+  created (unknown names, types, `min`/`max`/`regex`, table-backed choices,
+  network answers by name), then the deploy runs server-side as a simulation,
+  and only then for real. `check_mode` runs the validation and the simulation,
+  making it a real preflight rather than a guess. An existing VM of the target
+  name is the idempotence key.
+- **`module_utils/recipe_answers.py`**: answer resolution and simulate-log
+  scanning as pure functions, free of Ansible, pyvergeos and the network.
+- **`module_utils/vm_recipes.py`**: pyvergeos glue for the recipe modules.
+- **`examples/deploy_from_recipe.yml`**: discovery, preflight and deploy.
+
+### Notes
+
+- The simulated deploy is scanned rather than trusted. The API reports success
+  as `{"err": "Simulation complete"}` even when its own log contains failed
+  steps, so a deploy that would build a VM with no OS drive looks clean at the
+  top level.
+- Recipes and VMs are matched by name client-side rather than with a
+  server-side OData filter. The correct escaping for a name embedded in an
+  OData string literal is not settled: pyvergeos doubles `'` SQL-style, while
+  measurements against VergeOS 26.1.8 recorded backslash-escaping as the form
+  the platform accepts, with the doubled form returning
+  `{"err": "Invalid argument"}`. Getting it wrong does not raise - the query
+  silently matches nothing, or returns an error document a caller counts as a
+  result row. Matching client-side avoids the question entirely.
+
 ## [2.0.0] - 2026-02-02
 
 ### Breaking Changes
