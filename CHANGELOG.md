@@ -24,7 +24,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`module_utils/recipe_answers.py`**: answer resolution and simulate-log
   scanning as pure functions, free of Ansible, pyvergeos and the network.
 - **`module_utils/vm_recipes.py`**: pyvergeos glue for the recipe modules.
+- **`vm_drive_info` module**: a VM's drives with media type and import status,
+  optionally with per-drive IO counters. Separates out the drives the platform
+  has not finished building, folding together `media=import` and
+  `status=importing` - a drive can be the first without yet being the second,
+  and that window is what makes "wait for the absence of importing" return
+  before a download has started.
+- **`vm_nic_info` module**: a VM's NICs, separating out those attached to no
+  network at all - a state a VM reaches when a recipe's network question is
+  left unanswered, and one every other check passes on.
+- **`module_utils/machine.py`**: reads a VM's drives, NICs and drive IO
+  counters.
+- **`vm_from_recipe` role**: deploys a VM from a recipe and waits for it to be
+  usable rather than merely present. Two-phase drive-import waiting with
+  separate budgets, post-conditions on drives and NICs asserted on both the
+  deploy and convergence paths, and optional power-on and guest-boot proof.
+  This is the collection's first role, so `roles/` is new.
 - **`examples/deploy_from_recipe.yml`**: discovery, preflight and deploy.
+- **`examples/vm_from_recipe_role.yml`**: the same via the role, waiting for a
+  bootable VM.
 
 ### Notes
 
@@ -32,6 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as `{"err": "Simulation complete"}` even when its own log contains failed
   steps, so a deploy that would build a VM with no OS drive looks clean at the
   top level.
+- A guest-boot proof must watch disk WRITES. On a VM that never boots the
+  firmware still reads the boot sector and sends a few DHCP packets, so read
+  counters and NIC transmit counters both move off zero on a guest sitting at
+  "no bootable device". Measured on a 26.1.8 system four minutes after
+  power-on, a booted guest against an identically configured VM with a blank
+  drive - `write_bytes` 419 MB versus 0, `read_bytes` 410 MB versus 512.
+- `machine_drive_stats` rows are addressed by a filter on `parent_drive`,
+  never by row position: `machine_drive_stats/<n>` resolves to the row whose
+  own `$key` is n, which belongs to a different drive. Measured on a 26.1.8
+  system, `$key` 34 carried `parent_drive` 39, and a positional read reported
+  809 MB of writes on a VM that had never been powered on.
 - Recipes and VMs are matched by name client-side rather than with a
   server-side OData filter. The correct escaping for a name embedded in an
   OData string literal is not settled: pyvergeos doubles `'` SQL-style, while

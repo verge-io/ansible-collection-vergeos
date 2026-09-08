@@ -44,10 +44,15 @@ This is an Ansible collection (`vergeio.vergeos`) for managing VergeOS infrastru
 - `plugins/module_utils/recipe_answers.py`: pure answer-resolution and
   simulate-log scanning. No Ansible, no pyvergeos, no network - so it is
   directly unit-testable. Lifted from the platform `recipe_deploy` role.
-- `plugins/module_utils/vm_recipes.py`: the SDK-facing glue. Holds the
-  collection's only `client._request()` calls, because pyvergeos has no
-  `simulate` support and `vm_recipe_instances.create()` discards the POST
-  body that reports the new VM's key.
+- `plugins/module_utils/vm_recipes.py`: the SDK-facing glue. Holds
+  `client._request()` calls because pyvergeos has no `simulate` support and
+  `vm_recipe_instances.create()` discards the POST body that reports the
+  new VM's key.
+- `plugins/module_utils/machine.py`: reads a VM's drives and NICs (public
+  SDK managers) and their IO counters (no public manager for
+  `machine_drive_stats`, so read directly - and addressed by a filter on
+  `parent_drive`, never by row position, because the row whose own `$key`
+  is N belongs to a different drive).
 
 ### Module Pattern
 
@@ -63,6 +68,7 @@ All modules follow this structure:
 
 - **VM**: `vm`, `vm_info`, `vm_import`, `vm_snapshot`
 - **Recipe**: `vm_recipe_info`, `vm_recipe_deploy`
+- **Machine hardware**: `vm_drive_info`, `vm_nic_info`
 - **Network**: `network`, `network_info`, `nic`
 - **Storage**: `drive`
 - **Config**: `cloud_init`, `windows_unattend`
@@ -78,6 +84,18 @@ Multi-site dynamic inventory with:
 - Host variables: site info, VM identification, timestamps (created/modified), machine_type, status, resources, OS, organization (tenant/cluster/node), tags, NICs, MAC addresses, drives, IP
 - JSON file caching (recommended: 1 hour timeout)
 - Hostname templating
+
+### Roles (`roles/`)
+
+- **`vm_from_recipe`**: deploys a VM from a recipe and waits for it to be
+  usable - drive-import waiting in two phases, post-conditions on drives
+  and NICs, optional power-on and guest-boot proof. The deploy itself is
+  one `vm_recipe_deploy` call; the role is everything after it, because
+  the deploy is asynchronous.
+- Role tasks gate on the VM key the deploy module reports, not on
+  `ansible_check_mode`: the latter reads false inside a caller's
+  `check_mode: true` block, so a role gated on it polls for a VM that was
+  never going to exist.
 
 ### Documentation Fragment (`plugins/doc_fragments/vergeos.py`)
 

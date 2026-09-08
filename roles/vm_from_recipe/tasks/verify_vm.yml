@@ -1,0 +1,100 @@
+---
+# Post-conditions on the VM this role is reporting on.
+#
+# These are checked against the built VM itself rather than against a deploy
+# log, because there is no per-deploy step log in this API. The recipe log
+# table records recipe DOWNLOADS, not deploy steps, so a check against it
+# matches nothing every time -- a green light wired to nothing. The VM is the
+# thing the caller cares about anyway: a recipe whose drive step failed leaves
+# a VM row with no drives, and that is the exact shape this role exists not to
+# report as success.
+
+- name: Read the drives the recipe actually built
+  vergeio.vergeos.vm_drive_info:
+    host: "{{ vm_from_recipe_host }}"
+    username: "{{ vm_from_recipe_username }}"
+    password: "{{ vm_from_recipe_password }}"
+    insecure: "{{ vm_from_recipe_insecure }}"
+    vm: "{{ vm_from_recipe_name }}"
+  register: vm_from_recipe_built_drives
+  changed_when: false
+  when: vm_from_recipe_verify_drives | bool
+
+- name: The VM must have at least one drive
+  ansible.builtin.assert:
+    that: vm_from_recipe_built_drives.drives | default([]) | length > 0
+    fail_msg: >-
+      VM '{{ vm_from_recipe_name }}' (key {{ vm_from_recipe_deploy.vm_key }})
+      has no drives, so a recipe step failed after the VM row appeared. It
+      cannot boot.
+    quiet: true
+  when: vm_from_recipe_verify_drives | bool
+
+- name: No drive may still be importing
+  ansible.builtin.assert:
+    that: vm_from_recipe_built_drives.importing | default([]) | length == 0
+    fail_msg: >-
+      VM '{{ vm_from_recipe_name }}' still has drives importing after
+      {{ vm_from_recipe_wait_timeout }}s:
+      {{ vm_from_recipe_built_drives.importing | map(attribute='name') | list }}.
+      The platform reports: {{ vm_from_recipe_progress | join(' / ') }}.
+      Raise vm_from_recipe_wait_timeout if that is simply slow rather than
+      stuck.
+    quiet: true
+  vars:
+    # status_info carries the source URL and a live percentage, e.g.
+    # "Downloading '...generic-amd64.qcow2' (73% - 257MB / 348MB)". Discarding
+    # it leaves the operator unable to tell 2% from 99%, or a slow mirror from
+    # a dead one -- and every import that has ever timed out here was merely
+    # slow.
+    vm_from_recipe_progress: >-
+      {{ vm_from_recipe_built_drives.importing | default([])
+         | map(attribute='status_info') | select('string')
+         | reject('equalto', '') | list | default(['no progress reported'], true) }}
+  when:
+    - vm_from_recipe_verify_drives | bool
+    - vm_from_recipe_wait_for_drives | bool
+
+# ── NICs ─────────────────────────────────────────────────────────────────────
+# Same shape as the drive check, and found the same way: a real deploy produced
+# a VM whose eth0 was attached to NOTHING, and every other check passed. The
+# recipe's network question was left unanswered because its default is
+# non-empty, and defaults are not sent on the grounds that the platform applies
+# them. For network questions it demonstrably does not.
+#
+# Answering the question explicitly is the narrower fix, and the docs say so --
+# but this post-condition holds regardless of why a NIC ended up detached.
+- name: Read the NICs the recipe actually built
+  vergeio.vergeos.vm_nic_info:
+    host: "{{ vm_from_recipe_host }}"
+    username: "{{ vm_from_recipe_username }}"
+    password: "{{ vm_from_recipe_password }}"
+    insecure: "{{ vm_from_recipe_insecure }}"
+    vm: "{{ vm_from_recipe_name }}"
+  register: vm_from_recipe_built_nics
+  changed_when: false
+  when: vm_from_recipe_verify_nics | bool
+
+- name: Every NIC must be attached to a network
+  ansible.builtin.assert:
+    that: vm_from_recipe_built_nics.detached | default([]) | length == 0
+    fail_msg: >-
+      VM '{{ vm_from_recipe_name }}' has NIC(s) attached to no network:
+      {{ vm_from_recipe_built_nics.detached | map(attribute='name') | list }}.
+      The recipe's network question was probably left unanswered -- answer it
+      explicitly rather than relying on its default.
+    quiet: true
+  when: vm_from_recipe_verify_nics | bool
+
+- name: Report what the recipe built
+  ansible.builtin.debug:
+    msg:
+      drives: >-
+        {{ vm_from_recipe_built_drives.drives | default([])
+           | map(attribute='name') | list }}
+      nics: >-
+        {{ vm_from_recipe_built_nics.nics | default([])
+           | map(attribute='name') | list }}
+      on_networks: >-
+        {{ vm_from_recipe_built_nics.nics | default([])
+           | map(attribute='vnet_name') | list }}

@@ -1,0 +1,98 @@
+---
+# vm_from_recipe -- deploy a VM from a VergeOS recipe and wait for it to be
+# usable.
+#
+# The deploy itself is one module call. Everything else in this role exists
+# because the deploy is ASYNCHRONOUS: the platform accepts it and returns a VM
+# key long before that VM can boot, so a role that stopped at the module call
+# would hand the caller a VM whose OS image is still downloading.
+
+- name: Preflight -- required inputs are present
+  ansible.builtin.assert:
+    that:
+      - vm_from_recipe_recipe | length > 0
+      - vm_from_recipe_name | length > 0
+      - vm_from_recipe_host | length > 0
+    fail_msg: >-
+      vm_from_recipe needs vm_from_recipe_recipe, vm_from_recipe_name and
+      vm_from_recipe_host (or VERGEOS_HOST in the environment).
+    quiet: true
+
+- name: Deploy the recipe
+  vergeio.vergeos.vm_recipe_deploy:
+    host: "{{ vm_from_recipe_host }}"
+    username: "{{ vm_from_recipe_username }}"
+    password: "{{ vm_from_recipe_password }}"
+    insecure: "{{ vm_from_recipe_insecure }}"
+    name: "{{ vm_from_recipe_name }}"
+    recipe: "{{ vm_from_recipe_recipe }}"
+    catalog: "{{ vm_from_recipe_catalog | default(omit, true) }}"
+    answers: "{{ vm_from_recipe_answers }}"
+    prune_unknown: "{{ vm_from_recipe_prune_unknown }}"
+    auto_update: "{{ vm_from_recipe_auto_update }}"
+    simulate: "{{ vm_from_recipe_simulate }}"
+    fail_on_hints: "{{ vm_from_recipe_fail_on_hints }}"
+  register: vm_from_recipe_deploy
+
+- name: Report the deploy
+  ansible.builtin.debug:
+    msg:
+      recipe: "{{ vm_from_recipe_deploy.recipe.name | default(vm_from_recipe_recipe) }}"
+      already_existed: "{{ vm_from_recipe_deploy.already_existed }}"
+      vm_key: "{{ vm_from_recipe_deploy.vm_key | default('(none)', true) }}"
+      answers_sent: "{{ vm_from_recipe_deploy.answers_sent | default([]) }}"
+      hints: "{{ vm_from_recipe_deploy.hints | default([]) }}"
+      simulated_steps: >-
+        {{ vm_from_recipe_deploy.simulate_result.step_count
+           | default('not simulated') }}
+
+# Everything below is gated on the module having reported a VM key.
+#
+# That single condition covers three cases at once, which is why it is used in
+# preference to ansible_check_mode. Under --check the module runs its answer
+# validation and the server-side simulation and creates nothing, so it reports
+# no key. Under a CALLER's `check_mode: true` block the same is true --
+# ansible_check_mode would read false there, and gating on it would send this
+# role on to poll for a VM that was never going to exist. And a deploy that
+# somehow produced no key is not something to keep verifying either.
+- name: Everything past the deploy needs a VM to exist
+  when: vm_from_recipe_deploy.vm_key | default('') | length > 0
+  block:
+    - name: Wait for the deploy to produce the VM
+      ansible.builtin.include_tasks: wait_vm.yml
+      when:
+        - vm_from_recipe_wait | bool
+        - not (vm_from_recipe_deploy.already_existed | bool)
+
+    - name: Wait for the VM's drives to finish importing
+      ansible.builtin.include_tasks: wait_drives.yml
+      when: vm_from_recipe_wait_for_drives | bool
+
+    # Runs on BOTH paths -- the one that just deployed, and the convergence
+    # path that found the VM already there.
+    #
+    # Convergence gets it because "the VM already exists" reported as success
+    # without ever looking at the VM is how a half-failed earlier run gets
+    # laundered into a pass: the next run says "nothing to do", and the caller
+    # goes on to configure something that cannot boot.
+    - name: Verify what the recipe actually built
+      ansible.builtin.include_tasks: verify_vm.yml
+      when: vm_from_recipe_verify_drives | bool or vm_from_recipe_verify_nics | bool
+
+    - name: Power on the VM
+      ansible.builtin.include_tasks: power_on.yml
+      when: vm_from_recipe_power_on | bool
+
+    # Deliberately LAST: it is the only check that can take minutes, and there
+    # is no point waiting for a guest to boot on a VM whose drives or NICs are
+    # already known to be wrong.
+    - name: Verify the guest actually boots
+      ansible.builtin.include_tasks: verify_boot.yml
+      when: vm_from_recipe_verify_boot | bool
+
+- name: Nothing was created
+  ansible.builtin.debug:
+    msg: >-
+      {{ vm_from_recipe_deploy.msg
+         | default('No VM key was reported, so nothing was verified.') }}
+  when: vm_from_recipe_deploy.vm_key | default('') | length == 0

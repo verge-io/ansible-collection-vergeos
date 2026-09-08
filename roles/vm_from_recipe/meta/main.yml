@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: vm_from_recipe
+  author: VergeIO
+  description: >-
+    Deploy a VM from a VergeOS recipe and wait for it to be usable, verifying
+    what the recipe actually built.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.14"
+  galaxy_tags:
+    - vergeos
+    - vergeio
+    - virtualization
+    - provisioning
+    - recipe
+
+dependencies: []

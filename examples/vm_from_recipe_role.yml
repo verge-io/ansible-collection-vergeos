@@ -1,0 +1,53 @@
+---
+# Example playbook: deploy a bootable VM from a recipe using the
+# vm_from_recipe role.
+#
+# Unlike examples/deploy_from_recipe.yml, which calls the modules directly and
+# returns as soon as the deploy is accepted, this waits for the OS image to
+# finish importing and then proves the guest actually boots.
+#
+#   ansible-playbook examples/vm_from_recipe_role.yml           # deploy
+#   ansible-playbook examples/vm_from_recipe_role.yml --check   # preflight
+#
+- name: Deploy a bootable VergeOS VM from a recipe
+  hosts: localhost
+  gather_facts: false
+
+  roles:
+    - role: vergeio.vergeos.vm_from_recipe
+      vars:
+        # Connection defaults to VERGEOS_HOST / _USERNAME / _PASSWORD /
+        # _INSECURE, so it is left out here.
+        vm_from_recipe_name: "web-01"
+        vm_from_recipe_recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+
+        vm_from_recipe_answers:
+          HOSTNAME: "web-01"
+          USER: "ops"
+          # Keep real credentials in a vault, not here.
+          PASSWORD: "{{ vault_guest_password | default('change-me') }}"
+          YB_CPU_CORES: 2
+          YB_RAM: 4096                   # MB
+          YB_DRIVE_OS_SIZE: 53687091200  # BYTES, not GB
+          YB_IP_ADDR_TYPE: dhcp
+          # Answer this explicitly. Its default creates a brand-new internal
+          # network, and a VM whose NIC is attached to nothing passes every
+          # check except the role's NIC assertion.
+          YB_NIC_ETH0: "External"
+          # Optional with an empty default, and an empty storage tier makes the
+          # recipe's own OS-drive step fail partway through the deploy.
+          SELECT_OS_TIER: 4
+
+        # Make an unanswered question with an empty default fatal rather than
+        # a reported hint.
+        vm_from_recipe_fail_on_hints: true
+
+        # Power on and prove the guest boots. Both cost time, so both are
+        # opt-in; see the role README for the caveat on power_on.
+        vm_from_recipe_power_on: true
+        vm_from_recipe_verify_boot: true
+
+        # A first deploy pulls the cloud image over the guest network, so it is
+        # slow. Raise this if the mirror is slow rather than stuck -- the role
+        # reports the platform's own download percentage when it gives up.
+        vm_from_recipe_wait_timeout: 1800
