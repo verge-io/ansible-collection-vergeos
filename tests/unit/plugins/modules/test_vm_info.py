@@ -7,22 +7,26 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
-# Mock the pyvergeos module before importing the module under test
-@pytest.fixture(autouse=True)
-def mock_pyvergeos():
-    """Mock pyvergeos SDK for all tests"""
-    with patch.dict('sys.modules', {
-        'pyvergeos': MagicMock(),
-        'pyvergeos.exceptions': MagicMock(),
-    }):
-        yield
+# There is deliberately no fixture stubbing pyvergeos out of sys.modules here.
+# There used to be, and it was the reason several tests in this file failed.
+#
+# Replacing 'pyvergeos.exceptions' with a MagicMock makes NotFoundError a Mock
+# attribute rather than an exception class. Setting that as a side_effect does
+# not raise -- unittest.mock treats a non-exception side_effect as a callable,
+# calls it, and returns the result. So `client.vms.get` handed back a MagicMock
+# instead of raising, dict() of a MagicMock is {}, and the module returned
+# [{}] where the test expected []. The test looked like it was exercising the
+# not-found path and was exercising nothing.
+#
+# pyvergeos is a declared requirement (requirements.txt), so it is present
+# whenever these tests run and there is nothing to stub.
 
 
 class TestVmInfo:
     """Tests for vm_info module"""
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.HAS_PYVERGEOS', True)
     def test_returns_all_vms_when_no_name_specified(self, mock_get_client):
         """Test that all VMs are returned when name is not specified"""
         # Setup mock client
@@ -63,8 +67,8 @@ class TestVmInfo:
         assert call_kwargs['changed'] is False
         assert 'vms' in call_kwargs
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.HAS_PYVERGEOS', True)
     def test_returns_specific_vm_when_name_specified(self, mock_get_client):
         """Test that specific VM is returned when name is specified"""
         # Setup mock client
@@ -99,8 +103,8 @@ class TestVmInfo:
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is False
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.HAS_PYVERGEOS', True)
     def test_returns_empty_list_when_vm_not_found(self, mock_get_client):
         """Test that empty list is returned when VM is not found"""
         from pyvergeos.exceptions import NotFoundError
@@ -146,8 +150,8 @@ class TestVmInfo:
                 'insecure': False, 'name': None
             }
 
-            with patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client'):
-                with patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True):
+            with patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.get_vergeos_client'):
+                with patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.HAS_PYVERGEOS', True):
                     from ansible_collections.vergeio.vergeos.plugins.modules import vm_info
                     try:
                         vm_info.main()

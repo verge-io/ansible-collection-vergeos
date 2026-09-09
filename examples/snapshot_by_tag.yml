@@ -28,6 +28,11 @@
   hosts: all
   connection: local
   gather_facts: false
+  # Declared explicitly because the timestamp below is generated once and
+  # shared by every host. run_once relies on a host ordering that the free
+  # strategy does not guarantee, so every VM would not necessarily land in the
+  # same snapshot set.
+  strategy: linear
 
   vars:
     vergeos_username: "{{ lookup('env', 'VERGEOS_USERNAME') | default('admin', true) }}"
@@ -36,7 +41,11 @@
     snapshot_prefix: "ansible-snapshot"
 
   tasks:
-    - name: Generate timestamp for snapshot name
+    # run_once is deliberate: every VM in this run belongs to one snapshot set,
+    # so the timestamp is generated once and shared. The rule fires on any
+    # run_once regardless of strategy; the hazard it warns about -- ordering
+    # under strategy: free -- is addressed by the play declaring linear above.
+    - name: Generate one timestamp for the whole run  # noqa: run-once[task]
       ansible.builtin.set_fact:
         snapshot_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
       run_once: true
@@ -55,15 +64,18 @@
       register: snapshot_result
       ignore_errors: true
 
-    - name: Display snapshot result
+    # One report rather than two conditioned on .changed. Reporting per VM
+    # matters here because the snapshot task carries ignore_errors, so a
+    # failure is not otherwise visible in the recap.
+    - name: Report the outcome for this VM
       ansible.builtin.debug:
-        msg: "Created snapshot '{{ snapshot_prefix }}-{{ snapshot_timestamp }}' for VM '{{ vergeos_name }}' at {{ vergeos_site }}"
-      when: snapshot_result.changed | default(false)
-
-    - name: Display snapshot error
-      ansible.builtin.debug:
-        msg: "Failed to snapshot VM '{{ vergeos_name }}': {{ snapshot_result.msg | default('Unknown error') }}"
-      when: snapshot_result.failed | default(false)
+        msg: >-
+          {{ vergeos_name }} at {{ vergeos_site }}:
+          {{ ("snapshot '" ~ snapshot_prefix ~ "-" ~ snapshot_timestamp ~ "' created")
+             if snapshot_result.changed | default(false)
+             else ("FAILED - " ~ (snapshot_result.msg | default('unknown error')))
+             if snapshot_result.failed | default(false)
+             else "no change" }}
 
 - name: Summary
   hosts: localhost

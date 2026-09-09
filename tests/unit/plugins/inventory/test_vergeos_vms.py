@@ -7,21 +7,19 @@ import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 
 
-@pytest.fixture(autouse=True)
-def mock_pyvergeos():
-    """Mock pyvergeos SDK for all tests"""
-    mock_exceptions = MagicMock()
-    mock_exceptions.NotFoundError = Exception
-    mock_exceptions.AuthenticationError = Exception
-    mock_exceptions.ValidationError = Exception
-    mock_exceptions.APIError = Exception
-    mock_exceptions.VergeConnectionError = Exception
-
-    with patch.dict('sys.modules', {
-        'pyvergeos': MagicMock(),
-        'pyvergeos.exceptions': mock_exceptions,
-    }):
-        yield
+# There is deliberately no fixture stubbing pyvergeos out of sys.modules here.
+# There used to be, and it was the reason several tests in this file failed.
+#
+# Replacing 'pyvergeos.exceptions' with a MagicMock makes NotFoundError a Mock
+# attribute rather than an exception class. Setting that as a side_effect does
+# not raise -- unittest.mock treats a non-exception side_effect as a callable,
+# calls it, and returns the result. So `client.vms.get` handed back a MagicMock
+# instead of raising, dict() of a MagicMock is {}, and the module returned
+# [{}] where the test expected []. The test looked like it was exercising the
+# not-found path and was exercising nothing.
+#
+# pyvergeos is a declared requirement (requirements.txt), so it is present
+# whenever these tests run and there is nothing to stub.
 
 
 @pytest.fixture
@@ -190,14 +188,33 @@ class TestFetchSite:
     @patch('ansible_collections.vergeio.vergeos.plugins.inventory.vergeos_vms.VergeClient')
     def test_successful_fetch(self, mock_client_class, inventory_module):
         """Test successful site fetch"""
-        # Setup mock VM
+        # The plugin does NOT call vm.get_tags(). It batches: tags.list() for
+        # the id -> name map, then one _request('GET', 'tag_members') for the
+        # memberships. This test used to mock get_tags() and assert the tag
+        # came through, which it never could -- the mock was answering a
+        # question nobody asked.
+        #
+        # The membership reference is the BARE form, 'vms/1'. Measured on
+        # VergeOS 26.1.8: POSTing '/v4/vms/36' to tag_members is rejected with
+        # "Operation not permitted", while 'vms/36' is accepted and read back
+        # as {'$key': 1, 'tag': 1, 'member': 'vms/36'}. Group membership rows
+        # use the prefixed form, so the two tables genuinely differ and the
+        # plugin's startswith('vms/') is right.
+        row = {'$key': 1, 'name': 'test-vm', 'status': 'running'}
         mock_vm = MagicMock()
-        mock_vm.__iter__ = lambda self: iter({'$key': 1, 'name': 'test-vm', 'status': 'running'}.items())
-        mock_vm.get_tags.return_value = [{'tag_name': 'prod', 'tag_key': 1}]
+        mock_vm.keys = lambda: row.keys()
+        mock_vm.__getitem__ = lambda self, key: row[key]
         mock_vm.nics.list.return_value = []
+
+        mock_tag = MagicMock()
+        tag_row = {'$key': 1, 'name': 'prod'}
+        mock_tag.keys = lambda: tag_row.keys()
+        mock_tag.__getitem__ = lambda self, key: tag_row[key]
 
         mock_client = MagicMock()
         mock_client.vms.list.return_value = [mock_vm]
+        mock_client.tags.list.return_value = [mock_tag]
+        mock_client._request.return_value = [{'tag': 1, 'member': 'vms/1'}]
         mock_client_class.return_value = mock_client
 
         site_config = {

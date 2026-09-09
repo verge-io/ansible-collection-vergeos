@@ -20,7 +20,52 @@ class FakeManager:
         return list(self._rows)
 
 
+class FakeResponse:
+    """Enough of a requests.Response for raw_request to read."""
+
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = '{}' if payload is not None else ''
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError('no json')
+        return self._payload
+
+
+class FakeSession:
+    def __init__(self, owner):
+        self._owner = owner
+
+    def request(self, method, url, params=None, json=None, timeout=None):
+        self._owner.posts.append(json)
+        status, payload = self._owner._next_response()
+        return FakeResponse(status, payload)
+
+
+class FakeConnection:
+    api_base_url = 'https://verge.invalid/api/v4'
+
+    def __init__(self, session):
+        self.session = session
+        self.is_connected = True
+
+
 class FakeClient:
+    """A client whose POSTs go through the session, not _request.
+
+    post_instance deliberately bypasses pyvergeos _request, because a clean
+    recipe simulate answers on HTTP 405 with the whole simulation log in the
+    body and _handle_response throws that body away. So the fake has to model
+    the session layer, and a response is a (status, document) pair.
+
+    A bare dict in `responses` means HTTP 200. The simulate response is paired
+    with 405 explicitly wherever it is used, because that is what the platform
+    actually returns and a fake that answered 200 would let a regression to
+    status-based dispatch pass.
+    """
+
     def __init__(self, recipes=(), questions=(), networks=(), vms=(),
                  tables=None, responses=None):
         self.vm_recipes = FakeManager(recipes)
@@ -30,11 +75,19 @@ class FakeClient:
         self._tables = tables or {}
         self._responses = list(responses or [])
         self.posts = []
+        self._timeout = 30
+        self._connection = FakeConnection(FakeSession(self))
+
+    def _next_response(self):
+        if not self._responses:
+            return 200, {}
+        item = self._responses.pop(0)
+        if isinstance(item, tuple):
+            return item
+        return 200, item
 
     def _request(self, method, path, params=None, json_data=None):
-        if method == 'POST':
-            self.posts.append(json_data)
-            return self._responses.pop(0) if self._responses else {}
+        # Only table reads come through here now; POSTs go via the session.
         return self._tables.get(path, [])
 
 
@@ -43,6 +96,11 @@ CLEAN_SIMULATE = {'err': 'Simulation complete',
                   'response': {'logs': ['step 1', 'step 2'],
                                'answers': {'YB_VM_KEY': 7},
                                'cloudinit_files': [{'name': 'user-data'}]}}
+
+
+# What the platform really sends back for a clean simulate: HTTP 405 with the
+# log document in the body.
+SIMULATE_405 = (405, CLEAN_SIMULATE)
 
 
 def question(name, qtype='string', **kw):
@@ -140,7 +198,7 @@ def test_a_snapshot_of_the_name_does_not_count_as_convergence():
                         questions=[question('HOSTNAME')],
                         vms=[{'name': 'web-01', '$key': 9,
                               'is_snapshot': True}],
-                        responses=[CLEAN_SIMULATE,
+                        responses=[SIMULATE_405,
                                    {'$key': 5, 'response': {'vm': 42}}])
     result = exited(run(client))
     assert result['already_existed'] is False
@@ -167,7 +225,7 @@ def test_missing_required_answer_fails():
 def test_valid_answers_are_sent_by_name_only_in_the_result():
     client = FakeClient(recipes=[RECIPE],
                         questions=[question('HOSTNAME'), question('USER')],
-                        responses=[CLEAN_SIMULATE,
+                        responses=[SIMULATE_405,
                                    {'$key': 5, 'response': {'vm': 42}}])
     result = exited(run(client, answers={'HOSTNAME': 'web-01',
                                          'USER': 'ops'}))
@@ -177,7 +235,7 @@ def test_valid_answers_are_sent_by_name_only_in_the_result():
 def test_secret_answer_values_never_reach_the_result():
     client = FakeClient(recipes=[RECIPE],
                         questions=[question('PASSWORD', 'password')],
-                        responses=[CLEAN_SIMULATE,
+                        responses=[SIMULATE_405,
                                    {'$key': 5, 'response': {'vm': 42}}])
     result = exited(run(client, answers={'PASSWORD': 'hunter2'}))
     assert 'hunter2' not in repr(result)
@@ -187,7 +245,7 @@ def test_hints_are_reported_but_not_fatal_by_default():
     client = FakeClient(recipes=[RECIPE],
                         questions=[question('SELECT_OS_TIER', 'row',
                                             default='', table='cluster_tiers')],
-                        responses=[CLEAN_SIMULATE,
+                        responses=[SIMULATE_405,
                                    {'$key': 5, 'response': {'vm': 42}}])
     result = exited(run(client))
     assert result['hints']
@@ -205,7 +263,7 @@ def test_fail_on_hints_makes_them_fatal_before_the_simulate():
 
 def test_prune_unknown_reports_what_it_dropped():
     client = FakeClient(recipes=[RECIPE], questions=[question('HOSTNAME')],
-                        responses=[CLEAN_SIMULATE,
+                        responses=[SIMULATE_405,
                                    {'$key': 5, 'response': {'vm': 42}}])
     result = exited(run(client, prune_unknown=True,
                         answers={'HOSTNAME': 'web-01', 'NOTHERE': 1}))
@@ -232,7 +290,7 @@ def test_a_good_table_backed_choice_passes():
         questions=[question('SELECT_OS_TIER', 'row', table='cluster_tiers',
                             fields='$key,$display')],
         tables={'cluster_tiers': [{'$key': 4, '$display': '4'}]},
-        responses=[CLEAN_SIMULATE, {'$key': 5, 'response': {'vm': 42}}])
+        responses=[SIMULATE_405, {'$key': 5, 'response': {'vm': 42}}])
     result = exited(run(client, answers={'SELECT_OS_TIER': 4}))
     assert result['changed'] is True
 
@@ -243,7 +301,7 @@ def test_a_network_answer_given_by_name_is_resolved_to_its_key():
     client = FakeClient(recipes=[RECIPE],
                         questions=[question('YB_NIC_ETH0', 'network')],
                         networks=[{'name': 'External', '$key': 3}],
-                        responses=[CLEAN_SIMULATE,
+                        responses=[SIMULATE_405,
                                    {'$key': 5, 'response': {'vm': 42}}])
     run(client, answers={'YB_NIC_ETH0': 'External'})
     assert client.posts[-1]['answers']['YB_NIC_ETH0'] == 3
@@ -262,7 +320,7 @@ def test_an_unknown_network_name_fails():
 
 def test_simulate_runs_before_the_real_deploy():
     client = FakeClient(recipes=[RECIPE], questions=[question('HOSTNAME')],
-                        responses=[CLEAN_SIMULATE,
+                        responses=[SIMULATE_405,
                                    {'$key': 5, 'response': {'vm': 42}}])
     exited(run(client, answers={'HOSTNAME': 'web-01'}))
     assert len(client.posts) == 2
@@ -281,7 +339,7 @@ def test_a_failed_simulate_stops_the_deploy():
                                    'Error executing API command: CREATE_OS_DRIVE'],
                           'answers': {}}}
     client = FakeClient(recipes=[RECIPE], questions=[question('HOSTNAME')],
-                        responses=[dirty])
+                        responses=[(405, dirty)])
     module = run(client, answers={'HOSTNAME': 'web-01'})
     result = failed(module)
     assert 'would build a broken VM' in result['msg']
@@ -292,7 +350,7 @@ def test_a_failed_simulate_stops_the_deploy():
 
 def test_simulate_result_is_reported_on_success():
     client = FakeClient(recipes=[RECIPE], questions=[question('HOSTNAME')],
-                        responses=[CLEAN_SIMULATE,
+                        responses=[SIMULATE_405,
                                    {'$key': 5, 'response': {'vm': 42}}])
     result = exited(run(client, answers={'HOSTNAME': 'web-01'}))
     assert result['simulate_result']['ok'] is True
@@ -313,7 +371,7 @@ def test_simulate_can_be_turned_off():
 
 def test_check_mode_simulates_and_creates_nothing():
     client = FakeClient(recipes=[RECIPE], questions=[question('HOSTNAME')],
-                        responses=[CLEAN_SIMULATE])
+                        responses=[SIMULATE_405])
     result = exited(run(client, check_mode=True,
                         answers={'HOSTNAME': 'web-01'}))
     assert result['changed'] is False
@@ -342,7 +400,7 @@ def test_check_mode_with_simulate_off_creates_nothing():
 
 def test_deploy_reports_the_vm_key_the_post_returned():
     client = FakeClient(recipes=[RECIPE], questions=[question('HOSTNAME')],
-                        responses=[CLEAN_SIMULATE,
+                        responses=[SIMULATE_405,
                                    {'$key': 5, 'response': {'vm': 42}}])
     result = exited(run(client, answers={'HOSTNAME': 'web-01'}))
     assert result['changed'] is True
@@ -352,7 +410,7 @@ def test_deploy_reports_the_vm_key_the_post_returned():
 
 def test_auto_update_is_sent_on_the_real_deploy_only():
     client = FakeClient(recipes=[RECIPE], questions=[question('HOSTNAME')],
-                        responses=[CLEAN_SIMULATE,
+                        responses=[SIMULATE_405,
                                    {'$key': 5, 'response': {'vm': 42}}])
     run(client, auto_update=True, answers={'HOSTNAME': 'web-01'})
     assert 'auto_update' not in client.posts[0]
@@ -362,7 +420,7 @@ def test_auto_update_is_sent_on_the_real_deploy_only():
 def test_a_deploy_that_reports_no_vm_key_still_succeeds():
     """The deploy was accepted; a missing field must not fail it."""
     client = FakeClient(recipes=[RECIPE], questions=[question('HOSTNAME')],
-                        responses=[CLEAN_SIMULATE, {'$key': 5}])
+                        responses=[SIMULATE_405, {'$key': 5}])
     result = exited(run(client, answers={'HOSTNAME': 'web-01'}))
     assert result['changed'] is True
     assert result['vm_key'] == ''
@@ -377,7 +435,7 @@ def test_a_recipe_with_no_questions_passes_answers_through():
     unknown, so the answers go through and the simulate is the only check.
     """
     client = FakeClient(recipes=[RECIPE], questions=[],
-                        responses=[CLEAN_SIMULATE,
+                        responses=[SIMULATE_405,
                                    {'$key': 5, 'response': {'vm': 42}}])
     result = exited(run(client, answers={'ANYTHING': 'goes'}))
     assert result['changed'] is True

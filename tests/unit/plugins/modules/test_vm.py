@@ -7,21 +7,42 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
-@pytest.fixture(autouse=True)
-def mock_pyvergeos():
-    """Mock pyvergeos SDK for all tests"""
-    with patch.dict('sys.modules', {
-        'pyvergeos': MagicMock(),
-        'pyvergeos.exceptions': MagicMock(),
-    }):
-        yield
+# There is deliberately no fixture stubbing pyvergeos out of sys.modules here.
+# There used to be, and it was the reason several tests in this file failed.
+#
+# Replacing 'pyvergeos.exceptions' with a MagicMock makes NotFoundError a Mock
+# attribute rather than an exception class. Setting that as a side_effect does
+# not raise -- unittest.mock treats a non-exception side_effect as a callable,
+# calls it, and returns the result. So `client.vms.get` handed back a MagicMock
+# instead of raising, dict() of a MagicMock is {}, and the module returned
+# [{}] where the test expected []. The test looked like it was exercising the
+# not-found path and was exercising nothing.
+#
+# pyvergeos is a declared requirement (requirements.txt), so it is present
+# whenever these tests run and there is nothing to stub.
+
+
+def as_row(mock, row):
+    """Make a MagicMock decode as ``row`` under dict(), without giving up the
+    mock.
+
+    dict() prefers the mapping protocol, and MagicMock auto-provides keys(),
+    so dict(MagicMock()) is {} -- an __iter__ override never gets a look in.
+    These tests used to set __iter__ and every one of them was therefore
+    comparing against an empty row: the module saw drift in every field, and
+    the one test that asserted "nothing was saved" failed while the rest
+    passed for the wrong reason.
+    """
+    mock.keys = lambda: row.keys()
+    mock.__getitem__ = lambda self, key: row[key]
+    return mock
 
 
 class TestVmStatePresent:
     """Tests for vm module with state=present"""
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
     def test_creates_vm_when_not_exists(self, mock_get_client):
         """Test that VM is created when it doesn't exist"""
         from pyvergeos.exceptions import NotFoundError
@@ -30,9 +51,9 @@ class TestVmStatePresent:
         mock_client = MagicMock()
         mock_client.vms.get.side_effect = NotFoundError("VM not found")
         mock_new_vm = MagicMock()
-        mock_new_vm.__iter__ = lambda self: iter({
+        as_row(mock_new_vm, {
             '$key': 1, 'name': 'new-vm', 'cpu_cores': 4, 'ram': 8192
-        }.items())
+        })
         mock_client.vms.create.return_value = mock_new_vm
         mock_get_client.return_value = mock_client
 
@@ -73,16 +94,16 @@ class TestVmStatePresent:
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is True
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
     def test_updates_vm_when_exists_with_changes(self, mock_get_client):
         """Test that VM is updated when it exists with different config"""
         # Setup mock client with existing VM
         mock_client = MagicMock()
         mock_vm = MagicMock()
-        mock_vm.__iter__ = lambda self: iter({
+        as_row(mock_vm, {
             '$key': 1, 'name': 'existing-vm', 'cpu_cores': 2, 'ram': 4096
-        }.items())
+        })
         mock_client.vms.get.return_value = mock_vm
         mock_get_client.return_value = mock_client
 
@@ -123,16 +144,16 @@ class TestVmStatePresent:
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is True
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
     def test_no_change_when_vm_matches(self, mock_get_client):
         """Test that no change when VM already matches desired state"""
         # Setup mock client with VM that matches params
         mock_client = MagicMock()
         mock_vm = MagicMock()
-        mock_vm.__iter__ = lambda self: iter({
+        as_row(mock_vm, {
             '$key': 1, 'name': 'existing-vm', 'cpu_cores': 4, 'ram': 8192
-        }.items())
+        })
         mock_client.vms.get.return_value = mock_vm
         mock_get_client.return_value = mock_client
 
@@ -176,14 +197,14 @@ class TestVmStatePresent:
 class TestVmStateAbsent:
     """Tests for vm module with state=absent"""
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
     def test_deletes_vm_when_exists(self, mock_get_client):
         """Test that VM is deleted when it exists"""
         # Setup mock client
         mock_client = MagicMock()
         mock_vm = MagicMock()
-        mock_vm.__iter__ = lambda self: iter({'$key': 1, 'name': 'delete-me'}.items())
+        as_row(mock_vm, {'$key': 1, 'name': 'delete-me'})
         mock_client.vms.get.return_value = mock_vm
         mock_get_client.return_value = mock_client
 
@@ -223,8 +244,8 @@ class TestVmStateAbsent:
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is True
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
     def test_no_change_when_vm_not_exists(self, mock_get_client):
         """Test that no change when VM doesn't exist for absent state"""
         from pyvergeos.exceptions import NotFoundError
@@ -274,16 +295,21 @@ class TestVmStateAbsent:
 class TestVmStatePower:
     """Tests for vm module with state=running/stopped"""
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
     def test_powers_on_stopped_vm(self, mock_get_client):
         """Test that stopped VM is powered on"""
         # Setup mock client with stopped VM
         mock_client = MagicMock()
         mock_vm = MagicMock()
-        mock_vm.__iter__ = lambda self: iter({
-            '$key': 1, 'name': 'my-vm', 'power_state': 'stopped'
-        }.items())
+        # A live row the mock reads through, so refresh() can change it. The
+        # module polls up to 30 times with a 2 second sleep between reads; a
+        # refresh() that never changes anything burns the full 60 seconds and
+        # proves only that the loop can time out. Flipping the status on the
+        # first refresh keeps the test instant AND actually exercises the wait.
+        row = {'$key': 1, 'name': 'my-vm', 'status': 'stopped'}
+        as_row(mock_vm, row)
+        mock_vm.refresh.side_effect = lambda: row.update(status='running')
         mock_client.vms.get.return_value = mock_vm
         mock_get_client.return_value = mock_client
 
@@ -323,16 +349,17 @@ class TestVmStatePower:
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is True
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
     def test_powers_off_running_vm(self, mock_get_client):
         """Test that running VM is powered off"""
         # Setup mock client with running VM
         mock_client = MagicMock()
         mock_vm = MagicMock()
-        mock_vm.__iter__ = lambda self: iter({
-            '$key': 1, 'name': 'my-vm', 'power_state': 'running'
-        }.items())
+        row = {'$key': 1, 'name': 'my-vm', 'status': 'running', 'running': True}
+        as_row(mock_vm, row)
+        mock_vm.refresh.side_effect = lambda: row.update(
+            status='stopped', running=False)
         mock_client.vms.get.return_value = mock_vm
         mock_get_client.return_value = mock_client
 
@@ -373,8 +400,8 @@ class TestVmStatePower:
 class TestVmCheckMode:
     """Tests for vm module check_mode"""
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
     def test_check_mode_does_not_create(self, mock_get_client):
         """Test that check_mode doesn't actually create VM"""
         from pyvergeos.exceptions import NotFoundError
@@ -419,13 +446,13 @@ class TestVmCheckMode:
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is True  # Would change, but didn't
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
     def test_check_mode_does_not_delete(self, mock_get_client):
         """Test that check_mode doesn't actually delete VM"""
         mock_client = MagicMock()
         mock_vm = MagicMock()
-        mock_vm.__iter__ = lambda self: iter({'$key': 1, 'name': 'delete-me'}.items())
+        as_row(mock_vm, {'$key': 1, 'name': 'delete-me'})
         mock_client.vms.get.return_value = mock_vm
         mock_get_client.return_value = mock_client
 

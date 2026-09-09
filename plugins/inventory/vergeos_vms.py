@@ -114,6 +114,7 @@ options:
 '''
 
 EXAMPLES = r'''
+---
 # Single-site configuration (replacement for vergeos.py)
 plugin: vergeio.vergeos.vergeos_vms
 sites:
@@ -122,6 +123,7 @@ sites:
     username: admin
     password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
 
+---
 # Multi-site configuration
 plugin: vergeio.vergeos.vergeos_vms
 sites:
@@ -134,6 +136,7 @@ sites:
     username: admin
     password: "{{ lookup('env', 'CHICAGO_PASS') }}"
 
+---
 # Full configuration with caching and filtering
 plugin: vergeio.vergeos.vergeos_vms
 cache: true

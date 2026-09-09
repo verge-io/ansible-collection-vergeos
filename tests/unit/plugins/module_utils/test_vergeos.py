@@ -3,6 +3,7 @@
 
 """Unit tests for module_utils/vergeos.py"""
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -103,8 +104,22 @@ class TestGetVergeosClient:
 
     @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', False)
     def test_fails_when_sdk_not_installed(self):
-        """Test that module fails when pyvergeos is not installed"""
-        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import get_vergeos_client
+        """The SDK-missing guard fires and explains itself.
+
+        HAS_PYVERGEOS has to be forced False. pyvergeos is a declared
+        requirement, so it IS installed when these tests run -- without the
+        patch the guard is skipped, get_vergeos_client goes on to build a real
+        client, and the test spends six seconds failing to resolve
+        vergeos.example.com before erroring on a connection problem instead of
+        checking the guard.
+
+        fail_json is mocked, so it returns instead of raising SystemExit the
+        way the real one does. Execution therefore continues past it, which is
+        precisely how this test used to reach the network at all.
+        """
+        from ansible_collections.vergeio.vergeos.plugins.module_utils import (
+            vergeos as vergeos_utils,
+        )
 
         mock_module = MagicMock()
         mock_module.params = {
@@ -113,8 +128,11 @@ class TestGetVergeosClient:
             'password': 'secret',
             'insecure': False
         }
+        mock_module.fail_json.side_effect = SystemExit(1)
 
-        get_vergeos_client(mock_module)
+        with patch.object(vergeos_utils, 'HAS_PYVERGEOS', False):
+            with pytest.raises(SystemExit):
+                vergeos_utils.get_vergeos_client(mock_module)
 
         mock_module.fail_json.assert_called_once()
         assert 'pyvergeos' in mock_module.fail_json.call_args[1]['msg']
