@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: rolling_update
+  author: VergeIO
+  description: >-
+    Install a VergeOS platform update, then apply it node by node with a
+    health gate between nodes.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.14"
+  galaxy_tags:
+    - vergeos
+    - vergeio
+    - patching
+    - lifecycle
+    - clustering
+
+dependencies: []

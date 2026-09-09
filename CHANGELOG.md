@@ -9,66 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`vm_recipe_info` module**: list VM recipes, and return a recipe's question
-  set with the valid values of table-backed questions resolved from the tables
-  they point at. Recipe plumbing (hidden, `database_*`, `$database` section) is
-  reported separately from answerable questions, and questions carrying
-  credentials are named so callers can `no_log` them.
-- **`vm_recipe_deploy` module**: deploy a VM from a native VergeOS recipe.
-  Answers are validated against the recipe's own questions before anything is
-  created (unknown names, types, `min`/`max`/`regex`, table-backed choices,
-  network answers by name), then the deploy runs server-side as a simulation,
-  and only then for real. `check_mode` runs the validation and the simulation,
-  making it a real preflight rather than a guess. An existing VM of the target
-  name is the idempotence key.
-- **`module_utils/recipe_answers.py`**: answer resolution and simulate-log
-  scanning as pure functions, free of Ansible, pyvergeos and the network.
-- **`module_utils/vm_recipes.py`**: pyvergeos glue for the recipe modules.
-- **`vm_drive_info` module**: a VM's drives with media type and import status,
-  optionally with per-drive IO counters. Separates out the drives the platform
-  has not finished building, folding together `media=import` and
-  `status=importing` - a drive can be the first without yet being the second,
-  and that window is what makes "wait for the absence of importing" return
-  before a download has started.
-- **`vm_nic_info` module**: a VM's NICs, separating out those attached to no
-  network at all - a state a VM reaches when a recipe's network question is
-  left unanswered, and one every other check passes on.
-- **`module_utils/machine.py`**: reads a VM's drives, NICs and drive IO
-  counters.
-- **`vm_from_recipe` role**: deploys a VM from a recipe and waits for it to be
-  usable rather than merely present. Two-phase drive-import waiting with
-  separate budgets, post-conditions on drives and NICs asserted on both the
-  deploy and convergence paths, and optional power-on and guest-boot proof.
-  This is the collection's first role, so `roles/` is new.
-- **`examples/deploy_from_recipe.yml`**: discovery, preflight and deploy.
-- **`examples/vm_from_recipe_role.yml`**: the same via the role, waiting for a
-  bootable VM.
+- **`site_sync` + `site_sync_info` modules**: site-to-site replication
+  (ioReplicate) as code, plus the derived facts a watchdog needs - age of each
+  sync's last run, and the stale/unhealthy lists. Incoming syncs are reported
+  but never managed, because an incoming sync belongs to the receiving system.
+- **`dr_replication` role**: reconcile declared replication, optionally purge
+  what is not declared, optionally trigger and wait, then fail on lag or
+  unhealthy state. With nothing declared it is a pure watchdog and converges
+  nothing.
+- **`node_info` + `node_maintenance` modules**: node state, and drain / return
+  to service / restart. Draining the last usable node is refused unless forced.
+- **`update` + `update_info` modules**: the system-wide platform update
+  lifecycle (check, download, install). Applying an update is per node and is
+  deliberately not done here.
+- **`rolling_update` role**: install an update, then restart each node that
+  needs it - drain, restart, wait down, wait back, return to service, health
+  gate. Requires explicit consent before restarting anything.
+- **`tests/unit/test_jinja_filters.py`**: asserts every Jinja filter and test
+  used in a role or example actually exists.
 
 ### Notes
 
-- The simulated deploy is scanned rather than trusted. The API reports success
-  as `{"err": "Simulation complete"}` even when its own log contains failed
-  steps, so a deploy that would build a VM with no OS drive looks clean at the
-  top level.
-- A guest-boot proof must watch disk WRITES. On a VM that never boots the
-  firmware still reads the boot sector and sends a few DHCP packets, so read
-  counters and NIC transmit counters both move off zero on a guest sitting at
-  "no bootable device". Measured on a 26.1.8 system four minutes after
-  power-on, a booted guest against an identically configured VM with a blank
-  drive - `write_bytes` 419 MB versus 0, `read_bytes` 410 MB versus 512.
-- `machine_drive_stats` rows are addressed by a filter on `parent_drive`,
-  never by row position: `machine_drive_stats/<n>` resolves to the row whose
-  own `$key` is n, which belongs to a different drive. Measured on a 26.1.8
-  system, `$key` 34 carried `parent_drive` 39, and a positional read reported
-  809 MB of writes on a VM that had never been powered on.
-- Recipes and VMs are matched by name client-side rather than with a
-  server-side OData filter. The correct escaping for a name embedded in an
-  OData string literal is not settled: pyvergeos doubles `'` SQL-style, while
-  measurements against VergeOS 26.1.8 recorded backslash-escaping as the form
-  the platform accepts, with the doubled form returning
-  `{"err": "Invalid argument"}`. Getting it wrong does not raise - the query
-  silently matches nothing, or returns an error document a caller counts as a
-  result row. Matching client-side avoids the question entirely.
+- A site sync that has never run counts as behind RPO. "No timestamp" and
+  "just replicated" must not look alike - a replication target configured once
+  and never exercised is precisely the failure the check exists to surface.
+- Sync health is conservative: healthy only when the platform positively
+  reports online and error-free. An unreadable state is unhealthy, never
+  assumed green.
+- Site sync drift is compared against the table's field spelling, not the
+  SDK's keyword. The SDK says `queue_retry_interval_seconds` where the row
+  says `queue_retry_interval`; comparing the wrong one reports drift on every
+  run.
+- The rolling health gate compares against a baseline captured before the run,
+  not against the previous iteration - otherwise the expected node count
+  drifts down one node at a time and the gate never fires.
+- `update` idempotence is by consequence, not bookkeeping. The platform records
+  that updates are installed, not that a check was performed, so `checked` and
+  `downloaded` run each time until an install has happened.
 
 ## [2.0.0] - 2026-02-02
 

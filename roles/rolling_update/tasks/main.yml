@@ -1,0 +1,128 @@
+---
+# rolling_update -- install a platform update, then apply it node by node.
+#
+# The shape follows the platform's own split. Check, download and install are
+# system-wide and happen once; only APPLYING an update is per node, and it is
+# applied by restarting. So this role does the system-wide part once and then
+# walks the nodes.
+#
+# Rolling rather than all-at-once is the whole point: a bad update is found on
+# the first node, while the rest of the cluster is still running the old one.
+
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that: rolling_update_host | length > 0
+    fail_msg: >-
+      rolling_update needs rolling_update_host (or VERGEOS_HOST).
+    quiet: true
+
+- name: Survey the cluster before anything changes
+  vergeio.vergeos.node_info:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+  register: rolling_update_before
+  changed_when: false
+
+# Recorded now, because it is the baseline the health gate compares against
+# after every node. Reading "how many nodes should be online" from the live
+# cluster mid-run would let the answer drift downwards one node at a time --
+# each failure quietly becoming the new normal.
+- name: Record the pre-update baseline
+  ansible.builtin.set_fact:
+    rolling_update_baseline_online: >-
+      {{ rolling_update_before.online | map(attribute='name') | list | sort }}
+
+- name: Report the cluster as found
+  ansible.builtin.debug:
+    msg:
+      online: "{{ rolling_update_baseline_online }}"
+      in_maintenance: >-
+        {{ rolling_update_before.maintenance | map(attribute='name') | list }}
+      already_pending_restart: >-
+        {{ rolling_update_before.needs_restart | map(attribute='name') | list }}
+
+# ── System-wide lifecycle ────────────────────────────────────────────────────
+
+- name: Run the system-wide update lifecycle
+  vergeio.vergeos.update:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+    state: "{{ rolling_update_stage }}"
+  register: rolling_update_lifecycle
+
+- name: Report the update
+  ansible.builtin.debug:
+    msg:
+      source: "{{ rolling_update_lifecycle.source }}"
+      branch: "{{ rolling_update_lifecycle.branch }}"
+      stages_run: "{{ rolling_update_lifecycle.stages_run }}"
+      installed: "{{ rolling_update_lifecycle.installed }}"
+      reboot_required: "{{ rolling_update_lifecycle.reboot_required }}"
+
+# ── Which nodes to walk ──────────────────────────────────────────────────────
+
+- name: Re-read the nodes now the update is installed
+  vergeio.vergeos.node_info:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+  register: rolling_update_after_install
+  changed_when: false
+
+- name: Decide which nodes need restarting
+  ansible.builtin.set_fact:
+    # An explicit list wins, so an operator can prove one node before
+    # committing to the rest. Otherwise: whichever nodes the platform itself
+    # says are waiting for a restart.
+    rolling_update_targets: >-
+      {{ rolling_update_nodes
+         if rolling_update_nodes | length > 0
+         else (rolling_update_after_install.needs_restart
+               | map(attribute='name') | list) }}
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: >-
+      {{ ("would restart, in order: " ~ rolling_update_targets)
+         if rolling_update_targets | length > 0
+         else "no node needs restarting; nothing to roll" }}
+
+# ── Consent ──────────────────────────────────────────────────────────────────
+# Deliberately AFTER the plan is printed, so the honest dry run is the default
+# path rather than a mode someone has to know to ask for: run it without
+# consent and it stages the update and tells you exactly which nodes it would
+# reboot, in what order.
+
+- name: Stop before rebooting anything
+  ansible.builtin.debug:
+    msg: >-
+      rolling_update_confirm is not "yes", so no node will be restarted.
+      The update is staged; re-run with -e rolling_update_confirm=yes to
+      apply it to {{ rolling_update_targets | length }} node(s).
+  when:
+    - rolling_update_targets | length > 0
+    - rolling_update_confirm != "yes"
+
+- name: Walk the nodes
+  ansible.builtin.include_tasks: one_node.yml
+  loop: "{{ rolling_update_targets }}"
+  loop_control:
+    loop_var: rolling_update_node
+    label: "{{ rolling_update_node }}"
+  when:
+    - rolling_update_targets | length > 0
+    - rolling_update_confirm == "yes"
+
+- name: Rolling update complete
+  ansible.builtin.debug:
+    msg: >-
+      restarted {{ rolling_update_targets | length }} node(s):
+      {{ rolling_update_targets }}
+  when:
+    - rolling_update_targets | length > 0
+    - rolling_update_confirm == "yes"

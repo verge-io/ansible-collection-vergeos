@@ -39,21 +39,6 @@ This is an Ansible collection (`vergeio.vergeos`) for managing VergeOS infrastru
 - `sdk_error_handler(module, e)`: Maps SDK exceptions to `module.fail_json()` calls
 - `vergeos_argument_spec()`: Shared argument spec for authentication (host, username, password, insecure) with environment variable fallbacks
 
-### Recipe Module Utilities
-
-- `plugins/module_utils/recipe_answers.py`: pure answer-resolution and
-  simulate-log scanning. No Ansible, no pyvergeos, no network - so it is
-  directly unit-testable. Lifted from the platform `recipe_deploy` role.
-- `plugins/module_utils/vm_recipes.py`: the SDK-facing glue. Holds
-  `client._request()` calls because pyvergeos has no `simulate` support and
-  `vm_recipe_instances.create()` discards the POST body that reports the
-  new VM's key.
-- `plugins/module_utils/machine.py`: reads a VM's drives and NICs (public
-  SDK managers) and their IO counters (no public manager for
-  `machine_drive_stats`, so read directly - and addressed by a filter on
-  `parent_drive`, never by row position, because the row whose own `$key`
-  is N belongs to a different drive).
-
 ### Module Pattern
 
 All modules follow this structure:
@@ -67,12 +52,13 @@ All modules follow this structure:
 ### Modules
 
 - **VM**: `vm`, `vm_info`, `vm_import`, `vm_snapshot`
-- **Recipe**: `vm_recipe_info`, `vm_recipe_deploy`
-- **Machine hardware**: `vm_drive_info`, `vm_nic_info`
 - **Network**: `network`, `network_info`, `nic`
 - **Storage**: `drive`
 - **Config**: `cloud_init`, `windows_unattend`
 - **System**: `user`, `member`, `cluster_info`, `file_info`
+- **Nodes**: `node_info`, `node_maintenance`
+- **Updates**: `update`, `update_info`
+- **Replication**: `site_sync`, `site_sync_info`
 - **Tags**: `tag`, `tag_category`
 
 ### Inventory Plugin (`plugins/inventory/vergeos_vms.py`)
@@ -87,15 +73,22 @@ Multi-site dynamic inventory with:
 
 ### Roles (`roles/`)
 
-- **`vm_from_recipe`**: deploys a VM from a recipe and waits for it to be
-  usable - drive-import waiting in two phases, post-conditions on drives
-  and NICs, optional power-on and guest-boot proof. The deploy itself is
-  one `vm_recipe_deploy` call; the role is everything after it, because
-  the deploy is asynchronous.
-- Role tasks gate on the VM key the deploy module reports, not on
-  `ansible_check_mode`: the latter reads false inside a caller's
-  `check_mode: true` block, so a role gated on it polls for a VM that was
-  never going to exist.
+- **`dr_replication`**: replication as code + an RPO watchdog.
+- **`rolling_update`**: install a platform update, then apply it
+  node by node with a health gate between nodes. Consent is a
+  variable (`rolling_update_confirm`), not `--check`, because a
+  scheduler will not remember to pass `--check`.
+
+### Testing Notes
+
+- `tests/unit/test_jinja_filters.py` catches nonexistent Jinja
+  filters, which ansible-lint and `--syntax-check` both pass.
+- Do NOT call `init_plugin_loader()` at test-module import time.
+  pytest imports every test module during collection, so it
+  reaches into the pre-existing non-isolated vm/inventory suites
+  and changes their pass/fail pattern.
+- Test file basenames must be unique across `tests/unit/`; there
+  are no `__init__.py` files, so pytest collides on duplicates.
 
 ### Documentation Fragment (`plugins/doc_fragments/vergeos.py`)
 

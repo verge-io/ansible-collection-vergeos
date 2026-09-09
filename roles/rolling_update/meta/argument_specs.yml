@@ -1,0 +1,97 @@
+---
+argument_specs:
+  main:
+    short_description: Install a platform update and apply it node by node
+    description:
+      - Runs the system-wide update lifecycle once, then restarts each node
+        that needs it, draining before and health-gating after.
+      - Rolling rather than all-at-once is the point - a bad update is found
+        on the first node, while the rest of the cluster still runs the
+        previous version.
+      - Without O(rolling_update_confirm) set to C(yes) the role stages the
+        update and reports which nodes it would restart, but restarts nothing.
+    author:
+      - VergeIO (@vergeio)
+    options:
+      rolling_update_host:
+        description: VergeOS hostname or IP. Defaults to C(VERGEOS_HOST).
+        type: str
+        required: true
+      rolling_update_username:
+        description: Username. Defaults to C(VERGEOS_USERNAME).
+        type: str
+      rolling_update_password:
+        description: Password. Defaults to C(VERGEOS_PASSWORD).
+        type: str
+      rolling_update_insecure:
+        description: Skip SSL validation. Defaults to C(VERGEOS_INSECURE).
+        type: bool
+        default: false
+      rolling_update_confirm:
+        description:
+          - Must be the literal string C(yes) before any node is restarted.
+          - A separate consent flag rather than relying on C(--check), because
+            a scheduler will not remember to pass C(--check).
+        type: str
+        default: "no"
+      rolling_update_stage:
+        description:
+          - How far to take the system-wide lifecycle before touching nodes.
+        type: str
+        choices: [checked, downloaded, installed]
+        default: installed
+      rolling_update_nodes:
+        description:
+          - Nodes to restart, in order. Empty means every node the platform
+            reports as needing a restart.
+          - Order matters on an uneven cluster - put the node you most want
+            proven first.
+        type: list
+        elements: str
+        default: []
+      rolling_update_drain:
+        description:
+          - Drain each node before restarting it. A restart without a drain is
+            a hard stop for whatever was running there.
+        type: bool
+        default: true
+      rolling_update_drain_timeout:
+        description: Seconds to allow evacuation to finish.
+        type: int
+        default: 1800
+      rolling_update_restart_timeout:
+        description: Seconds to allow a node to go away and come back.
+        type: int
+        default: 1800
+      rolling_update_poll_interval:
+        description: Seconds between polls.
+        type: int
+        default: 15
+      rolling_update_return_to_service:
+        description:
+          - Take each node back out of maintenance once it returns.
+        type: bool
+        default: true
+      rolling_update_health_gate:
+        description:
+          - Require the cluster to look right before moving to the next node.
+        type: bool
+        default: true
+      rolling_update_require_all_online:
+        description:
+          - Every node online before the run must be online again before the
+            next node is touched.
+        type: bool
+        default: true
+      rolling_update_max_replication_age:
+        description:
+          - Fail if replication falls behind this many seconds during the
+            update. 0 skips the check.
+        type: int
+        default: 0
+      rolling_update_settle_seconds:
+        description:
+          - Seconds to wait before evaluating the health gate. A node reports
+            online before it is carrying anything.
+        type: int
+        default: 30
