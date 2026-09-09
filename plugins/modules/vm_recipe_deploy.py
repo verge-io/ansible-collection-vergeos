@@ -251,6 +251,8 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vm_recipes import 
     fetch_questions,
     find_vm_by_name,
     post_instance,
+    simulate_transport_error,
+    SUCCESS,
     resolve_recipe,
 )
 
@@ -358,9 +360,18 @@ def main():
                 **result)
 
         if params['simulate']:
-            document = post_instance(client, recipe['$key'], name,
-                                     resolved['answers'], simulate=True)
+            status, document = post_instance(client, recipe['$key'], name,
+                                             resolved['answers'],
+                                             simulate=True)
+            # The status is deliberately not treated as pass/fail. A clean
+            # simulate answers HTTP 405 with err='Simulation complete' on
+            # 26.1.8; only a missing response document means the call itself
+            # failed.
+            transport = simulate_transport_error(status, document)
+            if transport:
+                module.fail_json(msg=transport, **result)
             verdict = scan_simulate(document)
+            verdict['http_status'] = status
             result['simulate_result'] = verdict
             if not verdict['ok']:
                 module.fail_json(
@@ -376,9 +387,15 @@ def main():
                                 else ""))
             module.exit_json(**result)
 
-        document = post_instance(client, recipe['$key'], name,
-                                 resolved['answers'],
-                                 auto_update=params['auto_update'])
+        status, document = post_instance(client, recipe['$key'], name,
+                                         resolved['answers'],
+                                         auto_update=params['auto_update'])
+        if status not in SUCCESS:
+            module.fail_json(
+                msg="the deploy POST was refused: HTTP %s -- %s"
+                    % (status, (document or {}).get('err')
+                       if isinstance(document, dict) else document),
+                **result)
 
         # The POST hands back the key of the VM it built, so the identity of
         # what was just deployed is known without inferring it from the name.
