@@ -53,9 +53,10 @@ All modules follow this structure:
 
 - **VM**: `vm`, `vm_info`, `vm_import`, `vm_snapshot`
 - **Network**: `network`, `network_info`, `nic`
-- **Storage**: `drive`, `physical_drive_info`
+- **Storage**: `drive`
 - **Config**: `cloud_init`, `windows_unattend`
 - **System**: `user`, `member`, `cluster_info`, `file_info`
+- **RBAC**: `group`, `group_info`, `permission`
 - **Tags**: `tag`, `tag_category`
 
 ### Inventory Plugin (`plugins/inventory/vergeos_vms.py`)
@@ -70,9 +71,9 @@ Multi-site dynamic inventory with:
 
 ### Roles (`roles/`)
 
-- **`drive_health`**: read-only SMART/vSAN triage. Read-only on
-  purpose - every other decision here is reversible; pulling a
-  drive is not.
+- **`rbac`**: groups, membership and permissions from one
+  document. Additive by default in two places (`exact_members`
+  per group, `rbac_exact_permissions` globally).
 
 ### Testing Notes
 

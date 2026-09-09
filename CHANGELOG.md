@@ -9,26 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`physical_drive_info` module**: SMART attributes and the platform's own
-  vSAN IO error counters, triaged into a severity so a drive with
-  uncorrectable sectors is not reported the same way as one that is merely
-  warm. Both flag groupings are overridable.
-- **`drive_health` role**: read-only fleet triage producing a replacement list
-  and a do-not-pull list.
+- **`group` + `group_info` modules**: groups, their membership (users and
+  nested groups), and the grants attached to them. Membership is additive
+  unless `exact_members` is set.
+- **`permission` module**: the five VergeOS rights on a table, or on one row
+  of a table, for a named user or group.
+- **`rbac` role**: groups, membership and permissions from one document, with
+  a read-back report of who can do what.
 - **`tests/unit/test_jinja_filters.py`**: asserts every Jinja filter and test
-  used in a role or example actually exists (ansible-lint and
-  `--syntax-check` both pass nonexistent ones).
+  used in a role or example actually exists.
 
 ### Notes
 
-- vSAN IO errors outrank every SMART flag. A SMART warning is the drive's own
-  prediction; a vSAN read or write error is the platform reporting that an
-  operation against the drive actually failed. The measurement wins.
-- A drive with SMART disabled is reported as `info`, not `ok` - its health
-  flags are silent, so it reads as healthy whether it is or not.
-- `repairing` is reported separately and is not a severity. A drive can
-  rebuild while perfectly healthy, but pulling a second drive mid-repair is
-  how a rebuild becomes a data-loss event.
+- Permissions attach to an identity, which both users and groups carry, so
+  granting to a user and to a group are the same operation with a different
+  lookup.
+- Users and groups are named, not keyed. An RBAC document referring to
+  identity keys would be unreadable and would not port between systems; the
+  lookup is where a typo becomes a clear error rather than a grant landing on
+  nobody.
+- Rights are the whole grant, not an addition - a right not named is denied.
+- A table-level grant (row 0) and a grant on one row of the same table are
+  different permissions, matched on `table#row`. Comparing on the table alone
+  lets a declared row-level grant shelter an undeclared table-wide one.
+- Reconciling rights revokes and re-grants: `grant()` is the only path the SDK
+  exposes for setting them, and re-granting the same (identity, table, row)
+  replaces rather than duplicating.
+- Platform-managed groups are reported, never reconciled.
 
 ## [2.0.0] - 2026-02-02
 
