@@ -9,43 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`site_sync` + `site_sync_info` modules**: site-to-site replication
-  (ioReplicate) as code, plus the derived facts a watchdog needs - age of each
-  sync's last run, and the stale/unhealthy lists. Incoming syncs are reported
-  but never managed, because an incoming sync belongs to the receiving system.
-- **`dr_replication` role**: reconcile declared replication, optionally purge
-  what is not declared, optionally trigger and wait, then fail on lag or
-  unhealthy state. With nothing declared it is a pure watchdog and converges
-  nothing.
-- **`node_info` + `node_maintenance` modules**: node state, and drain / return
-  to service / restart. Draining the last usable node is refused unless forced.
-- **`update` + `update_info` modules**: the system-wide platform update
-  lifecycle (check, download, install). Applying an update is per node and is
-  deliberately not done here.
-- **`rolling_update` role**: install an update, then restart each node that
-  needs it - drain, restart, wait down, wait back, return to service, health
-  gate. Requires explicit consent before restarting anything.
+- **`physical_drive_info` module**: SMART attributes and the platform's own
+  vSAN IO error counters, triaged into a severity so a drive with
+  uncorrectable sectors is not reported the same way as one that is merely
+  warm. Both flag groupings are overridable.
+- **`drive_health` role**: read-only fleet triage producing a replacement list
+  and a do-not-pull list.
 - **`tests/unit/test_jinja_filters.py`**: asserts every Jinja filter and test
-  used in a role or example actually exists.
+  used in a role or example actually exists (ansible-lint and
+  `--syntax-check` both pass nonexistent ones).
 
 ### Notes
 
-- A site sync that has never run counts as behind RPO. "No timestamp" and
-  "just replicated" must not look alike - a replication target configured once
-  and never exercised is precisely the failure the check exists to surface.
-- Sync health is conservative: healthy only when the platform positively
-  reports online and error-free. An unreadable state is unhealthy, never
-  assumed green.
-- Site sync drift is compared against the table's field spelling, not the
-  SDK's keyword. The SDK says `queue_retry_interval_seconds` where the row
-  says `queue_retry_interval`; comparing the wrong one reports drift on every
-  run.
-- The rolling health gate compares against a baseline captured before the run,
-  not against the previous iteration - otherwise the expected node count
-  drifts down one node at a time and the gate never fires.
-- `update` idempotence is by consequence, not bookkeeping. The platform records
-  that updates are installed, not that a check was performed, so `checked` and
-  `downloaded` run each time until an install has happened.
+- vSAN IO errors outrank every SMART flag. A SMART warning is the drive's own
+  prediction; a vSAN read or write error is the platform reporting that an
+  operation against the drive actually failed. The measurement wins.
+- A drive with SMART disabled is reported as `info`, not `ok` - its health
+  flags are silent, so it reads as healthy whether it is or not.
+- `repairing` is reported separately and is not a severity. A drive can
+  rebuild while perfectly healthy, but pulling a second drive mid-repair is
+  how a rebuild becomes a data-loss event.
 
 ## [2.0.0] - 2026-02-02
 

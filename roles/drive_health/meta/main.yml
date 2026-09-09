@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: drive_health
+  author: VergeIO
+  description: >-
+    Read-only SMART and vSAN drive triage, producing a replacement list and a
+    do-not-pull list.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.14"
+  galaxy_tags:
+    - vergeos
+    - vergeio
+    - storage
+    - monitoring
+    - hardware
+
+dependencies: []
