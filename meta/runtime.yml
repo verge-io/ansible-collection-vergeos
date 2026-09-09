@@ -1,2 +1,84 @@
 ---
 requires_ansible: ">=2.14.0"
+
+# Action groups let a play set connection details once with
+# `module_defaults` instead of repeating host/username/password/insecure on
+# every task. Without them, `group/vergeio.vergeos.all` fails outright with
+# "could not resolve the module_defaults group" -- it is not ignored, so the
+# absence of this section is a hard error for anyone who tries the idiomatic
+# thing.
+#
+# Every module here takes the same connection arguments, which is what makes
+# a single 'all' group meaningful. The two narrower groups exist because
+# module_defaults applies to every module in a group, and a play that only
+# reads should be able to say so.
+action_groups:
+  # Everything. The usual choice.
+  all:
+      - cloud_init
+      - cluster_info
+      - drive
+      - file_info
+      - group
+      - group_info
+      - member
+      - network
+      - network_info
+      - nic
+      - node_info
+      - node_maintenance
+      - permission
+      - physical_drive_info
+      - site_sync
+      - site_sync_info
+      - tag
+      - tag_category
+      - update
+      - update_info
+      - user
+      - vm
+      - vm_drive_info
+      - vm_import
+      - vm_info
+      - vm_nic_info
+      - vm_recipe_deploy
+      - vm_recipe_info
+      - vm_snapshot
+      - windows_unattend
+
+  # Read-only modules. Nothing in this group changes state, so defaults
+  # applied here cannot cause a write.
+  info:
+      - cluster_info
+      - file_info
+      - group_info
+      - network_info
+      - node_info
+      - physical_drive_info
+      - site_sync_info
+      - update_info
+      - vm_drive_info
+      - vm_info
+      - vm_nic_info
+      - vm_recipe_info
+
+  # Modules that can change state.
+  management:
+      - cloud_init
+      - drive
+      - group
+      - member
+      - network
+      - nic
+      - node_maintenance
+      - permission
+      - site_sync
+      - tag
+      - tag_category
+      - update
+      - user
+      - vm
+      - vm_import
+      - vm_recipe_deploy
+      - vm_snapshot
+      - windows_unattend
