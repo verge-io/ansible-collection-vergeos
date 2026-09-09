@@ -13,8 +13,10 @@ module: member
 short_description: Manage group members in VergeOS
 version_added: "1.0.0"
 description:
-  - Add or remove members from groups in VergeOS.
-  - Manage user membership within groups.
+  - Add or remove a single user's membership of a group.
+  - Manages one user at a time. To declare a group's whole membership - or to
+    nest groups inside groups - use M(vergeio.vergeos.group), which reconciles
+    the entire set and can remove members it was not told about.
 options:
   group:
     description:
@@ -35,6 +37,13 @@ options:
     default: present
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
+notes:
+  - Supports C(check_mode).
+  - Group and user are matched by name in Python rather than with a
+    server-side OData filter. Embedding a name in an OData string literal
+    needs an escape whose form pyvergeos currently gets wrong - a name
+    containing an apostrophe returns HTTP 422 rather than no match - so
+    matching client-side sidesteps it.
 author:
   - VergeIO (@vergeio)
 '''
@@ -82,58 +91,48 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_group(client, group_name):
-    """Get group by name using SDK"""
-    try:
-        return client.groups.get(name=group_name)
-    except NotFoundError:
-        return None
+def find_by_name(client, manager, name):
+    """One row by name from a manager, or None. Matched client-side.
+
+    Not ``manager.get(name=...)``: that builds an OData filter, and pyvergeos
+    escapes a literal apostrophe SQL-style, which VergeOS 26.1.8 rejects with
+    HTTP 422 rather than returning no match. Group and user names are user
+    supplied, so that is reachable. These lists are small.
+    """
+    for row in getattr(client, manager).list():
+        if dict(row).get('name') == name:
+            return row
+    return None
 
 
-def get_user(client, username):
-    """Verify user exists using SDK"""
-    try:
-        return client.users.get(username=username)
-    except NotFoundError:
-        return None
+def find_membership(members, user_key):
+    """The membership row linking ``user_key`` to the group, or None.
 
+    The row identifies its member by reference, not by name. Measured on a
+    real row from VergeOS 26.1.8:
 
-def get_member(client, group, member_username):
-    """Get member by group and username using SDK"""
-    try:
-        members = list(group.members.list())
-        for member in members:
-            member_dict = dict(member)
-            if member_dict.get('member') == member_username:
-                return member
-        return None
-    except (NotFoundError, AttributeError):
-        return None
+        {'$key': 4, 'parent_group': 2, 'member': '/v4/users/2',
+         'system': False, 'creator': 'welchums'}
 
+    The previous version of this module compared that reference against the
+    bare username, which can never be equal -- so ``present`` believed the
+    member was always absent and re-added, and ``absent`` never found anyone
+    and silently removed nothing.
 
-def add_member(module, client, group, member_username):
-    """Add a member to a group using SDK"""
-    if module.check_mode:
-        return True, {'member': member_username}
-
-    member = group.members.create(member=member_username)
-    return True, dict(member)
-
-
-def update_member(module, client, member):
-    """Update a member using SDK"""
-    # Note: Based on Terraform provider, members don't have updatable fields beyond parent_group and member
-    # This function is kept for consistency but may not need to do anything
-    return False, dict(member)
-
-
-def remove_member(module, client, member):
-    """Remove a member from a group using SDK"""
-    if module.check_mode:
-        return True
-
-    member.delete()
-    return True
+    Both reference forms are handled. ``/v4/users/2`` comes back from the
+    members table and is what pyvergeos POSTs; ``users/2`` comes back from
+    the nested projection on a group. Matching only one of them reintroduces
+    the same class of bug.
+    """
+    wanted = str(user_key)
+    for row in members:
+        parts = [p for p in str(dict(row).get('member') or '').split('/') if p]
+        if len(parts) < 2:
+            continue
+        table, key = parts[-2], parts[-1]
+        if table == 'users' and key == wanted:
+            return row
+    return None
 
 
 def main():
@@ -155,34 +154,57 @@ def main():
     state = module.params['state']
 
     try:
-        # Get group
-        group = get_group(client, group_name)
+        group = find_by_name(client, 'groups', group_name)
         if not group:
             module.fail_json(msg=f"Group '{group_name}' not found")
 
-        # Verify user exists
-        user = get_user(client, member_username)
+        user = find_by_name(client, 'users', member_username)
         if not user:
             module.fail_json(msg=f"User '{member_username}' not found")
 
-        # Get existing member
-        member = get_member(client, group, member_username)
+        group_key = dict(group)['$key']
+        user_key = dict(user)['$key']
+
+        members = client.groups.members(group_key)
+        existing = find_membership(members.list(), user_key)
 
         if state == 'absent':
-            if member:
-                remove_member(module, client, member)
-                module.exit_json(changed=True, msg=f"Member '{member_username}' removed from group '{group_name}'")
-            else:
-                module.exit_json(changed=False, msg="Member does not exist in group")
+            if not existing:
+                module.exit_json(
+                    changed=False,
+                    msg=f"'{member_username}' is not a member of "
+                        f"'{group_name}'")
+            if not module.check_mode:
+                members.remove_user(int(user_key))
+            module.exit_json(
+                changed=True,
+                msg=f"removed '{member_username}' from '{group_name}'")
 
-        elif state == 'present':
-            if member:
-                changed, updated_member = update_member(module, client, member)
-                module.exit_json(changed=changed, member=updated_member)
-            else:
-                changed, new_member = add_member(module, client, group, member_username)
-                module.exit_json(changed=changed, member=new_member)
+        # state == 'present'
+        if existing:
+            # There is nothing on a membership row to reconcile -- it links a
+            # user to a group and carries no other settable field -- so being
+            # present is the whole of being correct.
+            module.exit_json(
+                changed=False, member=dict(existing),
+                msg=f"'{member_username}' is already a member of "
+                    f"'{group_name}'")
 
+        if module.check_mode:
+            module.exit_json(
+                changed=True,
+                msg=f"would add '{member_username}' to '{group_name}'")
+
+        # add_user posts {'parent_group': key, 'member': '/v4/users/<key>'}.
+        # The previous version posted the bare username as 'member', which is
+        # not the shape the API takes.
+        created = members.add_user(int(user_key))
+        module.exit_json(
+            changed=True, member=dict(created),
+            msg=f"added '{member_username}' to '{group_name}'")
+
+    except NotFoundError as e:
+        module.fail_json(msg=f"Resource not found: {e}")
     except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
         sdk_error_handler(module, e)
     except Exception as e:
