@@ -150,6 +150,156 @@ lags the platform here.
 
 ---
 
+---
+
+## B9 — the recipe simulate is unreachable through pyvergeos
+**Status:** OPEN · **Severity:** HIGH — the flagship recipe feature does not
+function · **Branch:** `feature/deploy-vm-from-recipe`
+**Blocks:** `vm_recipe_deploy` entirely, and the `vm_from_recipe` role with it
+
+A simulate POST succeeds and returns exactly the document `scan_simulate()`
+was written for — but it comes back on a **non-2xx status**, so pyvergeos
+raises and discards the body.
+
+Measured, raw HTTP `POST /api/v4/vm_recipe_instances` with `simulate: true`:
+
+```
+HTTP 405
+keys: ['err', 'response']
+err : 'Simulation complete'
+response.logs           : 28 entries (real recipe steps, incl. CREATE_OS_DRIVE)
+response.cloudinit_files: ['/meta-data', '/network-config', '/user-data']
+response.answers.YB_VM_KEY: 36
+```
+
+Through the SDK the same call raises:
+
+```
+type=APIError  str='Simulation complete'  status_code=405
+attributes: ['add_note','args','status_code','with_traceback']   # no body
+```
+
+`client.py` dispatches on HTTP status (`else: raise APIError(...)`) and
+`_extract_error_message` keeps only the message string. The 28-entry log — the
+entire point of the scan — is unrecoverable.
+
+Consequence: `vm_recipe_deploy` fails with `API error: Simulation complete`
+before it can deploy or report. Confirmed live via the module:
+`fatal: ... "msg": "API error: Simulation complete"`.
+
+The simulate itself is a genuine dry run: after two simulate runs, zero
+`zz-claude*` VMs existed and the only recipe instance was the pre-existing
+`nas1`.
+
+Fix does **not** require an SDK change — the simulate POST needs to bypass
+`_request` and read the raw response. Worth reporting the 405-on-success to
+VergeIO separately.
+
+---
+
+## B10 — rolling_update treats `maintenance=True` as "evacuation finished"
+**Status:** OPEN · **Severity:** HIGH · **Branch:** `feature/rolling-update`
+**Blocks:** `rolling_update` role
+
+`tasks/one_node.yml` polls until the node reports `maintenance`, then asserts
+evacuation is complete and restarts it. Measured on `conundrum-lab`, draining
+node2 (3 running VMs, 57 GB):
+
+```
+maintenance flag True after 1 poll (~0 s)
+at that moment: 1 of 3 VMs had moved; lab-node1 and lab-node3 (16 GB each)
+                were still RUNNING on node2
+node2 status  : 'migrating'
+```
+
+So the role would have restarted a node with 32 GB of live workloads on it —
+precisely the failure it was written to prevent.
+
+The real completion signals are the node's `status` leaving `migrating`, and
+zero running VMs whose `node_name` is the drained node. The `maintenance`
+boolean only records that the request was accepted.
+
+---
+
+## B11 — I claimed the Jinja test file was identical across branches; it is not
+**Status:** OPEN (process/accuracy) · **Severity:** low
+
+The `feature/drive-health` and `feature/rbac-as-code` commit messages say the
+file is "identical to the copy on the other branches, so they merge cleanly".
+Measured md5 of `tests/unit/test_jinja_filters.py`:
+
+```
+feature/site-sync-dr    fa32c792   init_plugin_loader at import time (buggy)
+feature/rolling-update  547fd1c1   deferred behind functools.cache (fixed)
+feature/drive-health    547fd1c1
+feature/rbac-as-code    547fd1c1
+```
+
+Merging produced a real `AA` conflict on that path. Two consequences:
+`site-sync-dr` still carries the version that perturbs the pre-existing
+vm/inventory suites (B5's sibling), and merge order decides which lands.
+
+---
+
+## B12 — the collection defines no action group
+**Status:** OPEN · **Severity:** low (usability)
+
+`meta/runtime.yml` contains only `requires_ansible`. There are no
+`action_groups`, so `module_defaults: group/vergeio.vergeos.all:` fails with
+`could not resolve the module_defaults group vergeio.vergeos.all` — measured
+while writing the lab probes.
+
+Consequence: every task must repeat `host`/`username`/`password`/`insecure`.
+The roles in this collection do exactly that, four lines per task, which is
+the noise an action group exists to remove.
+
+---
+
+## P1 — PLATFORM: a drain with insufficient target capacity stalls silently
+**Status:** OPEN (VergeOS, not ours) · **Severity:** high operationally
+
+Not our bug, but it shapes the design. Draining node2 when node1 lacked
+headroom for the remaining 32 GB left the node in `status='migrating'`
+**indefinitely** — 14+ minutes with no progress, no error, and no timeout.
+
+Per-VM state during the stall showed no migration was even attempted:
+
+```
+lab-node1: migratable=True  migration_destination=None  migrated_node=None
+lab-node3: migratable=True  migration_destination=None  migrated_node=None
+```
+
+Capacity arithmetic taken beforehand predicted it: draining node2 needed
+57344 MB against node1's 64512 MB of nominal headroom, but once
+`lab-nethost` (24576 MB) had landed, the remaining 32768 MB no longer fit
+alongside host and vSAN reservations.
+
+Recovering was clean: `node_maintenance state=active` returned node2 to
+service, all seven VMs ended on their original nodes, nothing was lost.
+
+**This is the strongest argument for a pre-flight capacity check** — neither
+the UI nor the native apply action verifies that an N-1 evacuation fits
+before starting one.
+
+## Verified CORRECT (claims that survived live testing)
+
+- **`machine_drive_stats` row aliasing is real.** 12 of 49 rows have
+  `$key != parent_drive`, including the exact case the platform repo cited:
+  `stats $key=34 -> parent_drive=39`. Addressing by path would read another
+  drive's counters. Note `nas1`'s drives (keys 6-9) all coincide, so a probe
+  limited to that VM "disproves" it — a test passing for the wrong reason.
+- **`physical_drives` field names** (`temp`, `fw`, `size`, `smart`, all
+  `*_warn`) match the live row exactly; SMART triage returned
+  `{'ok': 2, 'info': 0, 'warning': 0, 'critical': 0}` on two healthy drives.
+- **Recipe question and option discovery works.** 32 recipes;
+  `required: ['HOSTNAME','USER','PASSWORD']`, `secrets: ['PASSWORD']`,
+  10 internal questions separated, and `SELECT_OS_TIER` resolved live to
+  `[{'$key': 1, '$display': 1, 'tier': 1}]`.
+- **`permission` module** found the existing `/#0` full-control grant by group
+  name and reported `changed=False` in check mode.
+- **`node_maintenance`** enter and exit both work; peer detection resolves
+  correctly in both directions.
+
 ## The pattern
 B2, B3, B4 and B6 are one mistake made four times: **field names were
 inferred, and the unit-test fixtures encoded the same inference**, so the
