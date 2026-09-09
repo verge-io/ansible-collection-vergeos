@@ -221,7 +221,8 @@ boolean only records that the request was accepted.
 ---
 
 ## B11 — I claimed the Jinja test file was identical across branches; it is not
-**Status:** OPEN (process/accuracy) · **Severity:** low
+**Status:** FIXED — `bbb70c4` (site-sync-dr), `db7f87c` (deploy-vm-from-recipe)
+**Severity:** low
 
 The `feature/drive-health` and `feature/rbac-as-code` commit messages say the
 file is "identical to the copy on the other branches, so they merge cleanly".
@@ -241,7 +242,7 @@ vm/inventory suites (B5's sibling), and merge order decides which lands.
 ---
 
 ## B12 — the collection defines no action group
-**Status:** OPEN · **Severity:** low (usability)
+**Status:** FIXED — `6d3860c` · **Severity:** low (usability)
 
 `meta/runtime.yml` contains only `requires_ansible`. There are no
 `action_groups`, so `module_defaults: group/vergeio.vergeos.all:` fails with
@@ -255,7 +256,7 @@ the noise an action group exists to remove.
 ---
 
 ## B13 — the shipped `member` module is entirely non-functional
-**Status:** OPEN (pre-existing on `main`, not introduced here)
+**Status:** FIXED — `56eaca9`. Pre-existing on `main`, not introduced here.
 **Severity:** HIGH — a documented 1.0.0 module that cannot work
 **Blocks:** `vergeio.vergeos.member`, both states
 
@@ -305,7 +306,7 @@ silently.
 ---
 
 ## B14 — `no_log` on `answers` scrubs the VM name from every message
-**Status:** OPEN · **Severity:** low (cosmetic, but confusing)
+**Status:** FIXED — `0fd7fd9` · **Severity:** low (cosmetic, but confusing)
 **Branch:** `feature/deploy-vm-from-recipe`
 
 Recipe answers are `no_log` because they carry passwords. Ansible then masks
@@ -385,3 +386,47 @@ B2, B3, B4 and B6 are one mistake made four times: **field names were
 inferred, and the unit-test fixtures encoded the same inference**, so the
 tests verified self-consistency rather than correctness. Every fixture in
 this collection should be traceable to a measured row.
+
+---
+
+## B16 — the unit suite was not testing what it claimed
+**Status:** FIXED — `6178fe6` · **Severity:** medium (false confidence)
+
+Six failures and 47 collection errors were tolerated as "main's baseline".
+Every one was a test defect, and worse, several PASSING tests could not fail.
+
+- An autouse fixture replaced `pyvergeos.exceptions` with a `MagicMock`, so
+  `NotFoundError` was not an exception class. `unittest.mock` treats a
+  non-exception `side_effect` as a **callable** -- it calls it and returns the
+  result instead of raising. The "VM not found" test never entered the
+  not-found branch.
+- Patches targeted `module_utils.vergeos`, but modules bind the name at
+  import. The patch never reached them.
+- Seven row mocks set `__iter__`, which `dict()` ignores in favour of
+  `keys()`. `dict(mock)` was `{}`, so six tests passed no matter what the row
+  contained.
+- `test_fails_when_sdk_not_installed` never made the SDK absent.
+
+Result: **532 passed, 0 failed, 4.43s**, from 6 failed / 47 errors / >2min.
+
+Worth keeping in mind as a pattern, not just a fixed bug: three of these are
+the same failure mode as B4 and B2 -- a fixture that encodes an assumption,
+so the test agrees with the code and both are wrong together.
+
+---
+
+## B17 — `requires_ansible` names an unsupported ansible-core
+**Status:** OPEN — deliberately, it is a support-matrix decision
+**Severity:** low
+
+`meta/runtime.yml` declares `requires_ansible: ">=2.14.0"`. ansible-core 2.14
+is end-of-life, and ansible-lint rejects it:
+
+```
+meta-runtime[unsupported-version]: 'requires_ansible' must refer to a
+currently supported version such as: >=2.15.0, ...
+```
+
+It is the only lint failure left in the repository. Not changed here, because
+raising the floor drops a declared supported platform, and that is a call for
+the collection owners rather than a lint fix.
