@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`physical_drive_info` module**: SMART attributes and the platform's own
+  vSAN IO error counters, triaged into a severity so a drive with
+  uncorrectable sectors is not reported the same way as one that is merely
+  warm. Both flag groupings are overridable.
+- **`drive_health` role**: read-only fleet triage producing a replacement list
+  and a do-not-pull list.
+- **`tests/unit/test_jinja_filters.py`**: asserts every Jinja filter and test
+  used in a role or example actually exists (ansible-lint and
+  `--syntax-check` both pass nonexistent ones).
+
+### Notes
+
+- vSAN IO errors outrank every SMART flag. A SMART warning is the drive's own
+  prediction; a vSAN read or write error is the platform reporting that an
+  operation against the drive actually failed. The measurement wins.
+- A drive with SMART disabled is reported as `info`, not `ok` - its health
+  flags are silent, so it reads as healthy whether it is or not.
+- `repairing` is reported separately and is not a severity. A drive can
+  rebuild while perfectly healthy, but pulling a second drive mid-repair is
+  how a rebuild becomes a data-loss event.
+
 ## [2.0.0] - 2026-02-02
 
 ### Breaking Changes

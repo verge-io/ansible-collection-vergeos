@@ -1,0 +1,38 @@
+---
+# drive_health -- SMART and vSAN drive triage. READ-ONLY: this role never
+# touches a drive. Replacing one is a physical act and stays a human decision.
+
+# ── Connection ───────────────────────────────────────────────────────────────
+drive_health_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+drive_health_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+drive_health_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+drive_health_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(false, true) | bool }}"
+
+# Limit the scan to one node. Empty scans the whole cluster.
+drive_health_node: ""
+
+# ── Triage policy ────────────────────────────────────────────────────────────
+# Which SMART flags count as "replace this" versus "watch this". The defaults
+# are the conventional reading, not platform policy:
+#
+#   critical — reallocated / pending / uncorrectable sectors. The drive could
+#              not read or write something. These do not improve on their own.
+#   warning  — wear level and temperature. Real and actionable, but
+#              plan-a-replacement and check-the-airflow respectively.
+#
+# On an all-flash tier where wear-out IS the failure mode, promote
+# wear_level_warn into the critical list.
+drive_health_critical_flags:
+  - realloc_sectors_warn
+  - current_pending_sector_warn
+  - offline_uncorrectable_warn
+drive_health_warning_flags:
+  - wear_level_warn
+  - temp_warn
+
+# ── Gates ────────────────────────────────────────────────────────────────────
+# Fail the play when a drive needs replacing. Off by default so the role reads
+# as a report; turn it on for a scheduled check that should page someone.
+drive_health_fail_on_critical: false
+# Fail on warnings too. Noisier — a warm drive will trip this.
+drive_health_fail_on_warning: false

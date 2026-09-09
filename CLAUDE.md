@@ -53,7 +53,7 @@ All modules follow this structure:
 
 - **VM**: `vm`, `vm_info`, `vm_import`, `vm_snapshot`
 - **Network**: `network`, `network_info`, `nic`
-- **Storage**: `drive`
+- **Storage**: `drive`, `physical_drive_info`
 - **Config**: `cloud_init`, `windows_unattend`
 - **System**: `user`, `member`, `cluster_info`, `file_info`
 - **Tags**: `tag`, `tag_category`
@@ -67,6 +67,22 @@ Multi-site dynamic inventory with:
 - Host variables: site info, VM identification, timestamps (created/modified), machine_type, status, resources, OS, organization (tenant/cluster/node), tags, NICs, MAC addresses, drives, IP
 - JSON file caching (recommended: 1 hour timeout)
 - Hostname templating
+
+### Roles (`roles/`)
+
+- **`drive_health`**: read-only SMART/vSAN triage. Read-only on
+  purpose - every other decision here is reversible; pulling a
+  drive is not.
+
+### Testing Notes
+
+- `tests/unit/test_jinja_filters.py` catches nonexistent Jinja
+  filters, which ansible-lint and `--syntax-check` both pass.
+- Do NOT call `init_plugin_loader()` at test-module import time;
+  pytest imports every test module during collection, so it
+  perturbs the pre-existing non-isolated vm/inventory suites.
+- Test file basenames must be unique across `tests/unit/` - there
+  are no `__init__.py` files, so pytest collides on duplicates.
 
 ### Documentation Fragment (`plugins/doc_fragments/vergeos.py`)
 
