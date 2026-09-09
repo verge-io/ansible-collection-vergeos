@@ -47,9 +47,19 @@ def mock_vergeos_client():
 
 
 def create_mock_resource(data):
-    """Helper to create mock SDK resource objects that support dict()"""
+    """A mock SDK resource object that really does survive dict().
+
+    The obvious implementation -- assigning __iter__ -- does not work, and
+    silently: dict() prefers the mapping protocol, MagicMock auto-provides
+    keys(), so dict(mock) comes back {} and the __iter__ never runs. This
+    helper carried that bug while its docstring promised otherwise, and every
+    caller inherited it.
+
+    keys() and __getitem__ are what dict() actually consults.
+    """
     mock = MagicMock()
-    mock.__iter__ = lambda self: iter(data.items())
+    mock.keys = lambda: data.keys()
+    mock.__getitem__ = lambda self, key: data[key]
     for key, value in data.items():
         setattr(mock, key, value)
     return mock

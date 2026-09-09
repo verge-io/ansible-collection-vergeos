@@ -22,6 +22,17 @@ from unittest.mock import MagicMock, patch
 # whenever these tests run and there is nothing to stub.
 
 
+def as_row(mock, row):
+    """Make a MagicMock decode as ``row`` under dict().
+
+    dict() prefers keys(), which MagicMock auto-provides, so assigning
+    __iter__ does nothing and dict(mock) is {}.
+    """
+    mock.keys = lambda: row.keys()
+    mock.__getitem__ = lambda self, key: row[key]
+    return mock
+
+
 class TestVmInfo:
     """Tests for vm_info module"""
 
@@ -32,9 +43,9 @@ class TestVmInfo:
         # Setup mock client
         mock_client = MagicMock()
         mock_vm1 = MagicMock()
-        mock_vm1.__iter__ = lambda self: iter({'$key': 1, 'name': 'vm1', 'cpu_cores': 2}.items())
+        as_row(mock_vm1, {'$key': 1, 'name': 'vm1', 'cpu_cores': 2})
         mock_vm2 = MagicMock()
-        mock_vm2.__iter__ = lambda self: iter({'$key': 2, 'name': 'vm2', 'cpu_cores': 4}.items())
+        as_row(mock_vm2, {'$key': 2, 'name': 'vm2', 'cpu_cores': 4})
         mock_client.vms.list.return_value = [mock_vm1, mock_vm2]
         mock_get_client.return_value = mock_client
 
@@ -74,7 +85,7 @@ class TestVmInfo:
         # Setup mock client
         mock_client = MagicMock()
         mock_vm = MagicMock()
-        mock_vm.__iter__ = lambda self: iter({'$key': 1, 'name': 'web-server', 'cpu_cores': 4}.items())
+        as_row(mock_vm, {'$key': 1, 'name': 'web-server', 'cpu_cores': 4})
         mock_client.vms.get.return_value = mock_vm
         mock_get_client.return_value = mock_client
 

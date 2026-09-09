@@ -1,0 +1,23 @@
+{
+ "_call": "client.groups.list()",
+ "_meta": {
+  "captured": "2026-09-09",
+  "note": "Regenerate with tests/capture_api_fixtures.py. Do not hand-edit: the point of these files is that no human chose the field names.",
+  "platform": "26.1.8"
+ },
+ "rows": [
+  {
+   "$key": 1,
+   "created": 1787560229,
+   "creator": "",
+   "description": "Default administrators group.  This group is subscribed to important system alerts.",
+   "email": "user@example.com",
+   "enabled": true,
+   "id": "Administrators (default)",
+   "identity": "3",
+   "member_count": 3,
+   "name": "Administrators (default)",
+   "system_group": true
+  }
+ ]
+}

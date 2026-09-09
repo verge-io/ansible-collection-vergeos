@@ -3,6 +3,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+from ansible_collections.vergeio.vergeos.tests.unit.api_fixtures import row
 from ansible_collections.vergeio.vergeos.plugins.modules import (
     node_maintenance,
     update as update_mod,
@@ -41,12 +42,21 @@ class FakeClient:
 
 
 def node(name, key, online=True, maintenance=False, needs_restart=False):
-    """A node row using the field names a live 26.1.8 system returns.
+    """A node row built from a CAPTURED one, not written by hand.
 
-    `running`, not `online`; `need_restart`, not `needs_restart`.
+    The keyword names here are the collection's normalised vocabulary. What
+    they map onto -- running, need_restart -- is the platform's, and
+    api_fixtures.row() refuses anything the platform did not actually send.
+
+    That refusal is the point. The first version of this helper returned
+    {'online': ..., 'needs_restart': ...}, which is what summarize_node was
+    reading, so the tests agreed with the code and both were wrong: every node
+    reported offline against a real system (B4). Written against the capture,
+    the mistake is a failing test rather than a shipped bug.
     """
-    return {'name': name, '$key': key, 'running': online,
-            'maintenance': maintenance, 'need_restart': needs_restart}
+    return row('nodes', name=name, running=online,
+               maintenance=maintenance, need_restart=needs_restart,
+               **{'$key': key})
 
 
 TWO = [node('n1', 1), node('n2', 2)]

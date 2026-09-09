@@ -1,0 +1,34 @@
+{
+ "_call": "client.update_settings.get()",
+ "_meta": {
+  "captured": "2026-09-09",
+  "note": "Regenerate with tests/capture_api_fixtures.py. Do not hand-edit: the point of these files is that no human chose the field names.",
+  "platform": "26.1.8"
+ },
+ "rows": [
+  {
+   "$key": 1,
+   "anonymize_statistics": false,
+   "applying_updates": false,
+   "applying_updates_force": false,
+   "auto_reboot": false,
+   "auto_refresh": true,
+   "auto_update": false,
+   "branch": 2,
+   "branch_description": "26.1 Release",
+   "branch_display": "stable-26.1",
+   "installed": true,
+   "max_vsan_usage": 80,
+   "multi_cluster_update": true,
+   "name": "Update Manager",
+   "reboot_required": false,
+   "release_notes_url": "https://docs.verge.io/release-notes/release-notes-overview/",
+   "snapshot_cloud_expire_seconds": 21600,
+   "snapshot_cloud_on_update": true,
+   "source": 2,
+   "source_display": "Verge.io Trial / NFR",
+   "update_time": "00:10",
+   "warm_reboot": false
+  }
+ ]
+}

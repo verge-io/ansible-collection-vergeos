@@ -1,0 +1,31 @@
+{
+ "_call": "client.groups.members(1).list()",
+ "_meta": {
+  "captured": "2026-09-09",
+  "note": "Regenerate with tests/capture_api_fixtures.py. Do not hand-edit: the point of these files is that no human chose the field names.",
+  "platform": "26.1.8"
+ },
+ "rows": [
+  {
+   "$key": 1,
+   "creator": "",
+   "member": "users/1",
+   "member_display": "welchums",
+   "parent_group": 1
+  },
+  {
+   "$key": 2,
+   "creator": "node1",
+   "member": "users/2",
+   "member_display": "labuser",
+   "parent_group": 1
+  },
+  {
+   "$key": 3,
+   "creator": "welchums",
+   "member": "users/3",
+   "member_display": "vlab",
+   "parent_group": 1
+  }
+ ]
+}

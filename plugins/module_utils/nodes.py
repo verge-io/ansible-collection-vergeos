@@ -11,12 +11,24 @@ because the unit-test fixtures encoded the same guess, the tests passed while
 every node reported as offline. Recorded here so the next change starts from
 the measurement:
 
-    raw row  : running, maintenance, need_restart, status, restart_reason
-    model    : is_online, is_maintenance, needs_restart, status, status_raw
+    client.nodes.list()  : running, maintenance, need_restart, status,
+                           restart_reason
+    model properties     : is_online, is_maintenance, needs_restart, status
 
-Note ``running`` (there is no ``online`` key at all) and ``need_restart``
-(singular ``need``). The plural ``needs_restart`` exists only as a model
-property.
+Note ``running`` (there is no ``online`` key) and ``need_restart`` (singular
+``need``). The plural ``needs_restart`` exists only as a model property, and
+``is_online`` is simply ``bool(row['running'])``.
+
+The projection matters, and this is easy to get wrong twice: ``running`` is
+present because the SDK's list() asks for an explicit field set that includes
+it. It is absent from BOTH ``GET /nodes?fields=most`` AND
+``GET /nodes?fields=all`` -- there, the only ``running`` keys are nested
+inside each row's ``running_machines`` list, which is per-VM and unrelated.
+
+So these helpers are correct for rows that came from ``client.nodes.list()``
+and would silently report every node offline for rows fetched with
+``_request('GET', 'nodes', {'fields': 'all'})``. If you ever change where the
+rows come from, re-capture the fixture: see tests/capture_api_fixtures.py.
 """
 
 from __future__ import absolute_import, division, print_function

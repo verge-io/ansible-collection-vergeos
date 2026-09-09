@@ -1,0 +1,73 @@
+{
+ "_call": "client.users.list()",
+ "_meta": {
+  "captured": "2026-09-09",
+  "note": "Regenerate with tests/capture_api_fixtures.py. Do not hand-edit: the point of these files is that no human chose the field names.",
+  "platform": "26.1.8"
+ },
+ "rows": [
+  {
+   "$key": 1,
+   "account_locked": 0,
+   "auth_source": null,
+   "auth_source_name": null,
+   "change_password": false,
+   "created": 1787560228,
+   "creator": "",
+   "displayname": "",
+   "email": "user@example.com",
+   "enabled": true,
+   "failed_attempts": 0,
+   "identity": "2",
+   "last_login": 1788975972,
+   "name": "welchums",
+   "physical_access": true,
+   "remote_name": "welchums",
+   "two_factor_authentication": false,
+   "two_factor_type": "email",
+   "type": "normal"
+  },
+  {
+   "$key": 2,
+   "account_locked": 0,
+   "auth_source": null,
+   "auth_source_name": null,
+   "change_password": false,
+   "created": 1788490121,
+   "creator": "node1",
+   "displayname": "VergeOS Lab User",
+   "email": "user@example.com",
+   "enabled": true,
+   "failed_attempts": 0,
+   "identity": "5",
+   "last_login": 1788646612,
+   "name": "labuser",
+   "physical_access": false,
+   "remote_name": "labuser",
+   "two_factor_authentication": false,
+   "two_factor_type": "email",
+   "type": "normal"
+  },
+  {
+   "$key": 3,
+   "account_locked": 0,
+   "auth_source": null,
+   "auth_source_name": null,
+   "change_password": false,
+   "created": 1788655116,
+   "creator": "welchums",
+   "displayname": "VergeOS training lab",
+   "email": "user@example.com",
+   "enabled": true,
+   "failed_attempts": 0,
+   "identity": "6",
+   "last_login": 0,
+   "name": "vlab",
+   "physical_access": false,
+   "remote_name": "vlab",
+   "two_factor_authentication": false,
+   "two_factor_type": "email",
+   "type": "normal"
+  }
+ ]
+}
