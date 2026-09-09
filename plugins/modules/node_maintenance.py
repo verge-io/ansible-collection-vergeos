@@ -108,8 +108,8 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.nodes import (
     find_node,
+    list_nodes,
     other_online_nodes,
-    summarize_node,
 )
 
 if HAS_PYVERGEOS:
@@ -146,7 +146,7 @@ def main():
         if not node:
             module.fail_json(msg="no node named '%s'." % name)
 
-        nodes = [summarize_node(dict(n)) for n in client.nodes.list()]
+        nodes = list_nodes(client)
         peers = other_online_nodes(nodes, name)
         result = dict(node=node,
                       available_peers=[p.get('name') for p in peers])

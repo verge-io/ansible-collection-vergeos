@@ -101,7 +101,7 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     HAS_PYVERGEOS,
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.nodes import (
-    summarize_node,
+    list_nodes,
 )
 
 if HAS_PYVERGEOS:
@@ -129,7 +129,7 @@ def main():
     client = get_vergeos_client(module)
 
     try:
-        nodes = [summarize_node(dict(n)) for n in client.nodes.list()]
+        nodes = list_nodes(client)
         if params.get('name'):
             nodes = [n for n in nodes if n.get('name') == params['name']]
             if not nodes:

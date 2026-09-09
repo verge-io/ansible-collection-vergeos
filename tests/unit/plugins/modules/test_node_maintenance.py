@@ -41,8 +41,12 @@ class FakeClient:
 
 
 def node(name, key, online=True, maintenance=False, needs_restart=False):
-    return {'name': name, '$key': key, 'online': online,
-            'maintenance': maintenance, 'needs_restart': needs_restart}
+    """A node row using the field names a live 26.1.8 system returns.
+
+    `running`, not `online`; `need_restart`, not `needs_restart`.
+    """
+    return {'name': name, '$key': key, 'running': online,
+            'maintenance': maintenance, 'need_restart': needs_restart}
 
 
 TWO = [node('n1', 1), node('n2', 2)]

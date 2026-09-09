@@ -3,46 +3,87 @@
 # GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Shared helpers for the node modules."""
+"""Shared helpers for the node modules.
+
+The field names below were read off a live VergeOS 26.1.8 node row, not
+inferred. The first version of this file guessed them and guessed wrong, and
+because the unit-test fixtures encoded the same guess, the tests passed while
+every node reported as offline. Recorded here so the next change starts from
+the measurement:
+
+    raw row  : running, maintenance, need_restart, status, restart_reason
+    model    : is_online, is_maintenance, needs_restart, status, status_raw
+
+Note ``running`` (there is no ``online`` key at all) and ``need_restart``
+(singular ``need``). The plural ``needs_restart`` exists only as a model
+property.
+"""
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
+# Model property first, then the raw row's field names. Order matters: the
+# properties are computed and authoritative, the raw names are what survives
+# dict() conversion.
+ONLINE = ('is_online', 'running')
+MAINTENANCE = ('is_maintenance', 'maintenance')
+NEEDS_RESTART = ('needs_restart', 'need_restart')
 
-def _flag(row, *names):
+
+def _flag(node, names):
     """First present value among ``names``, as a bool.
 
-    Node rows spell these differently depending on the field projection --
-    ``maintenance`` on the raw row, ``is_maintenance`` on the model -- and
-    reading only one of them silently reports every node as not in
-    maintenance, which is the answer that makes a drain look unnecessary.
+    Tries attribute access before the mapping for each name. That order
+    matters and the reason is easy to get wrong: pyvergeos ResourceObject is a
+    dict SUBCLASS, so branching on isinstance(node, dict) sends every real SDK
+    object down the plain-mapping path and the computed properties are never
+    consulted. This version asks for the attribute unconditionally -- harmless
+    on a plain dict, which simply has no such attribute.
+
+    A name that is present but ``None`` counts as absent. The API returns null
+    for a field it did not populate, and treating null as False is how "state
+    unknown" silently became "definitely off".
     """
     for name in names:
-        if name in row:
-            return bool(row[name])
+        value = getattr(node, name, None)
+        if value is None:
+            try:
+                value = node.get(name)
+            except AttributeError:
+                value = None
+        if value is not None:
+            return bool(value)
     return False
 
 
-def summarize_node(row):
+def summarize_node(node):
     """Normalise the three node states every caller branches on.
 
-    ``online`` is read positively: a node whose state could not be determined
-    is NOT online. An upgrade loop that treats unknown as online will drain
-    the next node while the previous one is still down.
+    Accepts an SDK node object or a plain row dict. Pass the object where you
+    have one: its computed properties are authoritative.
+
+    ``online`` is read positively -- a node whose state could not be
+    determined is NOT online. An upgrade loop that treats unknown as online
+    will drain the next node while the previous one is still down.
     """
-    out = dict(row)
-    out['online'] = _flag(row, 'online', 'is_online')
-    out['maintenance'] = _flag(row, 'maintenance', 'is_maintenance')
-    out['needs_restart'] = _flag(row, 'needs_restart', 'restart_needed')
+    out = dict(node)
+    out['online'] = _flag(node, ONLINE)
+    out['maintenance'] = _flag(node, MAINTENANCE)
+    out['needs_restart'] = _flag(node, NEEDS_RESTART)
     return out
 
 
+def list_nodes(client):
+    """Every node, summarised. Keeps the SDK objects long enough to read their
+    properties, which is why callers should not pre-convert to dicts."""
+    return [summarize_node(n) for n in client.nodes.list()]
+
+
 def find_node(client, name):
-    """One node row by name, or None. Matched client-side."""
-    for row in client.nodes.list():
-        row = dict(row)
-        if row.get('name') == name:
-            return summarize_node(row)
+    """One node by name, or None. Matched client-side."""
+    for node in client.nodes.list():
+        if dict(node).get('name') == name:
+            return summarize_node(node)
     return None
 
 

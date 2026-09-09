@@ -14,10 +14,19 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.updates import (
 
 # ── nodes ────────────────────────────────────────────────────────────────────
 
-def test_summarize_reads_the_raw_row_spelling():
-    row = summarize_node({'name': 'n1', 'online': True, 'maintenance': True})
+def test_summarize_reads_the_real_raw_row_spelling():
+    """These are the field names a live VergeOS 26.1.8 node row actually uses.
+
+    Note `running` -- there is no `online` key at all -- and `need_restart`,
+    singular. The first version of this suite invented `online` and
+    `needs_restart` as raw fields, so it passed while every real node
+    reported as offline.
+    """
+    row = summarize_node({'name': 'n1', 'running': True, 'maintenance': True,
+                          'need_restart': True})
     assert row['online'] is True
     assert row['maintenance'] is True
+    assert row['needs_restart'] is True
 
 
 def test_summarize_reads_the_model_spelling():
@@ -43,7 +52,33 @@ def test_needs_restart_defaults_false():
 
 
 def test_needs_restart_is_read_when_present():
-    assert summarize_node({'needs_restart': True})['needs_restart'] is True
+    assert summarize_node({'need_restart': True})['needs_restart'] is True
+
+
+def test_a_null_field_is_not_read_as_false():
+    """The API returns null for a field it did not populate. Treating null as
+    False is how "state unknown" silently became "definitely off"."""
+    assert summarize_node({'running': None})['online'] is False
+
+
+class FakeNode(dict):
+    """A node row that also exposes the SDK's computed properties."""
+
+    def __init__(self, row, **props):
+        super().__init__(row)
+        for name, value in props.items():
+            setattr(self, name, value)
+
+
+def test_the_model_properties_win_over_the_raw_row():
+    """dict() of a node discards its properties, so callers must pass the
+    object. When they do, the computed value is authoritative."""
+    node = FakeNode({'running': None, 'maintenance': None},
+                    is_online=True, is_maintenance=False, needs_restart=True)
+    row = summarize_node(node)
+    assert row['online'] is True
+    assert row['maintenance'] is False
+    assert row['needs_restart'] is True
 
 
 def test_summarize_keeps_the_original_fields():
