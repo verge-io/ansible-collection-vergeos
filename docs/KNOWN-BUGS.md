@@ -1,7 +1,8 @@
 # Known bugs — open, tracked, not yet fixed
 
 Live-verified against **VergeOS 26.1.8**, cloud `conundrum-lab`, pyvergeos
-1.2.3, collection branches as of 2026-09-09. Every entry records how it was
+1.2.3, collection branches as of 2026-09-09 (updated same day
+after B2, B3, B9 and B10 were fixed and B13-B15 found). Every entry records how it was
 measured, not how it was inferred.
 
 Status key: **OPEN** = present and unfixed. **FIXED** = corrected, with the
@@ -43,8 +44,8 @@ has to face it.
 ---
 
 ## B2 — group membership rows parsed with invented field names
-**Status:** OPEN · **Severity:** high · **Branch:** `feature/rbac-as-code`
-**Blocks:** `group` module membership, `group_info`, `rbac` role
+**Status:** FIXED — `14b89be` + `d69a126` on `feature/rbac-as-code`
+**Severity:** high
 
 `module_utils/rbac.py:member_names()` reads `member_name` and `member_type`.
 Neither exists on the raw row. Measured on live `conundrum-lab`:
@@ -65,8 +66,7 @@ there and remove nobody.
 ---
 
 ## B3 — group "system" flag read with the wrong field name
-**Status:** OPEN · **Severity:** low · **Branch:** `feature/rbac-as-code`
-**Blocks:** `group_info.system_groups` (always empty)
+**Status:** FIXED — `14b89be` · **Severity:** low
 
 `group_info.py` reads `row.get('system')`. The live row has `system_group`.
 Measured keys on `conundrum-lab`:
@@ -153,9 +153,8 @@ lags the platform here.
 ---
 
 ## B9 — the recipe simulate is unreachable through pyvergeos
-**Status:** OPEN · **Severity:** HIGH — the flagship recipe feature does not
-function · **Branch:** `feature/deploy-vm-from-recipe`
-**Blocks:** `vm_recipe_deploy` entirely, and the `vm_from_recipe` role with it
+**Status:** FIXED — `4edf4cb` on `feature/deploy-vm-from-recipe`
+**Severity:** HIGH — the flagship recipe feature did not function
 
 A simulate POST succeeds and returns exactly the document `scan_simulate()`
 was written for — but it comes back on a **non-2xx status**, so pyvergeos
@@ -198,8 +197,8 @@ VergeIO separately.
 ---
 
 ## B10 — rolling_update treats `maintenance=True` as "evacuation finished"
-**Status:** OPEN · **Severity:** HIGH · **Branch:** `feature/rolling-update`
-**Blocks:** `rolling_update` role
+**Status:** FIXED — `6bbb396` on `feature/rolling-update`, by deleting the
+hand-rolled sequence rather than correcting it · **Severity:** HIGH
 
 `tasks/one_node.yml` polls until the node reports `maintenance`, then asserts
 evacuation is complete and restarts it. Measured on `conundrum-lab`, draining
@@ -255,8 +254,89 @@ the noise an action group exists to remove.
 
 ---
 
+## B13 — the shipped `member` module is entirely non-functional
+**Status:** OPEN (pre-existing on `main`, not introduced here)
+**Severity:** HIGH — a documented 1.0.0 module that cannot work
+**Blocks:** `vergeio.vergeos.member`, both states
+
+Two independent defects, the first fatal before the second is reached.
+
+**1. Wrong keyword.** `get_user()` calls `client.users.get(username=...)`.
+The signature is `get(key=None, *, name=None, fields=None)`. Measured live:
+
+```
+fatal: [localhost]: FAILED! => {"changed": false,
+  "msg": "Unexpected error: UserManager.get() got an unexpected keyword
+          argument 'username'"}
+```
+
+Both `state: present` and `state: absent` fail this way, so the module has
+never added or removed anyone.
+
+**2. Reference compared against a username.** `get_member()` does:
+
+```python
+if member_dict.get('member') == member_username:
+```
+
+`member` is a reference, not a name. Measured on a real membership row:
+
+```
+{'$key': 4, 'parent_group': 2, 'member': '/v4/users/2',
+ 'system': False, 'creator': 'welchums'}
+```
+
+`'/v4/users/2' == 'labuser'` is never true, so even with defect 1 fixed:
+`present` would always believe the member is absent and re-add (not
+idempotent), and `absent` would never find anyone and silently remove
+nothing. `add_member()` also posts `member=<username>` where the API takes
+`/v4/users/{key}` — pyvergeos's own `add_user()` sends the reference form.
+
+Reproduced against a group created and populated through the API, so the
+membership row definitely existed.
+
+**Relationship to the `group` module:** `group` covers this ground
+declaratively (whole membership set, nested groups, `exact_members`) and works
+— verified live. So `group` is not duplicating a working module; it replaces a
+broken one. `member` should be fixed or deprecated in favour of `group`, and
+that is a decision for the collection owners rather than something to do
+silently.
+
+---
+
+## B14 — `no_log` on `answers` scrubs the VM name from every message
+**Status:** OPEN · **Severity:** low (cosmetic, but confusing)
+**Branch:** `feature/deploy-vm-from-recipe`
+
+Recipe answers are `no_log` because they carry passwords. Ansible then masks
+every `no_log` VALUE anywhere in the output — and `HOSTNAME` is normally the
+same string as the VM name, so the name is masked too. Measured:
+
+```
+"msg": "VM '********' already exists; this module never re-deploys over
+        an existing VM."
+```
+
+The message is correct and unreadable. Not fixable by un-`no_log`-ing the
+answers, which would leak the password. Options are to stop echoing the name
+in messages, or to accept it. Recorded rather than guessed at.
+
+---
+
+## B15 — the collection ships no `cluster_status` coverage but two modules need it
+**Status:** OPEN (upstream pyvergeos) · **Severity:** medium
+**Worked around:** `module_utils/clusters.py` via `client._request()`
+
+Detail in `docs/PYVERGEOS-GAPS.md` under P0. Recorded here too because it is
+the reason a `_request` call exists in `clusters.py`, and anyone tidying that
+away will reintroduce it.
+
+---
+
 ## P1 — PLATFORM: a drain with insufficient target capacity stalls silently
 **Status:** OPEN (VergeOS, not ours) · **Severity:** high operationally
+**Now detected before the fact:** `cluster_info` with `drain_candidates`
+refuses the drain, and the `rolling_update` role gates on it — `6bbb396`.
 
 Not our bug, but it shapes the design. Draining node2 when node1 lacked
 headroom for the remaining 32 GB left the node in `status='migrating'`
