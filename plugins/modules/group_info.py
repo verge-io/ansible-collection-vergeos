@@ -93,6 +93,7 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     HAS_PYVERGEOS,
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.rbac import (
+    key_name_map,
     member_names,
     rights_of,
 )
@@ -127,16 +128,25 @@ def main():
         groups = []
         system = []
 
+        # Only fetched when membership is asked for: resolving "users/1" into
+        # a name needs these, and nothing else here does.
+        users_by_key = key_name_map(client, 'users') if params['members'] else {}
+        groups_by_key = key_name_map(client, 'groups') if params['members'] else {}
+
         for obj in client.groups.list():
             row = dict(obj)
             if params.get('name') and row.get('name') != params['name']:
                 continue
-            if row.get('system'):
+            # 'system_group' on the raw row; 'system' does not exist. Measured
+            # keys on 26.1.8: $key, auth_source, created, creator, description,
+            # email, enabled, id, identity, name, system_group.
+            if row.get('system_group') or row.get('system'):
                 system.append(row.get('name'))
 
             if params['members']:
                 raw = client.groups.get(row['$key']).members.list()
-                users, nested = member_names([dict(m) for m in raw])
+                users, nested = member_names(
+                    [dict(m) for m in raw], users_by_key, groups_by_key)
                 row['members'] = {'users': users, 'groups': nested}
 
             if params['permissions']:

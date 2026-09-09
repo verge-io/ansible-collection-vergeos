@@ -87,24 +87,82 @@ def find_permission(client, identity_key, table, row_key=0):
     return None
 
 
-def member_names(members):
-    """Split group membership rows into user and group names.
+def split_member_ref(row):
+    """``(table, key)`` from a membership row's ``member`` reference.
 
-    A group can contain groups as well as users, and the two are removed with
-    different calls, so they have to be told apart rather than flattened.
+    The raw row encodes both the kind and the identity of a member in one
+    string -- ``"users/1"``, ``"groups/4"``. Measured on VergeOS 26.1.8:
+
+        {'$key': 1, 'parent_group': 1, 'member': 'users/1',
+         'member_display': 'welchums', 'creator': ''}
+
+    ``member_type`` / ``member_name`` / ``member_key`` exist only as computed
+    properties on the SDK model, which ``dict()`` discards. Reading those
+    names off a raw row returns None for every member, which is
+    indistinguishable from an empty group -- and with ``exact_members: true``
+    that reads as "remove nobody, add everyone again".
     """
+    ref = str((row or {}).get('member') or '')
+    table, _, key = ref.partition('/')
+    return table, key
+
+
+def member_names(members, users_by_key=None, groups_by_key=None):
+    """Split group membership rows into user names and group names.
+
+    A group can contain groups as well as users, and the two are added and
+    removed with different SDK calls, so they have to be told apart rather
+    than flattened.
+
+    Names are taken from ``member_display`` when the projection carries it,
+    then from the caller's key maps, and only then from the raw reference.
+    That last fallback is deliberate: a member whose name cannot be resolved
+    is reported as ``users/7`` rather than dropped. Dropping it would shrink
+    the "have" set, and under ``exact_members`` a shrunken have-set means a
+    real member is re-added rather than a phantom removed -- silent either
+    way. A visible ``users/7`` is a bug report.
+    """
+    users_by_key = users_by_key or {}
+    groups_by_key = groups_by_key or {}
     users, groups = [], []
+
     for row in members:
         row = dict(row) if not isinstance(row, dict) else row
-        name = row.get('member_name') or row.get('name')
-        kind = (row.get('member_type') or '').lower()
+        table, key = split_member_ref(row)
+        is_group = table == 'groups'
+        lookup = groups_by_key if is_group else users_by_key
+
+        # Order matters: a resolved name beats the raw reference, and the
+        # raw reference is the last resort rather than a skip.
+        name = (row.get('member_display')
+                or lookup.get(str(key))
+                or lookup.get(key)
+                or row.get('member_name')
+                or row.get('name')
+                or row.get('member'))
         if not name:
             continue
-        if 'group' in kind:
-            groups.append(name)
-        else:
-            users.append(name)
+
+        # Fall back on the old field only when the reference said nothing, so
+        # a projection that carries member_type but no member still works.
+        if not table:
+            kind = (row.get('member_type') or '').lower()
+            is_group = 'group' in kind
+
+        (groups if is_group else users).append(str(name))
+
     return sorted(users), sorted(groups)
+
+
+def key_name_map(client, manager):
+    """``{key: name}`` for a manager, for resolving membership references."""
+    out = {}
+    for row in getattr(client, manager).list():
+        row = dict(row)
+        key = row.get('$key')
+        if key is not None:
+            out[str(key)] = row.get('name')
+    return out
 
 
 def membership_changes(have_users, have_groups, want_users, want_groups,

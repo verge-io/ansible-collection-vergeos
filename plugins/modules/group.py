@@ -161,6 +161,7 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     HAS_PYVERGEOS,
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.rbac import (
+    key_name_map,
     member_names,
     membership_changes,
 )
@@ -266,8 +267,15 @@ def main():
         group_key = group_row['$key']
 
         # ── membership ───────────────────────────────────────────────────────
+        # Membership rows name their members by reference ("users/1"), so the
+        # key maps are what turn that into a name when the projection omits
+        # member_display. Built once and reused; both lists are small.
+        users_by_key = key_name_map(client, 'users')
+        groups_by_key = key_name_map(client, 'groups')
+
         members = client.groups.get(group_key).members.list()
-        have_users, have_groups = member_names([dict(m) for m in members])
+        have_users, have_groups = member_names(
+            [dict(m) for m in members], users_by_key, groups_by_key)
 
         if params['users'] is not None or params['groups'] is not None:
             plan = membership_changes(
@@ -304,7 +312,9 @@ def main():
 
                     members = client.groups.get(group_key).members.list()
                     have_users, have_groups = member_names(
-                        [dict(m) for m in members])
+                        [dict(m) for m in members],
+                        key_name_map(client, 'users'),
+                        key_name_map(client, 'groups'))
 
         module.exit_json(
             changed=bool(changed_fields),
