@@ -103,12 +103,59 @@ def fetch_options(client, needs_options):
     return options
 
 
+# HTTP statuses pyvergeos treats as success. Anything else goes down its
+# error path, where the body is reduced to a message string.
+SUCCESS = (200, 201, 202, 204)
+
+
+def raw_request(client, method, endpoint, json_data=None, params=None):
+    """Issue a request and hand back ``(status_code, document)`` unfiltered.
+
+    pyvergeos ``_request`` dispatches on the HTTP status and, for anything
+    non-2xx, raises with only ``_extract_error_message``'s string. That is a
+    reasonable default and wrong for at least one endpoint that matters: the
+    recipe simulate answers on **HTTP 405** with the full simulation log in
+    the body (measured on VergeOS 26.1.8). Through the SDK that call raises
+    ``APIError('Simulation complete', status_code=405)`` and the 28-entry log
+    -- the entire point of a simulate -- is unrecoverable.
+
+    So the status has to be read rather than trusted, which means reaching
+    past ``_request`` to the session it uses. Kept to this one function; every
+    caller that needs the body of a non-2xx response comes through here.
+
+    Does not raise for HTTP status. It does not decide what a status means,
+    because "405 is a failure" is exactly the assumption being corrected.
+    Callers decide. Transport failures (timeout, connection refused) still
+    raise out of ``requests``.
+    """
+    connection = getattr(client, '_connection', None)
+    session = getattr(connection, 'session', None)
+    if session is None:
+        raise RuntimeError(
+            'no active pyvergeos session; the client is not connected')
+
+    url = '%s/%s' % (connection.api_base_url, endpoint)
+    response = session.request(
+        method=method, url=url, params=params, json=json_data,
+        timeout=getattr(client, '_timeout', None) or 60)
+
+    document = None
+    if response.text:
+        try:
+            document = response.json()
+        except ValueError:
+            # A body that is not JSON is still evidence; losing it here is how
+            # a proxy error page becomes a bare status code.
+            document = {'err': response.text[:2000]}
+    return response.status_code, document
+
+
 def post_instance(client, recipe_key, name, answers,
                   auto_update=False, simulate=False):
-    """POST a recipe instance, returning the raw response document.
+    """POST a recipe instance, returning ``(status_code, document)``.
 
-    This is the collection's only private-SDK call, kept in one place on
-    purpose. Two things force it:
+    This is the collection's only private-SDK path, kept in one place on
+    purpose. Three things force it:
 
     1. pyvergeos has no ``simulate`` support at all -- ``create()`` never
        sends the flag -- and the server-side simulate is the only real
@@ -117,6 +164,8 @@ def post_instance(client, recipe_key, name, answers,
        body is where the key of the VM that was just built is reported
        (``response.vm``), so going through ``create()`` means inferring the
        identity of the new VM from its name instead of being told it.
+    3. The simulate replies on a non-2xx status, so even ``_request`` throws
+       the document away. See ``raw_request``.
 
     When a released pyvergeos grows a ``simulate`` argument that returns the
     raw document, this function is the only thing that needs to change.
@@ -126,7 +175,32 @@ def post_instance(client, recipe_key, name, answers,
         body['simulate'] = True
     if auto_update:
         body['auto_update'] = True
-    return client._request('POST', 'vm_recipe_instances', json_data=body)
+    return raw_request(client, 'POST', 'vm_recipe_instances', json_data=body)
+
+
+def simulate_transport_error(status, document):
+    """Why a simulate POST should be treated as a transport failure, or ''.
+
+    A simulate answering on HTTP 405 with a log document is the normal,
+    measured behaviour -- so status alone cannot be the test, and neither can
+    "non-2xx means failure". What distinguishes a real failure is the absence
+    of a simulation document: an auth rejection or a bad recipe key comes back
+    with no ``response`` body to scan.
+
+    Returned as a message rather than raised so the caller can report the
+    status it actually saw instead of a generic API error.
+    """
+    if status in SUCCESS:
+        return ''
+    if isinstance(document, dict) and isinstance(document.get('response'), dict):
+        return ''
+    detail = ''
+    if isinstance(document, dict):
+        detail = str(document.get('err') or document)[:400]
+    elif document is not None:
+        detail = str(document)[:400]
+    return ('the simulate POST failed at the transport level: HTTP %s%s'
+            % (status, (' -- %s' % detail) if detail else ''))
 
 
 def deployed_vm_key(document):

@@ -16,6 +16,7 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vm_recipes import 
     find_vm_by_name,
     post_instance,
     resolve_recipe,
+    simulate_transport_error,
 )
 
 
@@ -28,9 +29,42 @@ class FakeManager:
         return list(self._rows)
 
 
+class FakeResponse:
+    """Enough of a requests.Response for raw_request to read."""
+
+    def __init__(self, status_code=200, payload=None, text=None):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text if text is not None else ('{}' if payload is not None else '')
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError('no json')
+        return self._payload
+
+
+class FakeSession:
+    def __init__(self, owner, response):
+        self._owner = owner
+        self._response = response
+
+    def request(self, method, url, params=None, json=None, timeout=None):
+        self._owner.requests.append({'method': method, 'path': url.rsplit('/', 1)[-1],
+                                     'params': params, 'json_data': json})
+        return self._response
+
+
+class FakeConnection:
+    api_base_url = 'https://verge.invalid/api/v4'
+
+    def __init__(self, session):
+        self.session = session
+        self.is_connected = True
+
+
 class FakeClient:
     def __init__(self, recipes=(), questions=(), networks=(), vms=(),
-                 tables=None, post_response=None):
+                 tables=None, post_response=None, post_status=200):
         self.vm_recipes = FakeManager(recipes)
         self.recipe_questions = FakeManager(questions)
         self.networks = FakeManager(networks)
@@ -38,6 +72,9 @@ class FakeClient:
         self._tables = tables or {}
         self._post_response = post_response
         self.requests = []
+        self._timeout = 30
+        self._connection = FakeConnection(
+            FakeSession(self, FakeResponse(post_status, post_response)))
 
     def _request(self, method, path, params=None, json_data=None):
         self.requests.append({'method': method, 'path': path,
@@ -250,3 +287,72 @@ def test_find_vm_by_name_matches_exactly_not_by_prefix():
     client = FakeClient(vms=[{'name': 'web-011', '$key': 1},
                              {'name': 'web-01', '$key': 2}])
     assert find_vm_by_name(client, 'web-01')['$key'] == 2
+
+
+# ── raw_request / non-2xx bodies (bug B9) ───────────────────────────────────
+
+SIMULATE_405 = {
+    'err': 'Simulation complete',
+    'response': {
+        'logs': ['CREATE_OS_DRIVE', 'SELECT_OS_TIER'],
+        'answers': {'YB_VM_KEY': 36},
+        'cloudinit_files': ['/meta-data', '/network-config', '/user-data'],
+    },
+}
+
+
+def test_post_instance_returns_the_body_of_a_405_simulate():
+    """B9: a clean simulate answers HTTP 405 with the whole log document.
+
+    pyvergeos _request raises APIError('Simulation complete', 405) here and
+    keeps nothing, which is why post_instance no longer goes through it.
+    """
+    client = FakeClient(post_response=SIMULATE_405, post_status=405)
+    status, document = post_instance(client, 'abc', 'web-01', {}, simulate=True)
+    assert status == 405
+    assert document['response']['logs'] == ['CREATE_OS_DRIVE', 'SELECT_OS_TIER']
+
+
+def test_simulate_transport_error_accepts_405_with_a_response_document():
+    assert simulate_transport_error(405, SIMULATE_405) == ''
+
+
+def test_simulate_transport_error_accepts_any_2xx():
+    assert simulate_transport_error(200, {}) == ''
+
+
+def test_simulate_transport_error_rejects_a_body_with_no_response():
+    msg = simulate_transport_error(401, {'err': 'Login required'})
+    assert 'HTTP 401' in msg
+    assert 'Login required' in msg
+
+
+def test_simulate_transport_error_rejects_an_empty_body():
+    assert 'HTTP 500' in simulate_transport_error(500, None)
+
+
+def test_raw_request_keeps_a_non_json_body_as_err():
+    from ansible_collections.vergeio.vergeos.plugins.module_utils.vm_recipes import (
+        raw_request,
+    )
+    client = FakeClient()
+    client._connection = FakeConnection(
+        FakeSession(client, FakeResponse(502, None, text='<html>gateway</html>')))
+    status, document = raw_request(client, 'GET', 'vm_recipes')
+    assert status == 502
+    assert 'gateway' in document['err']
+
+
+def test_raw_request_refuses_a_disconnected_client():
+    client = FakeClient()
+    client._connection = None
+    with pytest.raises(RuntimeError):
+        raw_request_import = raw_request_helper()
+        raw_request_import(client, 'GET', 'vm_recipes')
+
+
+def raw_request_helper():
+    from ansible_collections.vergeio.vergeos.plugins.module_utils.vm_recipes import (
+        raw_request,
+    )
+    return raw_request
