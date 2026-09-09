@@ -62,7 +62,13 @@ options:
         value in this mapping from the task's output, so a non-secret answer
         that happens to equal another string in the result is masked there
         too.
-        Answer values are never echoed back regardless - RV(answers_sent)
+      - In practice that bites C(HOSTNAME), which is usually the same string
+        as O(name), so the VM name appears as C(********) in this task's
+        output. That is Ansible protecting the mapping, not an error. This
+        module's own messages identify the VM by key for that reason; use
+        RV(vm_key), or read the name from a separate
+        M(vergeio.vergeos.vm_info) task.
+      - Answer values are never echoed back regardless - RV(answers_sent)
         reports names only.
     type: dict
     default: {}
@@ -330,11 +336,18 @@ def main():
         # reports in, so the instance is not a durable identity. The VM is.
         existing = find_vm_by_name(client, name)
         if existing:
+            # The name is deliberately NOT interpolated here. `answers` is
+            # no_log, and Ansible masks every no_log VALUE wherever it appears
+            # in output -- HOSTNAME is normally the same string as the VM
+            # name, so the message came out as "VM '********' already exists".
+            # Correct and unreadable. The key identifies it and cannot
+            # collide with an answer.
             result.update(
                 already_existed=True,
                 vm_key=str(existing.get('$key') or ''),
-                msg="VM '%s' already exists; this module never re-deploys "
-                    "over an existing VM." % name,
+                msg="a VM of this name already exists (key %s); this module "
+                    "never re-deploys over an existing VM."
+                    % (existing.get('$key') or '?'),
             )
             module.exit_json(**result)
 
