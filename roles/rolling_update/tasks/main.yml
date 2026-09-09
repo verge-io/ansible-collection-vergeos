@@ -1,13 +1,23 @@
 ---
-# rolling_update -- install a platform update, then apply it node by node.
+# rolling_update -- get a platform update onto every node without an outage,
+# by preparing it, checking the cluster can survive losing a node, and then
+# handing the reboot to the platform.
 #
-# The shape follows the platform's own split. Check, download and install are
-# system-wide and happen once; only APPLYING an update is per node, and it is
-# applied by restarting. So this role does the system-wide part once and then
-# walks the nodes.
+# What this role does NOT do, and why: it does not drain, wait, restart and
+# undrain each node itself. The platform already does exactly that -- the
+# 'apply' update action reboots nodes one at a time migrating workloads first,
+# and nodes/{key}/maintenance_reboot does the same for a single node. An
+# earlier version of this role reimplemented that sequence and got it wrong:
+# it treated maintenance=True as "evacuation finished", which the platform
+# sets in under a second while RAM is still resident, so it would restart a
+# node whose workloads had not moved. Reimplementing a vendor primitive means
+# owning its race conditions.
 #
-# Rolling rather than all-at-once is the whole point: a bad update is found on
-# the first node, while the rest of the cluster is still running the old one.
+# What the platform does NOT do is refuse to start when there is nowhere for
+# the workloads to go. Measured: draining a node on a cluster with an 18 GB
+# RAM shortfall was accepted, flipped the node to maintenance immediately, and
+# then stalled mid-migration for fourteen minutes with no destination. That
+# check is the substance this role adds.
 
 - name: Preflight -- connection is configured
   ansible.builtin.assert:
@@ -26,9 +36,9 @@
   changed_when: false
 
 # Recorded now, because it is the baseline the health gate compares against
-# after every node. Reading "how many nodes should be online" from the live
-# cluster mid-run would let the answer drift downwards one node at a time --
-# each failure quietly becoming the new normal.
+# afterwards. Reading "how many nodes should be online" from the live cluster
+# after the roll would let the answer drift downwards -- a node that failed to
+# come back quietly becoming the new normal.
 - name: Record the pre-update baseline
   ansible.builtin.set_fact:
     rolling_update_baseline_online: >-
@@ -44,6 +54,10 @@
         {{ rolling_update_before.needs_restart | map(attribute='name') | list }}
 
 # ── System-wide lifecycle ────────────────────────────────────────────────────
+# Check, download and install are cluster-wide and reboot nothing, so they run
+# whether or not consent has been given. That makes the default path an honest
+# dry run: the update is staged and the role reports what applying it would
+# reboot.
 
 - name: Run the system-wide update lifecycle
   vergeio.vergeos.update:
@@ -63,8 +77,6 @@
       installed: "{{ rolling_update_lifecycle.installed }}"
       reboot_required: "{{ rolling_update_lifecycle.reboot_required }}"
 
-# ── Which nodes to walk ──────────────────────────────────────────────────────
-
 - name: Re-read the nodes now the update is installed
   vergeio.vergeos.node_info:
     host: "{{ rolling_update_host }}"
@@ -74,54 +86,141 @@
   register: rolling_update_after_install
   changed_when: false
 
-- name: Decide which nodes need restarting
+- name: Note which nodes the platform says are waiting for a restart
   ansible.builtin.set_fact:
-    # An explicit list wins, so an operator can prove one node before
-    # committing to the rest. Otherwise: whichever nodes the platform itself
-    # says are waiting for a restart.
     rolling_update_targets: >-
-      {{ rolling_update_nodes
-         if rolling_update_nodes | length > 0
-         else (rolling_update_after_install.needs_restart
-               | map(attribute='name') | list) }}
+      {{ rolling_update_after_install.needs_restart
+         | map(attribute='name') | list }}
+
+# ── Capacity gate -- the reason this role exists ─────────────────────────────
+# Asked for every node that will be rebooted, one at a time, because that is
+# how the platform rolls: a node at a time, each needing somewhere for its
+# workloads to go while it is down.
+
+- name: Can the cluster survive losing each node in turn
+  vergeio.vergeos.cluster_info:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+    drain_candidates: "{{ rolling_update_targets }}"
+  register: rolling_update_capacity
+  changed_when: false
+  when: rolling_update_targets | length > 0
+
+- name: Report capacity
+  ansible.builtin.debug:
+    msg:
+      ram_headroom_mb: "{{ rolling_update_capacity.ram_headroom_mb }}"
+      no_failover_reservation: >-
+        {{ rolling_update_capacity.no_failover_reservation }}
+      verdicts: >-
+        {{ rolling_update_capacity.drain_checks
+           | map(attribute='reason') | list }}
+  when: rolling_update_targets | length > 0
+
+# fits is deliberately compared to false rather than tested for truth: the
+# module returns none when it could not determine capacity, and "could not
+# tell" must not pass a gate whose whole job is to be certain.
+- name: Every node that will reboot must have somewhere to evacuate to
+  ansible.builtin.assert:
+    that: >-
+      rolling_update_capacity.drain_checks
+      | rejectattr('fits', 'equalto', true) | list | length == 0
+    fail_msg: >-
+      refusing to start the roll.
+      {{ rolling_update_capacity.drain_checks
+         | rejectattr('fits', 'equalto', true)
+         | map(attribute='reason') | join(' ') }}
+      Free RAM, shut something down, or add capacity first. The update is
+      installed and will keep until you do.
+    success_msg: >-
+      every node that needs a restart has somewhere to put its workloads.
+    quiet: true
+  when:
+    - rolling_update_targets | length > 0
+    - rolling_update_capacity_gate | bool
 
 - name: Report the plan
   ansible.builtin.debug:
     msg: >-
-      {{ ("would restart, in order: " ~ rolling_update_targets)
+      {{ ("the platform will reboot, one at a time: " ~ rolling_update_targets)
          if rolling_update_targets | length > 0
          else "no node needs restarting; nothing to roll" }}
 
 # ── Consent ──────────────────────────────────────────────────────────────────
-# Deliberately AFTER the plan is printed, so the honest dry run is the default
-# path rather than a mode someone has to know to ask for: run it without
-# consent and it stages the update and tells you exactly which nodes it would
-# reboot, in what order.
+# After the plan and the capacity verdict are printed, so that a run without
+# consent is a full preflight rather than a mode someone has to know to ask
+# for.
 
 - name: Stop before rebooting anything
   ansible.builtin.debug:
     msg: >-
-      rolling_update_confirm is not "yes", so no node will be restarted.
+      rolling_update_confirm is not "yes", so nothing will be rebooted.
       The update is staged; re-run with -e rolling_update_confirm=yes to
       apply it to {{ rolling_update_targets | length }} node(s).
   when:
     - rolling_update_targets | length > 0
     - rolling_update_confirm != "yes"
 
-- name: Walk the nodes
-  ansible.builtin.include_tasks: one_node.yml
-  loop: "{{ rolling_update_targets }}"
-  loop_control:
-    loop_var: rolling_update_node
-    label: "{{ rolling_update_node }}"
+# ── Apply ────────────────────────────────────────────────────────────────────
+
+- name: Hand the roll to the platform
+  vergeio.vergeos.update:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+    state: applied
+    force: "{{ rolling_update_force | bool }}"
+  register: rolling_update_applied
   when:
     - rolling_update_targets | length > 0
     - rolling_update_confirm == "yes"
 
+# The apply action returns as soon as the roll is accepted, not when it is
+# finished, so there is nothing to verify yet -- waiting is a separate step
+# rather than an assumption baked into the call above.
+- name: Wait for the roll to finish
+  vergeio.vergeos.node_info:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+  register: rolling_update_settled
+  changed_when: false
+  failed_when: false
+  retries: >-
+    {{ (rolling_update_roll_timeout | int
+        // (rolling_update_poll_interval | int)) | int }}
+  delay: "{{ rolling_update_poll_interval | int }}"
+  until: >-
+    rolling_update_settled.needs_restart | default([]) | length == 0
+    and rolling_update_settled.maintenance | default([]) | length == 0
+    and (rolling_update_settled.online | default([]) | map(attribute='name')
+         | list | sort) == rolling_update_baseline_online
+  when:
+    - rolling_update_targets | length > 0
+    - rolling_update_confirm == "yes"
+    - rolling_update_wait | bool
+
+# ── Post-verify ──────────────────────────────────────────────────────────────
+# The other half of what a role adds over the bare action: the platform
+# reports that it started the roll, not that the cluster came out of it in the
+# same shape it went in.
+
+- name: Health gate
+  ansible.builtin.include_tasks: health_gate.yml
+  when:
+    - rolling_update_targets | length > 0
+    - rolling_update_confirm == "yes"
+    - rolling_update_wait | bool
+    - rolling_update_health_gate | bool
+
 - name: Rolling update complete
   ansible.builtin.debug:
     msg: >-
-      restarted {{ rolling_update_targets | length }} node(s):
+      the platform rolled {{ rolling_update_targets | length }} node(s):
       {{ rolling_update_targets }}
   when:
     - rolling_update_targets | length > 0

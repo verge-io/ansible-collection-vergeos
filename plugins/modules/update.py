@@ -13,11 +13,14 @@ module: update
 short_description: Drive the VergeOS platform update lifecycle
 version_added: "2.1.0"
 description:
-  - Runs the system-wide part of a platform update - check, download, install.
-  - Applying an installed update is per node and is deliberately NOT done here.
-    Use M(vergeio.vergeos.node_maintenance) with O(state=restarted), or the
-    C(rolling_update) role, so that rebooting nodes stays an explicit,
-    reviewable step rather than a side effect of installing.
+  - Drives a platform update through its lifecycle - check, download, install,
+    and optionally apply.
+  - Check, download and install are system-wide and leave the cluster running.
+    Applying is a reboot, so it is a state of its own that no lower stage
+    implies - installing never reboots as a side effect.
+  - Applying is delegated to the platform's own rolling apply, which reboots
+    nodes one at a time and migrates workloads first. This module does not
+    reimplement that sequence.
 options:
   state:
     description:
@@ -26,9 +29,22 @@ options:
       - C(checked) refreshes what the source offers.
       - C(downloaded) also pulls the packages.
       - C(installed) also installs them, after which a reboot is outstanding.
+      - C(applied) reboots the nodes to bring an installed update into
+        service, using the platform's own rolling apply - one node at a time,
+        migrating workloads first. It is never reached by implication from a
+        lower stage, because there is no state in which rebooting again is a
+        no-op.
     type: str
-    choices: [ checked, downloaded, installed ]
+    choices: [ checked, downloaded, installed, applied ]
     default: checked
+  force:
+    description:
+      - With O(state=applied), permit nodes carrying workloads that cannot be
+        migrated - GPU passthrough, for example - to reboot those workloads
+        rather than stalling the roll.
+      - This decides availability for those workloads, so it is never implied.
+    type: bool
+    default: false
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 notes:
@@ -38,7 +54,13 @@ notes:
     are installed this module reports no change for any state, and until then
     C(checked) and C(downloaded) run each time. Re-checking is cheap; the
     alternative would be inventing a state the platform does not keep.
-  - This module never reboots anything.
+  - Every state except C(applied) leaves the cluster running. C(applied)
+    reboots nodes.
+  - C(applied) does not hand-roll the roll. It calls the platform action that
+    already does it, which also drains and migrates - the same operation
+    C(nodes/{key}/maintenance_reboot) performs per node. It does NOT check
+    whether the cluster can survive losing a node; use M(vergeio.vergeos.cluster_info)
+    for that, or the C(rolling_update) role, which does it for you.
 author:
   - VergeIO (@vergeio)
 '''
@@ -107,6 +129,7 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     HAS_PYVERGEOS,
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.updates import (
+    apply_installed,
     settings_summary,
     stages_to_run,
 )
@@ -125,7 +148,8 @@ def main():
     argument_spec = vergeos_argument_spec()
     argument_spec.update(
         state=dict(type='str', default='checked',
-                   choices=['checked', 'downloaded', 'installed']),
+                   choices=['checked', 'downloaded', 'installed', 'applied']),
+        force=dict(type='bool', default=False),
     )
 
     module = AnsibleModule(
@@ -146,6 +170,37 @@ def main():
             module.fail_json(
                 msg="the platform is applying updates right now; refusing to "
                     "start another update run.", **summary)
+
+        # ── applied ─────────────────────────────────────────────────────────
+        # Handled before the stage machinery, because applying is a reboot
+        # rather than a stage: there is no "already applied" flag, and the
+        # thing that says whether it is still outstanding is reboot_required.
+        if state == 'applied':
+            if not summary['installed']:
+                module.fail_json(
+                    msg="no update is installed, so there is nothing to "
+                        "apply. Run state=installed first.", **summary)
+            if not summary['reboot_required']:
+                module.exit_json(
+                    changed=False, stages_run=[],
+                    msg="the installed update needs no reboot; nothing to "
+                        "apply.", **summary)
+            if module.check_mode:
+                module.exit_json(
+                    changed=True, stages_run=['applied'],
+                    msg="check mode: would apply the installed update by "
+                        "rolling the nodes%s."
+                        % (" (force)" if module.params['force'] else ""),
+                    **summary)
+
+            apply_installed(settings, force=module.params['force'])
+            summary = settings_summary(client.update_settings.get())
+            module.exit_json(
+                changed=True, stages_run=['applied'],
+                msg="rolling apply started; the platform reboots nodes one at "
+                    "a time, migrating workloads first. This returns as soon "
+                    "as the roll is accepted, not when it finishes.",
+                **summary)
 
         stages = stages_to_run(state, summary)
 

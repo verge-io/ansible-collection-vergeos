@@ -1,13 +1,17 @@
 ---
-# The cluster must look right before the next node is touched.
+# The cluster must look the way it did before the roll.
 #
-# This is the difference between a rolling update and a slow outage. Without
-# it, an update that breaks a node breaks every node, one at a time, with the
-# play reporting success the whole way.
+# The platform's apply action reports that it started the roll. It does not
+# report that the cluster came out of it intact, and a node that rebooted into
+# a broken state still counts as "rolled". Without this gate the play reports
+# success on a cluster that has lost a node.
+#
+# Run once, after the whole roll, rather than between nodes -- the platform
+# owns the sequencing now, so there is no between-nodes to hook into.
 
 # A node reports online before it is carrying anything. Settling first means
-# the gate measures a cluster that has actually re-absorbed the node, not one
-# that has merely acknowledged it.
+# the gate measures a cluster that has actually re-absorbed its nodes, not one
+# that has merely acknowledged them.
 - name: Let the cluster settle
   ansible.builtin.pause:
     seconds: "{{ rolling_update_settle_seconds | int }}"
@@ -36,10 +40,9 @@
   ansible.builtin.assert:
     that: rolling_update_missing | length == 0
     fail_msg: >-
-      after restarting '{{ rolling_update_node }}', these nodes are no longer
-      online: {{ rolling_update_missing }}. They were online before the
-      update started. Stopping here -- the remaining nodes have not been
-      touched and are still running the previous version.
+      the roll finished but these nodes are no longer online -
+      {{ rolling_update_missing }} - and they were online before it started.
+      Check them before treating the update as complete.
     quiet: true
   when: rolling_update_require_all_online | bool
 
@@ -59,16 +62,15 @@
   ansible.builtin.assert:
     that: rolling_update_replication.stale | default([]) | length == 0
     fail_msg: >-
-      replication fell behind during the update of
-      '{{ rolling_update_node }}':
+      replication fell behind during the roll -
       {{ rolling_update_replication.stale | map(attribute='name') | list }}.
-      Stopping before the next node.
+      The nodes are back, but the replicas are not caught up.
     quiet: true
   when: rolling_update_max_replication_age | int > 0
 
 - name: Health gate passed
   ansible.builtin.debug:
     msg: >-
-      cluster healthy after '{{ rolling_update_node }}':
+      cluster healthy after the roll -
       {{ rolling_update_health.online | map(attribute='name') | list | sort }}
-      online
+      online, matching the pre-update baseline
