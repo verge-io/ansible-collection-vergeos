@@ -1,7 +1,12 @@
 ---
 # Example playbook: patch a VergeOS cluster without taking it down.
 #
-# Dry run -- stages the update, prints the node order, restarts nothing:
+# The reboots are done by the platform's own rolling apply -- one node at a
+# time, workloads migrated first. What this role adds is refusing to start
+# when a node due a reboot has nowhere to evacuate to, and verifying the
+# cluster afterwards.
+#
+# Preflight -- stages the update, reports capacity, reboots nothing:
 #   ansible-playbook examples/rolling_update.yml
 #
 # For real:
@@ -16,10 +21,15 @@
       vars:
         rolling_update_stage: installed
 
-        # Leave empty to take whichever nodes the platform says need a
-        # restart. Name them to control the order -- prove the update on the
-        # node you choose, not the one the API happened to list first.
-        rolling_update_nodes: []
+        # Refuse to start if the survivors cannot hold the cluster's
+        # committed VM RAM. The platform will accept a drain it cannot
+        # complete and then stall mid-migration, so this is the check that
+        # has to happen before the request, not after.
+        rolling_update_capacity_gate: true
 
-        # Stop the roll if replication falls behind while nodes are cycling.
+        # Stop if replication falls behind while nodes are cycling.
         rolling_update_max_replication_age: 14400
+
+        # The apply returns when the roll is accepted, not when it finishes.
+        rolling_update_wait: true
+        rolling_update_roll_timeout: 3600

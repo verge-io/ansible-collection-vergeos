@@ -1,6 +1,6 @@
 ---
-# rolling_update -- install a platform update, then apply it node by node
-# without taking the cluster down.
+# rolling_update -- prepare a platform update, prove the cluster can survive
+# losing a node, then let the platform roll the reboots.
 
 # ── Connection ───────────────────────────────────────────────────────────────
 rolling_update_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
@@ -25,47 +25,50 @@ rolling_update_confirm: "no"
 #   installed  — also install, which is what makes a reboot outstanding
 rolling_update_stage: installed
 
-# Nodes to walk, in this order. Empty means every node that reports needing a
-# restart, which is what an install leaves behind.
+# ── Capacity gate ────────────────────────────────────────────────────────────
+# Refuse to start when a node that must reboot has nowhere to put its
+# workloads. This is the one thing the platform's own rolling apply does not
+# do: it accepts the request, drains the node immediately, and then stalls
+# mid-migration with no destination.
 #
-# Order matters on an uneven cluster: put the node you most want proven first,
-# so a bad update is found on the node you chose rather than the one the API
-# happened to list first.
-rolling_update_nodes: []
+# Turn this off only if you know the shortfall is acceptable -- for example
+# because the affected VMs are meant to stop.
+rolling_update_capacity_gate: true
 
-# ── Per-node cycle ───────────────────────────────────────────────────────────
-# Drain the node before restarting it. On by default: a restart without a
-# drain is a hard stop for whatever was running there.
-rolling_update_drain: true
+# Permit nodes carrying workloads that cannot be migrated -- GPU passthrough,
+# for instance -- to reboot those workloads rather than stalling the roll.
+# Off by default: this decides availability for those workloads.
+rolling_update_force: false
 
-# Seconds to allow evacuation to finish before giving up on a node.
-rolling_update_drain_timeout: 1800
+# ── Waiting ──────────────────────────────────────────────────────────────────
+# The apply action returns when the roll is ACCEPTED, not when it finishes.
+# Waiting is what makes the health gate mean anything; without it the gate
+# would run against a cluster that has not started rebooting yet.
+rolling_update_wait: true
 
-# Seconds to allow a node to go away and come back.
-rolling_update_restart_timeout: 1800
+# Seconds to allow the whole roll to complete -- every node down, back, and
+# out of maintenance. Scale with node count: this is the total, not per node.
+rolling_update_roll_timeout: 3600
 
 # Seconds between polls.
 rolling_update_poll_interval: 15
 
-# Return the node to service after it comes back. Turning this off leaves the
-# node drained, which is useful when you want to inspect it before it takes
-# workloads again -- but the run will then stop, because the next node has
-# nowhere to evacuate to.
-rolling_update_return_to_service: true
-
 # ── Health gate ──────────────────────────────────────────────────────────────
-# After each node returns, require the cluster to look right before moving on.
-# This is the whole point of rolling rather than updating everything at once:
-# a bad update is caught on node one, with the rest of the cluster untouched.
+# Once the roll has finished, require the cluster to look the way it did
+# before. The platform reports that it STARTED the roll; it does not report
+# that the cluster came out the other side intact.
 rolling_update_health_gate: true
 
-# Every node that was online before the run must be online again before the
-# next node is touched.
+# Every node that was online before the run must be online again afterwards,
+# compared against the baseline captured before anything changed rather than
+# against the live cluster -- otherwise a node that failed to return quietly
+# redefines "all online".
 rolling_update_require_all_online: true
 
 # Replication must not be left behind by the upgrade. Set to 0 to skip.
 rolling_update_max_replication_age: 0
 
 # Seconds to let the cluster settle before the health gate is evaluated. A
-# node that has just rejoined reports online before it is carrying anything.
+# node that has just rejoined reports online before it is carrying anything,
+# so evaluating immediately measures the wrong moment.
 rolling_update_settle_seconds: 30

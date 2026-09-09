@@ -7,8 +7,23 @@
 
 The update lifecycle on VergeOS is system-wide up to the point of applying:
 check -> download -> install, all against the cloud as a whole. Only the
-final apply is per node, as a restart. That split is why the rolling_update
-role drives the first three once and then walks the nodes.
+final apply is per node, as a restart.
+
+Applying is NOT hand-rolled here. The platform already does a rolling reboot
+-- pyvergeos ``update_settings.update_all(force=)`` posts
+``{action: 'all'}`` to ``update_actions``, documented as "Reboot nodes one at
+a time with workload migration", and ``nodes.restart()`` posts to
+``nodes/{key}/maintenance_reboot``, documented as "safely reboots the node by
+first migrating workloads and then restarting". Reimplementing
+drain -> wait -> restart on top of those means owning two race conditions the
+platform already handles, and the first version of the rolling_update role
+got one of them wrong (bug B10: it read ``maintenance=True`` as "evacuation
+finished", which the platform sets in under a second while RAM is still
+resident).
+
+What is left for a role to add is the part the platform does not do: refusing
+to start when the cluster cannot survive losing a node. See
+module_utils/clusters.py.
 """
 
 from __future__ import absolute_import, division, print_function
@@ -18,6 +33,13 @@ __metaclass__ = type
 # lets a single `state:` parameter be idempotent -- asking for 'downloaded'
 # when updates are already installed is satisfied, not a regression.
 STAGES = ('checked', 'downloaded', 'installed')
+
+# 'applied' sits outside STAGES on purpose. The first three are idempotent by
+# consequence -- the platform records that updates are installed, so asking
+# again is satisfiable without doing anything. Applying is a reboot; there is
+# no state in which "apply again" is a no-op, so it must not be reachable by
+# implication from a lower stage.
+APPLIED = 'applied'
 
 
 # Model property -> the raw row's field name. Read off a live VergeOS 26.1.8
@@ -93,3 +115,27 @@ def stages_to_run(target, summary):
 
     wanted = STAGES[:STAGES.index(target) + 1]
     return list(wanted)
+
+
+def apply_installed(settings, force=False):
+    """Apply installed updates by rolling the nodes, via the platform's own
+    action.
+
+    ``update_all`` is the documented route -- download, install, then reboot
+    nodes one at a time with workload migration. Reached through the SDK's
+    private ``_action`` when only the apply half is wanted, because pyvergeos
+    wraps ``check``, ``download``, ``install`` and ``all`` but not ``apply``,
+    even though ``update_sources`` accepts it (``refresh, download, install,
+    apply, all``) and ``_action`` passes an unmapped name straight through.
+
+    ``force`` permits nodes carrying workloads that cannot be migrated -- GPU
+    passthrough, for instance -- to reboot those workloads rather than
+    stalling. It is a data-availability decision, so it is never implied.
+    """
+    action = getattr(settings, '_action', None)
+    if action is None:
+        # Older SDKs without the private helper: update_all is the closest
+        # public equivalent. It re-runs download and install first, which are
+        # no-ops once installed, and then reboots.
+        return settings.update_all(force=force)
+    return action('apply', force=force)
