@@ -1,0 +1,71 @@
+---
+# rolling_update -- install a platform update, then apply it node by node
+# without taking the cluster down.
+
+# ── Connection ───────────────────────────────────────────────────────────────
+rolling_update_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+rolling_update_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+rolling_update_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+rolling_update_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(false, true) | bool }}"
+
+# ── Consent ──────────────────────────────────────────────────────────────────
+# Rebooting every node in a cluster one at a time is not something to start by
+# accident, and --check is not a safety net a scheduler will remember to pass.
+# The role refuses to reboot anything unless this is the literal string "yes".
+#
+# Everything up to and including install still runs without it, so a dry run
+# that stages the update and reports which nodes would reboot is the default
+# behaviour rather than a special mode.
+rolling_update_confirm: "no"
+
+# ── What to do ───────────────────────────────────────────────────────────────
+# How far to take the system-wide lifecycle before touching any node.
+#   checked    — refresh what the source offers, then stop
+#   downloaded — also pull the packages (safe to do any time; no reboot)
+#   installed  — also install, which is what makes a reboot outstanding
+rolling_update_stage: installed
+
+# Nodes to walk, in this order. Empty means every node that reports needing a
+# restart, which is what an install leaves behind.
+#
+# Order matters on an uneven cluster: put the node you most want proven first,
+# so a bad update is found on the node you chose rather than the one the API
+# happened to list first.
+rolling_update_nodes: []
+
+# ── Per-node cycle ───────────────────────────────────────────────────────────
+# Drain the node before restarting it. On by default: a restart without a
+# drain is a hard stop for whatever was running there.
+rolling_update_drain: true
+
+# Seconds to allow evacuation to finish before giving up on a node.
+rolling_update_drain_timeout: 1800
+
+# Seconds to allow a node to go away and come back.
+rolling_update_restart_timeout: 1800
+
+# Seconds between polls.
+rolling_update_poll_interval: 15
+
+# Return the node to service after it comes back. Turning this off leaves the
+# node drained, which is useful when you want to inspect it before it takes
+# workloads again -- but the run will then stop, because the next node has
+# nowhere to evacuate to.
+rolling_update_return_to_service: true
+
+# ── Health gate ──────────────────────────────────────────────────────────────
+# After each node returns, require the cluster to look right before moving on.
+# This is the whole point of rolling rather than updating everything at once:
+# a bad update is caught on node one, with the rest of the cluster untouched.
+rolling_update_health_gate: true
+
+# Every node that was online before the run must be online again before the
+# next node is touched.
+rolling_update_require_all_online: true
+
+# Replication must not be left behind by the upgrade. Set to 0 to skip.
+rolling_update_max_replication_age: 0
+
+# Seconds to let the cluster settle before the health gate is evaluated. A
+# node that has just rejoined reports online before it is carrying anything.
+rolling_update_settle_seconds: 30

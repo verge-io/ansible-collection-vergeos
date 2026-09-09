@@ -1,0 +1,74 @@
+---
+# The cluster must look right before the next node is touched.
+#
+# This is the difference between a rolling update and a slow outage. Without
+# it, an update that breaks a node breaks every node, one at a time, with the
+# play reporting success the whole way.
+
+# A node reports online before it is carrying anything. Settling first means
+# the gate measures a cluster that has actually re-absorbed the node, not one
+# that has merely acknowledged it.
+- name: Let the cluster settle
+  ansible.builtin.pause:
+    seconds: "{{ rolling_update_settle_seconds | int }}"
+  when: rolling_update_settle_seconds | int > 0
+
+- name: Re-survey the cluster
+  vergeio.vergeos.node_info:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+  register: rolling_update_health
+  changed_when: false
+
+- name: Work out what is missing
+  ansible.builtin.set_fact:
+    # Compared against the baseline captured BEFORE the run, not against the
+    # previous iteration. Comparing to the previous iteration lets the
+    # expected count drift down one node at a time, so each lost node quietly
+    # becomes the new normal and the gate never fires.
+    rolling_update_missing: >-
+      {{ rolling_update_baseline_online
+         | difference(rolling_update_health.online | map(attribute='name') | list) }}
+
+- name: Every node that was online must be online again
+  ansible.builtin.assert:
+    that: rolling_update_missing | length == 0
+    fail_msg: >-
+      after restarting '{{ rolling_update_node }}', these nodes are no longer
+      online: {{ rolling_update_missing }}. They were online before the
+      update started. Stopping here -- the remaining nodes have not been
+      touched and are still running the previous version.
+    quiet: true
+  when: rolling_update_require_all_online | bool
+
+- name: Check replication has not fallen behind
+  vergeio.vergeos.site_sync_info:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+    direction: outgoing
+    max_age: "{{ rolling_update_max_replication_age | int }}"
+  register: rolling_update_replication
+  changed_when: false
+  when: rolling_update_max_replication_age | int > 0
+
+- name: Replication must still be within its objective
+  ansible.builtin.assert:
+    that: rolling_update_replication.stale | default([]) | length == 0
+    fail_msg: >-
+      replication fell behind during the update of
+      '{{ rolling_update_node }}':
+      {{ rolling_update_replication.stale | map(attribute='name') | list }}.
+      Stopping before the next node.
+    quiet: true
+  when: rolling_update_max_replication_age | int > 0
+
+- name: Health gate passed
+  ansible.builtin.debug:
+    msg: >-
+      cluster healthy after '{{ rolling_update_node }}':
+      {{ rolling_update_health.online | map(attribute='name') | list | sort }}
+      online

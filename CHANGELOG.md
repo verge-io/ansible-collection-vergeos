@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`site_sync` + `site_sync_info` modules**: site-to-site replication
+  (ioReplicate) as code, plus the derived facts a watchdog needs - age of each
+  sync's last run, and the stale/unhealthy lists. Incoming syncs are reported
+  but never managed, because an incoming sync belongs to the receiving system.
+- **`dr_replication` role**: reconcile declared replication, optionally purge
+  what is not declared, optionally trigger and wait, then fail on lag or
+  unhealthy state. With nothing declared it is a pure watchdog and converges
+  nothing.
+- **`node_info` + `node_maintenance` modules**: node state, and drain / return
+  to service / restart. Draining the last usable node is refused unless forced.
+- **`update` + `update_info` modules**: the system-wide platform update
+  lifecycle (check, download, install). Applying an update is per node and is
+  deliberately not done here.
+- **`rolling_update` role**: install an update, then restart each node that
+  needs it - drain, restart, wait down, wait back, return to service, health
+  gate. Requires explicit consent before restarting anything.
+- **`tests/unit/test_jinja_filters.py`**: asserts every Jinja filter and test
+  used in a role or example actually exists.
+
+### Notes
+
+- A site sync that has never run counts as behind RPO. "No timestamp" and
+  "just replicated" must not look alike - a replication target configured once
+  and never exercised is precisely the failure the check exists to surface.
+- Sync health is conservative: healthy only when the platform positively
+  reports online and error-free. An unreadable state is unhealthy, never
+  assumed green.
+- Site sync drift is compared against the table's field spelling, not the
+  SDK's keyword. The SDK says `queue_retry_interval_seconds` where the row
+  says `queue_retry_interval`; comparing the wrong one reports drift on every
+  run.
+- The rolling health gate compares against a baseline captured before the run,
+  not against the previous iteration - otherwise the expected node count
+  drifts down one node at a time and the gate never fires.
+- `update` idempotence is by consequence, not bookkeeping. The platform records
+  that updates are installed, not that a check was performed, so `checked` and
+  `downloaded` run each time until an install has happened.
+
 ## [2.0.0] - 2026-02-02
 
 ### Breaking Changes

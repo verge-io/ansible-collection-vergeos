@@ -56,6 +56,9 @@ All modules follow this structure:
 - **Storage**: `drive`
 - **Config**: `cloud_init`, `windows_unattend`
 - **System**: `user`, `member`, `cluster_info`, `file_info`
+- **Nodes**: `node_info`, `node_maintenance`
+- **Updates**: `update`, `update_info`
+- **Replication**: `site_sync`, `site_sync_info`
 - **Tags**: `tag`, `tag_category`
 
 ### Inventory Plugin (`plugins/inventory/vergeos_vms.py`)
@@ -67,6 +70,25 @@ Multi-site dynamic inventory with:
 - Host variables: site info, VM identification, timestamps (created/modified), machine_type, status, resources, OS, organization (tenant/cluster/node), tags, NICs, MAC addresses, drives, IP
 - JSON file caching (recommended: 1 hour timeout)
 - Hostname templating
+
+### Roles (`roles/`)
+
+- **`dr_replication`**: replication as code + an RPO watchdog.
+- **`rolling_update`**: install a platform update, then apply it
+  node by node with a health gate between nodes. Consent is a
+  variable (`rolling_update_confirm`), not `--check`, because a
+  scheduler will not remember to pass `--check`.
+
+### Testing Notes
+
+- `tests/unit/test_jinja_filters.py` catches nonexistent Jinja
+  filters, which ansible-lint and `--syntax-check` both pass.
+- Do NOT call `init_plugin_loader()` at test-module import time.
+  pytest imports every test module during collection, so it
+  reaches into the pre-existing non-isolated vm/inventory suites
+  and changes their pass/fail pattern.
+- Test file basenames must be unique across `tests/unit/`; there
+  are no `__init__.py` files, so pytest collides on duplicates.
 
 ### Documentation Fragment (`plugins/doc_fragments/vergeos.py`)
 

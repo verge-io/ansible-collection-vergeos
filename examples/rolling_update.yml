@@ -1,0 +1,25 @@
+---
+# Example playbook: patch a VergeOS cluster without taking it down.
+#
+# Dry run -- stages the update, prints the node order, restarts nothing:
+#   ansible-playbook examples/rolling_update.yml
+#
+# For real:
+#   ansible-playbook examples/rolling_update.yml -e rolling_update_confirm=yes
+#
+- name: Roll a platform update through the cluster
+  hosts: localhost
+  gather_facts: false
+
+  roles:
+    - role: vergeio.vergeos.rolling_update
+      vars:
+        rolling_update_stage: installed
+
+        # Leave empty to take whichever nodes the platform says need a
+        # restart. Name them to control the order -- prove the update on the
+        # node you choose, not the one the API happened to list first.
+        rolling_update_nodes: []
+
+        # Stop the roll if replication falls behind while nodes are cycling.
+        rolling_update_max_replication_age: 14400

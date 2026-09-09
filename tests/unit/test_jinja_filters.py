@@ -13,6 +13,7 @@ for an unknown filter, so a render-based check reports success on everything
 and is worse than no check at all.
 """
 
+import functools
 import pathlib
 import re
 
@@ -51,6 +52,12 @@ SECOND_ARG = re.compile(
     r"\b(?:selectattr|rejectattr)\(\s*'[^']*'\s*,\s*'([a-zA-Z_][a-zA-Z0-9_]*)'")
 
 
+# Deliberately NOT computed at import time. init_plugin_loader() mutates
+# global Ansible state, and pytest imports every test module during collection
+# — so doing this at module level reaches into unrelated test files before any
+# test has run. Measured: it changed the pass/fail pattern of the pre-existing,
+# non-isolated vm and inventory suites. functools.cache keeps it to one call.
+@functools.cache
 def _known():
     init_plugin_loader()
     names = set()
@@ -59,9 +66,6 @@ def _known():
             names.add(plugin._load_name)
             names.update(getattr(plugin, 'ansible_aliases', ()) or ())
     return names | BUILTIN_FILTERS | BUILTIN_TESTS
-
-
-KNOWN = _known()
 
 
 def _yaml_files():
@@ -84,7 +88,7 @@ def _used_names(text):
 def test_every_jinja_filter_exists(path):
     missing = sorted({
         name for name in _used_names(path.read_text(encoding='utf-8'))
-        if name not in KNOWN
+        if name not in _known()
     })
     assert not missing, (
         "%s uses Jinja filter/test(s) that do not exist: %s"
@@ -97,7 +101,7 @@ def test_the_check_would_catch_a_missing_filter():
     A checker that silently matches nothing passes every file and is worse
     than no checker, which is exactly how the first version of this failed.
     """
-    assert 'div' not in KNOWN
+    assert 'div' not in _known()
     used = set(_used_names("x: \"{{ [60] | map('div', 60) | list }}\""))
     assert 'div' in used, "the real bug this file exists for went undetected"
     assert {'map', 'list'} <= used

@@ -1,0 +1,111 @@
+---
+# One node's turn: drain -> restart -> wait for it back -> return to service
+# -> health gate.
+#
+# The health gate at the end is what makes this worth doing node by node. Skip
+# it and a rolling update is just a slower way to break every node in turn.
+
+- name: "Drain: {{ rolling_update_node }}"
+  vergeio.vergeos.node_maintenance:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+    name: "{{ rolling_update_node }}"
+    state: maintenance
+  when: rolling_update_drain | bool
+
+- name: "Wait for evacuation: {{ rolling_update_node }}"
+  vergeio.vergeos.node_info:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+    name: "{{ rolling_update_node }}"
+  register: rolling_update_drained
+  failed_when: false
+  changed_when: false
+  retries: "{{ (rolling_update_drain_timeout | int // (rolling_update_poll_interval | int)) | int }}"
+  delay: "{{ rolling_update_poll_interval | int }}"
+  until: (rolling_update_drained.nodes | default([{}]) | first).maintenance | default(false) | bool
+  when: rolling_update_drain | bool
+
+- name: "Evacuation must have finished: {{ rolling_update_node }}"
+  ansible.builtin.assert:
+    that: (rolling_update_drained.nodes | default([{}]) | first).maintenance | default(false) | bool
+    fail_msg: >-
+      node '{{ rolling_update_node }}' had not entered maintenance after
+      {{ rolling_update_drain_timeout }}s. Refusing to restart a node whose
+      workloads may still be on it.
+    quiet: true
+  when: rolling_update_drain | bool
+
+- name: "Restart: {{ rolling_update_node }}"
+  vergeio.vergeos.node_maintenance:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+    name: "{{ rolling_update_node }}"
+    state: restarted
+    # The node is already drained by this point, so the peer check that
+    # normally guards a restart has nothing left to protect -- and on a
+    # two-node cluster the drained peer would make it refuse.
+    force: "{{ rolling_update_drain | bool }}"
+
+# A node does not vanish the instant a restart is requested, so polling
+# straight away can see it still online and call the restart finished before
+# it has begun. Wait for it to go DOWN first, then for it to come back.
+- name: "Wait for the node to go down: {{ rolling_update_node }}"
+  vergeio.vergeos.node_info:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+    name: "{{ rolling_update_node }}"
+  register: rolling_update_down
+  failed_when: false
+  changed_when: false
+  retries: "{{ (rolling_update_restart_timeout | int // (rolling_update_poll_interval | int)) | int }}"
+  delay: "{{ rolling_update_poll_interval | int }}"
+  until: not ((rolling_update_down.nodes | default([{}]) | first).online | default(false) | bool)
+
+- name: "Wait for the node to come back: {{ rolling_update_node }}"
+  vergeio.vergeos.node_info:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+    name: "{{ rolling_update_node }}"
+  register: rolling_update_back
+  failed_when: false
+  changed_when: false
+  retries: "{{ (rolling_update_restart_timeout | int // (rolling_update_poll_interval | int)) | int }}"
+  delay: "{{ rolling_update_poll_interval | int }}"
+  until: (rolling_update_back.nodes | default([{}]) | first).online | default(false) | bool
+
+- name: "The node must have come back: {{ rolling_update_node }}"
+  ansible.builtin.assert:
+    that: (rolling_update_back.nodes | default([{}]) | first).online | default(false) | bool
+    fail_msg: >-
+      node '{{ rolling_update_node }}' did not come back online within
+      {{ rolling_update_restart_timeout }}s of being restarted. The remaining
+      nodes have NOT been touched, and this one is still drained -- fix it
+      before re-running, rather than continuing the roll.
+    quiet: true
+
+- name: "Return to service: {{ rolling_update_node }}"
+  vergeio.vergeos.node_maintenance:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+    name: "{{ rolling_update_node }}"
+    state: active
+  when:
+    - rolling_update_drain | bool
+    - rolling_update_return_to_service | bool
+
+- name: Health gate
+  ansible.builtin.include_tasks: health_gate.yml
+  when: rolling_update_health_gate | bool
