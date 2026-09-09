@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`group` + `group_info` modules**: groups, their membership (users and
+  nested groups), and the grants attached to them. Membership is additive
+  unless `exact_members` is set.
+- **`permission` module**: the five VergeOS rights on a table, or on one row
+  of a table, for a named user or group.
+- **`rbac` role**: groups, membership and permissions from one document, with
+  a read-back report of who can do what.
+- **`tests/unit/test_jinja_filters.py`**: asserts every Jinja filter and test
+  used in a role or example actually exists.
+
+### Notes
+
+- Permissions attach to an identity, which both users and groups carry, so
+  granting to a user and to a group are the same operation with a different
+  lookup.
+- Users and groups are named, not keyed. An RBAC document referring to
+  identity keys would be unreadable and would not port between systems; the
+  lookup is where a typo becomes a clear error rather than a grant landing on
+  nobody.
+- Rights are the whole grant, not an addition - a right not named is denied.
+- A table-level grant (row 0) and a grant on one row of the same table are
+  different permissions, matched on `table#row`. Comparing on the table alone
+  lets a declared row-level grant shelter an undeclared table-wide one.
+- Reconciling rights revokes and re-grants: `grant()` is the only path the SDK
+  exposes for setting them, and re-granting the same (identity, table, row)
+  replaces rather than duplicating.
+- Platform-managed groups are reported, never reconciled.
+
 ## [2.0.0] - 2026-02-02
 
 ### Breaking Changes

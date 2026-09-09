@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: rbac
+  author: VergeIO
+  description: >-
+    Groups, membership and permissions from one declarative document.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.14"
+  galaxy_tags:
+    - vergeos
+    - vergeio
+    - security
+    - rbac
+    - identity
+
+dependencies: []
