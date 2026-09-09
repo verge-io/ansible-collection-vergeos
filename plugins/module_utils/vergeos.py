@@ -62,10 +62,16 @@ def get_vergeos_client(module):
     elif host.startswith('http://'):
         host = host[7:]
 
+    # Auth method: api_key takes precedence when set (the SDK's
+    # connect() prefers token over username/password). Otherwise
+    # fall back to BASIC auth via username + password.
+    api_key = module.params.get('api_key') or None
+
     return VergeClient(
         host=host,
-        username=module.params['username'],
-        password=module.params['password'],
+        username=module.params.get('username') or "",
+        password=module.params.get('password') or "",
+        token=api_key,
         verify_ssl=not module.params.get('insecure', False)
     )
 
@@ -100,7 +106,13 @@ def vergeos_argument_spec():
     - host: VERGEOS_HOST
     - username: VERGEOS_USERNAME
     - password: VERGEOS_PASSWORD
+    - api_key: VERGEOS_API_KEY
     - insecure: VERGEOS_INSECURE
+
+    Either (username AND password) OR api_key must be supplied.
+    When both are provided, api_key wins (the SDK's connect()
+    prefers token-based auth, bypassing 2FA / TOTP on tenants
+    that require it for username+password logins).
     """
     return dict(
         host=dict(
@@ -110,14 +122,20 @@ def vergeos_argument_spec():
         ),
         username=dict(
             type='str',
-            required=True,
+            required=False,
             fallback=(env_fallback, ['VERGEOS_USERNAME'])
         ),
         password=dict(
             type='str',
-            required=True,
+            required=False,
             no_log=True,
             fallback=(env_fallback, ['VERGEOS_PASSWORD'])
+        ),
+        api_key=dict(
+            type='str',
+            required=False,
+            no_log=True,
+            fallback=(env_fallback, ['VERGEOS_API_KEY'])
         ),
         insecure=dict(
             type='bool',
