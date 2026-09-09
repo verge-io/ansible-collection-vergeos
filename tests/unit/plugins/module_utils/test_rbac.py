@@ -6,7 +6,9 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.rbac import (
     RIGHTS,
     find_permission,
     grant_kwargs,
+    key_name_map,
     member_names,
+    split_member_ref,
     membership_changes,
     resolve_identity,
     rights_of,
@@ -162,26 +164,105 @@ def test_a_string_row_key_still_matches():
 
 # ── membership ───────────────────────────────────────────────────────────────
 
-def test_member_names_separates_users_from_groups():
-    """A group can contain groups, and the two are removed with different
-    calls, so they have to be told apart rather than flattened."""
+# The rows below are the shape measured on VergeOS 26.1.8, not an invented
+# one. The first version of these tests used 'member_name' / 'member_type',
+# which exist only as computed SDK properties -- so the tests passed while
+# every group reported zero members (bug B2).
+#
+#   {'$key': 1, 'parent_group': 1, 'member': 'users/1',
+#    'member_display': 'welchums', 'creator': ''}
+#
+# And with fields=all the display name is absent entirely:
+#   {'$key': 1, 'parent_group': 1, 'member': 'users/1', 'creator': ''}
+
+def test_split_member_ref_reads_kind_and_key_from_the_reference():
+    assert split_member_ref({'member': 'users/1'}) == ('users', '1')
+    assert split_member_ref({'member': 'groups/4'}) == ('groups', '4')
+    assert split_member_ref({}) == ('', '')
+
+
+def test_split_member_ref_handles_the_prefixed_form():
+    """Both forms are real, and both were measured:
+
+        GET groups?fields=all  -> 'users/1'
+        GET members?fields=all -> '/v4/users/2'
+
+    and pyvergeos POSTs the prefixed one when adding a member, so it is the
+    canonical shape rather than an oddity. Parsing only the bare form returns
+    ('', 'v4/users/2') and every member becomes an unresolved user.
+    """
+    assert split_member_ref({'member': '/v4/users/2'}) == ('users', '2')
+    assert split_member_ref({'member': '/v4/groups/7'}) == ('groups', '7')
+
+
+def test_split_member_ref_survives_a_reference_it_cannot_split():
+    assert split_member_ref({'member': 'nonsense'}) == ('', 'nonsense')
+    assert split_member_ref({'member': '/'}) == ('', '')
+
+
+def test_member_names_resolves_a_prefixed_reference_by_key():
+    users, groups = member_names(
+        [{'member': '/v4/users/2'}, {'member': '/v4/groups/7'}],
+        {'2': 'labuser'}, {'7': 'ops'})
+    assert users == ['labuser']
+    assert groups == ['ops']
+
+
+def test_member_names_uses_member_display_when_present():
     users, groups = member_names([
-        {'member_name': 'alice', 'member_type': 'users'},
-        {'member_name': 'ops', 'member_type': 'groups'},
-        {'member_name': 'bob', 'member_type': 'users'},
+        {'member': 'users/1', 'member_display': 'alice'},
+        {'member': 'groups/4', 'member_display': 'ops'},
+        {'member': 'users/2', 'member_display': 'bob'},
     ])
     assert users == ['alice', 'bob']
     assert groups == ['ops']
 
 
-def test_member_names_skips_rows_with_no_name():
-    users, groups = member_names([{'member_type': 'users'}])
+def test_member_names_resolves_by_key_when_display_is_absent():
+    """fields=all omits member_display, so the key maps are the fallback."""
+    users, groups = member_names(
+        [{'member': 'users/1'}, {'member': 'groups/4'}],
+        {'1': 'alice'}, {'4': 'ops'})
+    assert users == ['alice']
+    assert groups == ['ops']
+
+
+def test_member_names_reports_the_raw_ref_rather_than_dropping_a_member():
+    """An unresolvable member must stay visible.
+
+    Dropping it shrinks the have-set, and under exact_members a shrunken
+    have-set re-adds a real member instead of removing a phantom -- silent
+    either way. 'users/7' is at least a bug report.
+    """
+    users, groups = member_names([{'member': 'users/7'}])
+    assert users == ['users/7']
+    assert groups == []
+
+
+def test_member_names_still_honours_member_type_when_there_is_no_reference():
+    users, groups = member_names([
+        {'member_name': 'alice', 'member_type': 'users'},
+        {'member_name': 'ops', 'member_type': 'groups'},
+    ])
+    assert users == ['alice']
+    assert groups == ['ops']
+
+
+def test_member_names_skips_rows_with_nothing_to_name_them_by():
+    users, groups = member_names([{'creator': 'node1'}])
     assert users == [] and groups == []
 
 
-def test_member_names_defaults_unknown_types_to_users():
-    users, _groups = member_names([{'member_name': 'alice'}])
-    assert users == ['alice']
+def test_key_name_map_keys_by_string():
+    class M:
+        @staticmethod
+        def list():
+            return [{'$key': 1, 'name': 'alice'}, {'$key': 2, 'name': 'bob'}]
+
+    class C:
+        users = M()
+
+    assert key_name_map(C(), 'users') == {'1': 'alice', '2': 'bob'}
 
 
 def test_additive_membership_adds_without_removing():
