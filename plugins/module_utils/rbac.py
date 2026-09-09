@@ -91,20 +91,29 @@ def split_member_ref(row):
     """``(table, key)`` from a membership row's ``member`` reference.
 
     The raw row encodes both the kind and the identity of a member in one
-    string -- ``"users/1"``, ``"groups/4"``. Measured on VergeOS 26.1.8:
+    string. The platform sends that string in more than one form depending on
+    the projection, and both were measured on VergeOS 26.1.8:
 
-        {'$key': 1, 'parent_group': 1, 'member': 'users/1',
-         'member_display': 'welchums', 'creator': ''}
+        GET groups?fields=all       -> 'users/1'
+        GET members?fields=all      -> '/v4/users/2'
+        SDK members().list()        -> '/v4/users/2' plus member_display
 
-    ``member_type`` / ``member_name`` / ``member_key`` exist only as computed
-    properties on the SDK model, which ``dict()`` discards. Reading those
-    names off a raw row returns None for every member, which is
-    indistinguishable from an empty group -- and with ``exact_members: true``
-    that reads as "remove nobody, add everyone again".
+    pyvergeos posts the prefixed form when adding
+    (``member: f"/v4/users/{key}"``), so the prefix is the platform's
+    canonical shape and the bare form is the nested projection's shorthand.
+    Parsing only one of them is how a correct-looking split returns
+    ``('', 'v4/users/2')`` and every member silently becomes an unresolved
+    user.
+
+    So: take the last two path segments, whatever came before them.
     """
-    ref = str((row or {}).get('member') or '')
-    table, _, key = ref.partition('/')
-    return table, key
+    ref = str((row or {}).get('member') or '').strip('/')
+    if not ref:
+        return '', ''
+    parts = [p for p in ref.split('/') if p]
+    if len(parts) < 2:
+        return '', parts[0] if parts else ''
+    return parts[-2], parts[-1]
 
 
 def member_names(members, users_by_key=None, groups_by_key=None):

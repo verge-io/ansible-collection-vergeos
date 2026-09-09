@@ -181,6 +181,33 @@ def test_split_member_ref_reads_kind_and_key_from_the_reference():
     assert split_member_ref({}) == ('', '')
 
 
+def test_split_member_ref_handles_the_prefixed_form():
+    """Both forms are real, and both were measured:
+
+        GET groups?fields=all  -> 'users/1'
+        GET members?fields=all -> '/v4/users/2'
+
+    and pyvergeos POSTs the prefixed one when adding a member, so it is the
+    canonical shape rather than an oddity. Parsing only the bare form returns
+    ('', 'v4/users/2') and every member becomes an unresolved user.
+    """
+    assert split_member_ref({'member': '/v4/users/2'}) == ('users', '2')
+    assert split_member_ref({'member': '/v4/groups/7'}) == ('groups', '7')
+
+
+def test_split_member_ref_survives_a_reference_it_cannot_split():
+    assert split_member_ref({'member': 'nonsense'}) == ('', 'nonsense')
+    assert split_member_ref({'member': '/'}) == ('', '')
+
+
+def test_member_names_resolves_a_prefixed_reference_by_key():
+    users, groups = member_names(
+        [{'member': '/v4/users/2'}, {'member': '/v4/groups/7'}],
+        {'2': 'labuser'}, {'7': 'ops'})
+    assert users == ['labuser']
+    assert groups == ['ops']
+
+
 def test_member_names_uses_member_display_when_present():
     users, groups = member_names([
         {'member': 'users/1', 'member_display': 'alice'},
