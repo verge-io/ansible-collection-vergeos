@@ -21,7 +21,18 @@ These are the urgent ones. The translator claims to handle something, and
 returns a wrong answer rather than admitting it cannot. Wrong answers are far
 more dangerous than missing features, because nothing looks broken.
 
+In plain terms, today:
+
+- a name containing an apostrophe cannot be looked up — pyvergeos can create
+  such a name and then fails to read it back;
+- the recipe "practice run" works, but its report is thrown away before
+  anyone can read it;
+- **a user cannot be removed from the Administrators group** — the call
+  reports "not a member" about someone who is.
+
 All three are small fixes. **This is the highest-value work by a wide margin.**
+
+Each has a runnable reproduction in `docs/repro/`.
 
 ### Kind 2 — the translator does not know some words yet (about 97 items)
 
@@ -65,7 +76,35 @@ Measured on `GET /api/v4/vnets?filter=...`:
 Affects the shipped `vm_info`, `vm`, `network`, `network_info`, `drive`,
 `nic` and `user` modules — all of them look things up by name.
 
-**Fix:** escape with a backslash rather than doubling.
+**Where in the code.** 84 occurrences across 47 files, all the same
+`replace("'", "''")`. Three are the shared machinery; the rest are copies:
+
+| file:line | what it feeds |
+|---|---|
+| `filters.py:62` | `Filter._format_single` — the fluent filter builder |
+| `filters.py:138` | `_format_value` — used by `build_filter()` |
+| `filters.py:172` | the `like` / wildcard path |
+| `resources/base.py:184` | **`ResourceManager.get(name=...)`** — the shared lookup every manager inherits |
+
+`base.py:184` is the one that matters most:
+
+```python
+if name is not None:
+    escaped_name = name.replace("'", "''")
+    results = self.list(filter=f"name eq '{escaped_name}'", fields=fields, limit=1)
+```
+
+**Fix:** escape with a backslash rather than doubling. Fixing the three in
+`filters.py` plus `base.py:184` covers the shared paths; the other 80 are
+copy-paste in individual resource files and should ideally call one helper.
+
+**Reproduce:** `bash docs/repro/d1_name_escaping.sh`
+
+**Sharpest demonstration:** pyvergeos can *create* a group named
+`zz-claude-o'brien` and then cannot *read it back* —
+`groups.get(name=...)` raises `ValidationError: Invalid argument`, while the
+backslash form returns the row.
+
 **Our workaround:** match names in Python instead of asking the server to
 filter. Works, but costs a full listing on every lookup.
 
@@ -96,9 +135,29 @@ response.cloudinit_files: ['/meta-data', '/network-config', '/user-data']
 Through pyvergeos the same call raises `APIError`, carrying `status_code=405`
 and nothing else. The 28-entry log is unrecoverable.
 
+**Where in the code.**
+
+| file:line | what it does |
+|---|---|
+| `client.py:585-608` | `_handle_response` — branches on status; everything non-2xx goes to the error path |
+| `client.py:597` | calls `_extract_error_message`, keeping only its return value |
+| `client.py:610-624` | `_extract_error_message` — returns `str`, discarding the rest of the document |
+| `exceptions.py:34-39` | `APIError.__init__(message, status_code)` — there is nowhere to put a body |
+
+```python
+# client.py:607
+else:
+    raise APIError(error_message, status_code=response.status_code)
+```
+
+Measured on the exception: `attrs = ['add_note', 'args', 'status_code',
+'with_traceback']`. The 28-entry log is unreachable.
+
 **Fix:** keep the parsed body on the exception, e.g. `APIError.body`. Callers
-can then decide what a status means. This is a small, backward-compatible
-addition.
+can then decide what a status means. Small and backward-compatible — nothing
+that reads `str(e)` or `e.status_code` changes.
+
+**Reproduce:** `bash docs/repro/d2_discarded_body.sh`
 **Our workaround:** we bypass pyvergeos for this one call and read the raw
 reply ourselves.
 **Also worth raising with the VergeOS team separately:** a successful
@@ -106,49 +165,98 @@ simulation probably should not answer with 405.
 
 ---
 
-### D3. Group membership is misread on the most important groups
-**Severity: high. Silent — no error, just wrong answers.**
+### D3. Users cannot be removed from any group VergeOS created
+**Severity: high. Security-relevant. Was understated in an earlier draft.**
 
 Plain: pyvergeos identifies a group member by looking for a specific text
-pattern. VergeOS stores that text in two different forms, and pyvergeos only
-recognises one. For memberships VergeOS created itself — including the
-**default Administrators group on every system** — it reports "Unknown".
+pattern. VergeOS stores that text in two different forms, and pyvergeos
+recognises only one. The form it does *not* recognise is the one VergeOS uses
+for memberships it created itself — which includes **the default
+Administrators group on every system**.
 
-Technical: `GroupMember.member_type` and `member_key` both test
-`"/users/" in ref`. The platform stores the reference verbatim in whichever
-form created it, and both forms are live in the same column:
+The practical result is not just a cosmetic misreport: **`remove_user()` and
+`remove_group()` cannot remove those memberships at all.**
+
+**Where in the code.**
+
+| file:line | what is wrong |
+|---|---|
+| `resources/groups.py:42-49` | `member_type` — tests `"/users/" in ref` |
+| `resources/groups.py:51-66` | `member_key` — same test, then splits on `"/users/"` |
+| `resources/groups.py:202` | `add_user` verification loop depends on both |
+| `resources/groups.py:233` | `add_group` verification loop |
+| `resources/groups.py:263` | **`remove_user`** — the triggerable failure |
+| `resources/groups.py:283` | **`remove_group`** — same |
+
+```python
+# groups.py:42-49
+ref = self.member_ref
+if "/users/" in ref:
+    return "User"
+elif "/groups/" in ref:
+    return "Group"
+return "Unknown"
+```
+
+**Why it fails.** The platform stores the reference verbatim, in whichever
+form wrote it. Both are live in the same column of the same table:
 
 ```
-client.groups.members(1).list()  ->  member = 'users/1'      (platform-created)
-client.groups.members(2).list()  ->  member = '/v4/users/2'  (created by add_user)
+client.groups.members(1).list()  ->  member = 'users/1'      (written by VergeOS)
+client.groups.members(2).list()  ->  member = '/v4/users/2'  (written by add_user)
 ```
 
-`'/users/' in 'users/1'` is `False`, so:
+`'/users/' in 'users/1'` is `False`. Measured against the real Administrators
+group:
 
 ```
-member=users/1  ->  member_type='Unknown'   member_key=None
-member=users/2  ->  member_type='Unknown'   member_key=None
-member=users/3  ->  member_type='Unknown'   member_key=None
+member='users/1'  member_type='Unknown'  member_key=None  member_name='welchums'
+member='users/2'  member_type='Unknown'  member_key=None  member_name='labuser'
+member='users/3'  member_type='Unknown'  member_key=None  member_name='vlab'
 ```
 
-`member_name` is unaffected — it reads `member_display`.
+`member_name` is unaffected — it reads `member_display`, a separate field. So
+listing members *looks* fine, which is what hides this.
 
-**Why this has not blown up yet:** `add_user()` verifies its own work by
-listing members and matching on `member_type == "User"`. It only survives
-because the row it just created is in the prefixed form it posted. Had that
-row been stored bare, `add_user()` would raise
-`ValueError("Failed to add user to group")` **after successfully adding the
-user** — reporting failure for an action that worked.
+**The triggerable consequence**, reproduced in a scratch group with a
+platform-form membership:
+
+```
+membership: {'$key': 4, 'parent_group': 2, 'member': 'users/2',
+             'member_display': 'labuser'}
+members.remove_user(2)
+   -> NotFoundError: User 2 is not a member of group 2
+   -> still a member: ['labuser']
+```
+
+**Why this is easy to miss.** `remove_user` raises rather than silently
+succeeding, so it looks loud. But the idiomatic idempotence pattern is:
+
+```python
+try:
+    members.remove_user(key)
+except NotFoundError:
+    pass          # "already gone"
+```
+
+which converts *"cannot remove this user"* into *"nothing to do"*. Offboarding
+automation written that way reports success and changes nothing.
+
+`add_user` currently survives only because the row it just created is in the
+prefixed form it posted. That is luck, not design.
 
 **Fix:** take the last two path segments instead of substring-matching a
-prefix. Handles both forms:
+prefix — handles both forms and any future one:
 
 ```python
 parts = [p for p in ref.strip('/').split('/') if p]
-table, key = parts[-2], parts[-1]      # 'users', '1'
+table, key = (parts[-2], parts[-1]) if len(parts) >= 2 else ('', '')
 ```
 
-**Our workaround:** `module_utils/rbac.py:split_member_ref` does exactly this.
+**Reproduce:** `python docs/repro/d3_membership_refs.py`
+
+**Our workaround:** `module_utils/rbac.py:split_member_ref` and
+`modules/member.py:find_membership` both do exactly this.
 
 ---
 
@@ -236,7 +344,7 @@ So this does not read as a list of complaints:
 |---|---|---|---|
 | 1 | **D1** name escaping | one function | Affects every name lookup, including shipped modules |
 | 2 | **D2** keep the body on errors | small, additive | Unblocks the recipe feature outright |
-| 3 | **D3** membership reference parsing | ~3 lines | Silently wrong on the Administrators group |
+| 3 | **D3** membership reference parsing | ~3 lines | `remove_user` cannot remove anyone from a VergeOS-created group |
 | 4 | `cluster_status` | one manager | Removes a workaround; prevents a real stall |
 | 5 | `machine_drive_stats` | one manager | Removes a workaround |
 | 6 | Priority B set | ~12 managers | Unblocks partial snapshots, restore, scheduling, tenants |
