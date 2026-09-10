@@ -23,8 +23,10 @@ more dangerous than missing features, because nothing looks broken.
 
 In plain terms, today:
 
-- a name containing an apostrophe cannot be looked up — pyvergeos can create
-  such a name and then fails to read it back;
+- a name containing an apostrophe or a backslash cannot be looked up —
+  pyvergeos can create such a name and then fails to read it back. VergeOS
+  itself allows both, and 11 other punctuation characters we tested work
+  fine, so this is narrow;
 - the recipe "practice run" works, but its report is thrown away before
   anyone can read it;
 - **a user cannot be removed from the Administrators group** — the call
@@ -45,21 +47,69 @@ we actually want to do.
 
 ### What we need, in priority order
 
-1. **Fix the three wrong answers.** Small, contained, high impact.
-2. **Add 2 specific missing items** we currently work around.
-3. **Add about 12 more** to unblock planned features.
-4. **The remaining ~83** are a backlog, not a blocker.
+1. **Fix D3 first.** Three lines, and today you cannot remove a user from the
+   Administrators group through the SDK.
+2. **Then D2 and D1.** Both small. D1 is narrower than first reported — two
+   characters, not "punctuation generally".
+3. **Add 2 specific missing items** we currently work around.
+4. **Add about 12 more** to unblock planned features.
+5. **The remaining ~83** are a backlog, not a blocker.
 
 ---
 
 ## Kind 1 — defects: covered, but wrong
 
-### D1. Searching by name breaks on ordinary punctuation
-**Severity: high. Affects nearly everything.**
+### D1. Two characters break name lookups
+**Severity: medium.** *Downgraded from "high, affects nearly everything" — that
+was overstated. Corrected after testing which characters are actually
+affected.*
 
-Plain: if you ask for something by name and the name contains an apostrophe —
-`O'Brien`, `Customer's VM` — the request is rejected. Not "not found";
-rejected as malformed.
+**First, the fair question: does VergeOS even allow an apostrophe in a name?**
+Yes. Tested by creating groups with 13 different characters — VergeOS accepted
+**all thirteen**, including the apostrophe. So the input is reachable; nothing
+prevents a customer from typing it.
+
+**But only two of those thirteen actually break pyvergeos:**
+
+| character | example | VergeOS creates it | `pyvergeos.get(name=)` |
+|---|---|---|---|
+| apostrophe | `zz-obrien's-vm` | yes | **ValidationError: Invalid argument** |
+| backslash | `zz-back\slash` | yes | **NotFoundError — for a name that exists** |
+| percent | `zz-100%-full` | yes | found |
+| underscore | `zz_prod_db` | yes | found |
+| double quote | `zz-say-"hi"` | yes | found |
+| space | `zz prod db` | yes | found |
+| ampersand | `zz-r&d` | yes | found |
+| parentheses | `zz-db-(primary)` | yes | found |
+| comma, colon, plus, hash | | yes | found |
+
+So this is **not** "ordinary punctuation" — it is two specific characters.
+`%` and `_` were expected to break as SQL wildcards and do not, because the
+lookup uses `eq` rather than `like`.
+
+**Which of the two matters more is the opposite of what you would guess.**
+The apostrophe fails *loudly* — you get an error and go and look. The
+backslash fails *quietly*: `get(name=...)` reports the name does not exist
+when it does. Modules built on the usual pattern —
+
+```python
+try:
+    existing = client.groups.get(name=n)
+except NotFoundError:
+    client.groups.create(name=n)          # "it wasn't there"
+```
+
+— then try to create it again. Measured: the platform's uniqueness constraint
+catches it and returns `ConflictError: A user/group with this name already
+exists`, immediately after reporting it did not. So the visible symptom is a
+re-run that fails instead of being idempotent. On any table without a
+uniqueness constraint, it would be a duplicate instead.
+
+**How much is this worth?** Honestly: not much for machine-generated names,
+which is most infrastructure. It becomes worth something wherever names come
+from people or from another system — tenants and VMs named after customers,
+NAS shares, imported AD-style names. The fix is small enough that it is
+probably worth doing on those grounds alone, but it should not displace D3.
 
 Technical: pyvergeos escapes a single quote by doubling it, SQL-style. VergeOS
 does not accept that form.
@@ -98,7 +148,9 @@ if name is not None:
 `filters.py` plus `base.py:184` covers the shared paths; the other 80 are
 copy-paste in individual resource files and should ideally call one helper.
 
-**Reproduce:** `bash docs/repro/d1_name_escaping.sh`
+**Reproduce:** `bash docs/repro/d1_name_escaping.sh` (the defect) and
+`python docs/repro/d1_which_characters.py` (the scope — which characters
+VergeOS accepts and which pyvergeos can then find)
 
 **Sharpest demonstration:** pyvergeos can *create* a group named
 `zz-claude-o'brien` and then cannot *read it back* —
@@ -158,6 +210,51 @@ can then decide what a status means. Small and backward-compatible — nothing
 that reads `str(e)` or `e.status_code` changes.
 
 **Reproduce:** `bash docs/repro/d2_discarded_body.sh`
+
+### What is NOT part of D2
+
+Writing that reproduction took three attempts, and the first two failures
+were **my mistakes, not defects**. Recording them because they are easy to
+mistake for part of the bug:
+
+1. *"the recipe key must be quoted."* A recipe `$key` is a hash string like
+   `4d10e412...`. I pasted it into a shell-built JSON body unquoted, which
+   produced invalid JSON. That is a bug in my `curl` command. The API
+   behaved correctly and its error message said so.
+
+2. *"a network answer must be a vnet key, not a name."* The API takes
+   `YB_NIC_ETH0: 3`, not `YB_NIC_ETH0: "External"`. That is the expected
+   contract. Our collection resolves names to keys as a **convenience** --
+   exactly what an automation layer should do. Not a defect either.
+
+Neither belongs in a defect report. The reproduction script now handles
+both so nobody repeats them.
+
+### So is D2 a real defect, or just "use the right call"?
+
+A fair challenge, because **the data does exist** -- raw HTTP returns it,
+which is why our workaround works. The defect is narrower than "the data is
+unavailable":
+
+> Through pyvergeos there is **no** call, correct or otherwise, that returns
+> this document. The response object is consumed inside `_handle_response`
+> and only a string survives.
+
+Tested by applying the proposed fix at runtime -- attach the parsed body to
+the exception -- and re-running the identical SDK call:
+
+```
+before:  str(e)='Simulation complete'  status=405  attrs=[args, status_code]
+after :  status=405  err='Simulation complete'  log entries=28
+         cloudinit=['/meta-data', '/network-config', '/user-data']
+```
+
+`str(e)` and `e.status_code` are unchanged, so nothing existing breaks.
+
+That is the whole fix, and it really is about two lines. Whether it is worth
+doing is reasonable to debate -- we already have a working bypass. The
+argument for doing it is that otherwise every consumer of the SDK has to
+reimplement that bypass, and each one has to know that it is needed.
 **Our workaround:** we bypass pyvergeos for this one call and read the raw
 reply ourselves.
 **Also worth raising with the VergeOS team separately:** a successful
@@ -342,9 +439,9 @@ So this does not read as a list of complaints:
 
 | # | Work | Size | Why first |
 |---|---|---|---|
-| 1 | **D1** name escaping | one function | Affects every name lookup, including shipped modules |
-| 2 | **D2** keep the body on errors | small, additive | Unblocks the recipe feature outright |
-| 3 | **D3** membership reference parsing | ~3 lines | `remove_user` cannot remove anyone from a VergeOS-created group |
+| 1 | **D3** membership reference parsing | ~3 lines | `remove_user` cannot remove anyone from a VergeOS-created group, including Administrators |
+| 2 | **D2** keep the body on errors | 2 lines | The only way to reach the simulate report through the SDK |
+| 3 | **D1** name escaping | 4 shared sites | 2 characters; the backslash one fails silently |
 | 4 | `cluster_status` | one manager | Removes a workaround; prevents a real stall |
 | 5 | `machine_drive_stats` | one manager | Removes a workaround |
 | 6 | Priority B set | ~12 managers | Unblocks partial snapshots, restore, scheduling, tenants |
