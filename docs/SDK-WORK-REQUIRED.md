@@ -211,6 +211,20 @@ that reads `str(e)` or `e.status_code` changes.
 
 **Reproduce:** `bash docs/repro/d2_discarded_body.sh`
 
+**Scope — which calls this actually costs us:** see
+`docs/D2-AFFECTED-CALLS.md`. Measured, not assumed:
+
+- all **322** table GETs return 2xx — no read is affected;
+- all **46** action endpoints return `{err}` and nothing else on a
+  malformed request, so genuine errors lose no information;
+- **one** confirmed call is affected: the recipe simulate;
+- `tenant_recipe_instances` is presumed identical but untested (no tenant
+  recipes on the lab);
+- and `HTTP_SUCCESS_CODES` is `{200, 201}` only, so **202 Accepted is
+  treated as an error**. Nothing observed returns 202 on 26.1.8, but any
+  async endpoint that did would raise and lose its body. Worth adding to
+  the same fix.
+
 ### What is NOT part of D2
 
 Writing that reproduction took three attempts, and the first two failures

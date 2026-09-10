@@ -1,0 +1,382 @@
+[
+ {
+  "endpoint": "billing_actions",
+  "status": 201,
+  "keys": [
+   "$key",
+   "$row",
+   "dbpath",
+   "location"
+  ],
+  "err": "None"
+ },
+ {
+  "endpoint": "catalog_repository_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'catalog_repository_actions.repository' is required"
+ },
+ {
+  "endpoint": "clone_iso_actions",
+  "status": 201,
+  "keys": [
+   "$key",
+   "$row",
+   "dbpath",
+   "location"
+  ],
+  "err": "None"
+ },
+ {
+  "endpoint": "cloud_snapshot_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'cloud_snapshot_actions.action' is required"
+ },
+ {
+  "endpoint": "cloud_snapshot_file_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'cloud_snapshot_file_actions.action' is required"
+ },
+ {
+  "endpoint": "cloud_snapshot_tenant_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'cloud_snapshot_tenant_actions.action' is required"
+ },
+ {
+  "endpoint": "cloud_snapshot_vm_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'cloud_snapshot_vm_actions.action' is required"
+ },
+ {
+  "endpoint": "cloud_snapshot_vmware_container_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'cloud_snapshot_vmware_container_actions.action' is "
+ },
+ {
+  "endpoint": "cluster_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'cluster_actions.cluster' is required"
+ },
+ {
+  "endpoint": "file_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'file_actions.file' is required"
+ },
+ {
+  "endpoint": "help_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'help_actions.action' is required"
+ },
+ {
+  "endpoint": "license_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'license_actions.action' is required"
+ },
+ {
+  "endpoint": "node_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'node_actions.node' is required"
+ },
+ {
+  "endpoint": "note_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'note_actions.action' is required"
+ },
+ {
+  "endpoint": "schema_version_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'schema_version_actions.action' is required"
+ },
+ {
+  "endpoint": "service_container_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'service_container_actions.service_container' is req"
+ },
+ {
+  "endpoint": "settings_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'settings_actions.setting' is required"
+ },
+ {
+  "endpoint": "shared_object_actions",
+  "status": 201,
+  "keys": [
+   "$key",
+   "$row",
+   "dbpath",
+   "location"
+  ],
+  "err": "None"
+ },
+ {
+  "endpoint": "site_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'site_actions.site' is required"
+ },
+ {
+  "endpoint": "site_syncs_incoming_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'site_syncs_incoming_actions.site_syncs_incoming' is"
+ },
+ {
+  "endpoint": "site_syncs_incoming_verified_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'site_syncs_incoming_verified_actions.site_syncs_inc"
+ },
+ {
+  "endpoint": "site_syncs_outgoing_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'site_syncs_outgoing_actions.site_syncs_outgoing' is"
+ },
+ {
+  "endpoint": "site_syncs_outgoing_remote_snap_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'site_syncs_outgoing_remote_snap_actions.site_syncs_"
+ },
+ {
+  "endpoint": "smtp_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'smtp_actions.action' is required"
+ },
+ {
+  "endpoint": "snapshot_profile_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'snapshot_profile_actions.snapshot_profile' is requi"
+ },
+ {
+  "endpoint": "swagger_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'swagger_actions.action' is required"
+ },
+ {
+  "endpoint": "system_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'system_actions.action' is required"
+ },
+ {
+  "endpoint": "system_diagnostic_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'system_diagnostic_actions.system_diagnostic' is req"
+ },
+ {
+  "endpoint": "tenant_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'tenant_actions.tenant' is required"
+ },
+ {
+  "endpoint": "tenant_node_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'tenant_node_actions.tenant_node' is required"
+ },
+ {
+  "endpoint": "tenant_recipe_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'tenant_recipe_actions.tenant_recipe' is required"
+ },
+ {
+  "endpoint": "tenant_snapshot_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'tenant_snapshot_actions.tenant' is required"
+ },
+ {
+  "endpoint": "theme_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'theme_actions.action' is required"
+ },
+ {
+  "endpoint": "update_actions",
+  "status": 201,
+  "keys": [
+   "$key",
+   "$row",
+   "dbpath",
+   "location"
+  ],
+  "err": "None"
+ },
+ {
+  "endpoint": "user_actions",
+  "status": 404,
+  "keys": [
+   "err"
+  ],
+  "err": "Error querying user: No such file or directory"
+ },
+ {
+  "endpoint": "vm_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'vm_actions.vm' is required"
+ },
+ {
+  "endpoint": "vm_console_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'vm_console_actions.vm' is required"
+ },
+ {
+  "endpoint": "vm_recipe_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'vm_recipe_actions.vm_recipe' is required"
+ },
+ {
+  "endpoint": "vmware_container_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'vmware_container_actions.vmware_container' is requi"
+ },
+ {
+  "endpoint": "vmware_container_backup_job_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'vmware_container_backup_job_actions.vmware_containe"
+ },
+ {
+  "endpoint": "vmware_container_restore_job_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'vmware_container_restore_job_actions.vmware_contain"
+ },
+ {
+  "endpoint": "vnet_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'vnet_actions.vnet' is required"
+ },
+ {
+  "endpoint": "volume_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'volume_actions.volume' is required"
+ },
+ {
+  "endpoint": "volume_antivirus_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'volume_antivirus_actions.volume_antivirus' is requi"
+ },
+ {
+  "endpoint": "volume_sync_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'volume_sync_actions.sync' is required"
+ },
+ {
+  "endpoint": "volume_vm_export_actions",
+  "status": 422,
+  "keys": [
+   "err"
+  ],
+  "err": "field 'volume_vm_export_actions.volume_vm_export' is requi"
+ }
+]
