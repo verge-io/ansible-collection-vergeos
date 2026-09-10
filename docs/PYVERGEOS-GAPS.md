@@ -128,9 +128,41 @@ missing.
 
 ---
 
-## Two SDK defects that are not missing endpoints
+## Three SDK defects that are not missing endpoints
 
-These need SDK changes even though the endpoints are covered:
+These need SDK changes even though the endpoints are covered. They are the
+highest-value work on this page: each is small, and each currently makes a
+covered endpoint behave incorrectly rather than merely be unreachable.
+
+0. **B18 — `GroupMember.member_type` and `member_key` fail on the SDK's own
+   rows.** Both test `"/users/" in ref`, but the platform stores the member
+   reference verbatim as whichever form wrote it, and both forms are live in
+   the same column of the same table:
+
+   ```
+   client.groups.members(1).list()   ->  member = 'users/1'      (platform-created)
+   client.groups.members(2).list()   ->  member = '/v4/users/2'  (SDK add_user)
+   ```
+
+   `'/users/' in 'users/1'` is False, so for every membership the platform
+   created -- including the **default Administrators group on every system** --
+   the SDK reports:
+
+   ```
+   member=users/1  ->  member_type='Unknown'  member_key=None
+   ```
+
+   `member_name` is unaffected (it reads `member_display`).
+
+   Consequence for callers: anything selecting a member by key or type silently
+   finds nothing on exactly the groups that matter most. `add_user()` happens
+   to survive only because the row it just created is in the prefixed form it
+   posted; had it been bare, `add_user()` would raise
+   `ValueError("Failed to add user to group")` *after successfully adding the
+   user*.
+
+   Fix: parse the last two path segments rather than substring-matching a
+   prefix. That is what `module_utils/rbac.py:split_member_ref` does.
 
 1. **B1 — OData escaping.** pyvergeos doubles `'` SQL-style. Measured:
    `name eq 'zz-o''brien'` → **HTTP 422 `Invalid argument`**; backslash form →
