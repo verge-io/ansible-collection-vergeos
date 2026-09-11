@@ -196,3 +196,63 @@ def membership_changes(have_users, have_groups, want_users, want_groups,
         'remove_users': remove_users,
         'remove_groups': remove_groups,
     }
+
+
+# ── the post-delete group identity defect (VergeOS platform) ────────────────
+#
+# Deleting a group frees its internal identity asynchronously. A group created
+# within roughly five seconds of that delete claims the freed identity before
+# the platform has finished releasing it, and the resulting group is
+# PERMANENTLY unable to take members. Every member POST against it answers:
+#
+#   HTTP 404 Error creating member in system table:
+#            error setting field 'members.group': No such file or directory
+#
+# Measured on VergeOS 26.1.8:
+#
+#   delete -> wait 6s -> create -> add member            -> OK
+#   delete -> create immediately -> add after 0s         -> FAIL
+#                                 -> add after 5s        -> FAIL
+#                                 -> add after 15s       -> FAIL
+#                                 -> add after 30s       -> FAIL
+#   six groups created back-to-back with NO delete first -> all OK
+#
+# So the damage is done at CREATE time and waiting afterwards never clears it.
+# An earlier version of this module retried the member add, which cannot work
+# and is left recorded here so nobody re-implements it: the retry correctly
+# identified the error and correctly re-attempted six times over ten seconds,
+# and all six failed.
+#
+# The only reliable mitigation is not to create a group inside the window.
+MEMBER_IDENTITY_MARKER = "error setting field 'members.group'"
+
+# How long the platform needs after a group delete before a new group can
+# safely claim the freed identity. Measured window is under 5s; 6 is the
+# nearest round number above it with margin.
+GROUP_IDENTITY_SETTLE_SECONDS = 6.0
+
+
+def is_member_identity_defect(exc):
+    """Whether ``exc`` is the permanent post-delete membership failure.
+
+    Matched on the platform's own wording rather than the status code, because
+    404 on this endpoint otherwise means a genuinely missing user or group.
+    """
+    return MEMBER_IDENTITY_MARKER in str(exc)
+
+
+def member_identity_advice(group_name):
+    """What to tell an operator who has hit it.
+
+    The platform's own message -- "No such file or directory" about a group
+    that plainly exists -- explains nothing, and the fix is not obvious.
+    """
+    return (
+        "group '%s' was created too soon after another group was deleted, and "
+        "the platform has left it unable to accept members. This is a VergeOS "
+        "defect, not a configuration error: a group created within about five "
+        "seconds of a group deletion claims an identity the platform has not "
+        "finished releasing, and no amount of waiting afterwards repairs it. "
+        "Delete this group, wait %g seconds, and create it again. When "
+        "removing and creating groups in the same play, put a pause between "
+        "the two." % (group_name, GROUP_IDENTITY_SETTLE_SECONDS))

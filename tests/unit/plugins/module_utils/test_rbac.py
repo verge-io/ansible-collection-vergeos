@@ -6,6 +6,9 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.rbac import (
     RIGHTS,
     find_permission,
     grant_kwargs,
+    GROUP_IDENTITY_SETTLE_SECONDS,
+    is_member_identity_defect,
+    member_identity_advice,
     key_name_map,
     member_names,
     split_member_ref,
@@ -303,3 +306,44 @@ def test_an_empty_additive_list_removes_nothing():
 def test_none_and_empty_are_handled(want):
     plan = membership_changes(['alice'], [], want, want)
     assert plan['add_users'] == []
+
+
+# ── the post-delete group identity defect (VergeOS platform) ────────────────
+#
+# A group created within ~5s of another group's deletion is PERMANENTLY unable
+# to take members. Measured on 26.1.8:
+#
+#   delete -> wait 6s -> create -> add            -> OK
+#   delete -> create now -> add after 0/5/15/30s  -> FAIL every time
+#
+# So the damage happens at CREATE time. An earlier fix retried the member add;
+# it correctly identified the error and retried six times over ten seconds, and
+# every attempt failed. These tests pin the detector, not a retry.
+
+DEFECT_MSG = ("Error creating member in system table: "
+              "error setting field 'members.group': No such file or directory")
+
+
+def test_the_defect_is_recognised_by_the_platforms_own_wording():
+    assert is_member_identity_defect(Exception(DEFECT_MSG))
+
+
+def test_an_ordinary_not_found_is_not_mistaken_for_it():
+    """404 on this endpoint otherwise means a genuinely missing user or group,
+    and must reach the operator unchanged."""
+    assert not is_member_identity_defect(Exception("Resource 'users/99' not found"))
+    assert not is_member_identity_defect(Exception("Login required"))
+    assert not is_member_identity_defect(Exception(""))
+
+
+def test_the_advice_names_the_group_and_the_wait():
+    advice = member_identity_advice('ops')
+    assert "'ops'" in advice
+    assert '%g' % GROUP_IDENTITY_SETTLE_SECONDS in advice
+    assert 'VergeOS defect' in advice, (
+        'the operator should be told this is not their configuration error')
+
+
+def test_the_settle_window_exceeds_the_measured_one():
+    """Measured: 5s worked, 1s did not. Anything at or below 5 is not margin."""
+    assert GROUP_IDENTITY_SETTLE_SECONDS > 5

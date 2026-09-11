@@ -10,6 +10,17 @@ runnable reproduction.
 | `02-name-escaping.md` | Name lookups fail for names containing an apostrophe or a backslash | medium |
 | `03-discarded-response-body.md` | Non-2xx responses discard the body, making the recipe simulate unreachable | medium |
 
+**All three of the above were filed, fixed upstream, and released in pyvergeos
+1.2.5** (issues #71/#72/#73, PRs #75/#76/#77). Verified fixed against the lab
+on 2026-09-11. They are kept here as the record of what was reported.
+
+A fourth was found while verifying those fixes. It is **not** a pyvergeos
+issue and goes to a different team:
+
+| file | title | severity |
+|---|---|---|
+| `04-PLATFORM-group-identity.md` | Group created shortly after another is deleted is permanently unable to accept members | high |
+
 Duplicate check performed against all 70 existing issues and PRs on
 2026-09-10: none of these are already reported. The nearest neighbour, #49,
 is about recipe answer keys and was fixed in #52/#53.

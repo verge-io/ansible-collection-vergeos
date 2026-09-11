@@ -153,6 +153,8 @@ changed_fields:
   sample: ["description", "members"]
 '''
 
+import time
+
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     get_vergeos_client,
@@ -161,7 +163,10 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     HAS_PYVERGEOS,
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.rbac import (
+    GROUP_IDENTITY_SETTLE_SECONDS,
+    is_member_identity_defect,
     key_name_map,
+    member_identity_advice,
     member_names,
     membership_changes,
 )
@@ -286,21 +291,51 @@ def main():
             if any(plan.values()):
                 changed_fields.append('members')
                 if not module.check_mode:
+                    wanted_members = (
+                        [('users', u) for u in plan['add_users']]
+                        + [('groups', g) for g in plan['add_groups']])
+
+                    for manager, member_name in wanted_members:
+                        if find_key(client, manager, member_name) is None:
+                            kind = 'user' if manager == 'users' else 'group'
+                            module.fail_json(
+                                msg="cannot add %s '%s' to group '%s': no such "
+                                    "%s." % (kind, member_name, name, kind))
+
+                    def add_all(key_of_group):
+                        """Add every wanted member to the given group."""
+                        handle = client.groups.get(key_of_group).members
+                        for manager, member_name in wanted_members:
+                            member_key = find_key(client, manager, member_name)
+                            add = (handle.add_user if manager == 'users'
+                                   else handle.add_group)
+                            add(member_key)
+
+                    try:
+                        add_all(group_key)
+                    except Exception as exc:                # noqa: BLE001
+                        if not is_member_identity_defect(exc):
+                            raise
+                        # This group cannot take members and never will. If we
+                        # created it moments ago we can rebuild it; if it
+                        # already existed, deleting it is not ours to do.
+                        if 'created' not in changed_fields:
+                            module.fail_json(msg=member_identity_advice(name))
+                        client.groups.delete(group_key)
+                        time.sleep(GROUP_IDENTITY_SETTLE_SECONDS)
+                        group_key = dict(
+                            client.groups.create(name=name, **wanted))['$key']
+                        changed_fields.append('recreated')
+                        try:
+                            add_all(group_key)
+                        except Exception as exc2:           # noqa: BLE001
+                            if is_member_identity_defect(exc2):
+                                module.fail_json(msg=member_identity_advice(name))
+                            raise
+
+                    # Re-read the handle: group_key may have changed if the
+                    # group had to be rebuilt above.
                     handle = client.groups.get(group_key).members
-                    for username in plan['add_users']:
-                        key = find_key(client, 'users', username)
-                        if key is None:
-                            module.fail_json(
-                                msg="cannot add '%s' to group '%s': no such "
-                                    "user." % (username, name))
-                        handle.add_user(key)
-                    for other in plan['add_groups']:
-                        key = find_key(client, 'groups', other)
-                        if key is None:
-                            module.fail_json(
-                                msg="cannot add group '%s' to group '%s': no "
-                                    "such group." % (other, name))
-                        handle.add_group(key)
                     for username in plan['remove_users']:
                         key = find_key(client, 'users', username)
                         if key is not None:

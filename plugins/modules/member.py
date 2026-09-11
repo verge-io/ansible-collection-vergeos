@@ -91,6 +91,12 @@ if HAS_PYVERGEOS:
     )
 
 
+from ansible_collections.vergeio.vergeos.plugins.module_utils.rbac import (
+    is_member_identity_defect,
+    member_identity_advice,
+)
+
+
 def find_by_name(client, manager, name):
     """One row by name from a manager, or None. Matched client-side.
 
@@ -198,7 +204,12 @@ def main():
         # add_user posts {'parent_group': key, 'member': '/v4/users/<key>'}.
         # The previous version posted the bare username as 'member', which is
         # not the shape the API takes.
-        created = members.add_user(int(user_key))
+        try:
+            created = members.add_user(int(user_key))
+        except Exception as exc:                            # noqa: BLE001
+            if is_member_identity_defect(exc):
+                module.fail_json(msg=member_identity_advice(group_name))
+            raise
         module.exit_json(
             changed=True, member=dict(created),
             msg=f"added '{member_username}' to '{group_name}'")

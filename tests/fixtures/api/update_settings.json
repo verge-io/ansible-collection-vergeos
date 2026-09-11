@@ -1,7 +1,7 @@
 {
  "_call": "client.update_settings.get()",
  "_meta": {
-  "captured": "2026-09-10",
+  "captured": "2026-09-11",
   "note": "Regenerate with tests/capture_api_fixtures.py. Do not hand-edit: the point of these files is that no human chose the field names.",
   "platform": "26.1.8"
  },
