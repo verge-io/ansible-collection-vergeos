@@ -19,7 +19,12 @@ issue and goes to a different team:
 
 | file | title | severity |
 |---|---|---|
-| `04-PLATFORM-group-identity.md` | Group created shortly after another is deleted is permanently unable to accept members | high |
+| `04-PLATFORM-group-identity.md` | A group created within ~3s of another group's deletion can never accept members | high |
+
+Root-caused over several rounds. Two earlier explanations were tested and
+**disproved** — it is not identity reuse, and it is not a race that heals —
+and both are recorded in the issue so they are not re-invented. Reproduction:
+`python docs/repro/04_group_member_defect.py`.
 
 Duplicate check performed against all 70 existing issues and PRs on
 2026-09-10: none of these are already reported. The nearest neighbour, #49,

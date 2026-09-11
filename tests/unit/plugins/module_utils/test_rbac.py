@@ -308,17 +308,20 @@ def test_none_and_empty_are_handled(want):
     assert plan['add_users'] == []
 
 
-# ── the post-delete group identity defect (VergeOS platform) ────────────────
+# ── the post-delete group membership defect (VergeOS platform) ──────────────
 #
-# A group created within ~5s of another group's deletion is PERMANENTLY unable
-# to take members. Measured on 26.1.8:
+# Deleting a group arms a platform defect for 3-4 seconds. A group created in
+# that window can never accept members. Measured on 26.1.8:
 #
-#   delete -> wait 6s -> create -> add            -> OK
-#   delete -> create now -> add after 0/5/15/30s  -> FAIL every time
+#   wait 0/0.5/1/2/3s after a group delete -> DEFECT
+#   wait 4/5/6s                            -> OK
+#   affected group retried at 10s/30s/60s  -> still DEFECT
+#   creating the NEXT group                -> repairs it, and arms itself
 #
-# So the damage happens at CREATE time. An earlier fix retried the member add;
-# it correctly identified the error and retried six times over ten seconds, and
-# every attempt failed. These tests pin the detector, not a retry.
+# Two explanations were tested and disproved, and the tests below encode the
+# corrected understanding rather than the first guess:
+#   - not identity reuse: the group reclaiming the freed identity worked
+#   - not a race that heals: 60 seconds does not repair it
 
 DEFECT_MSG = ("Error creating member in system table: "
               "error setting field 'members.group': No such file or directory")
@@ -344,6 +347,14 @@ def test_the_advice_names_the_group_and_the_wait():
         'the operator should be told this is not their configuration error')
 
 
-def test_the_settle_window_exceeds_the_measured_one():
-    """Measured: 5s worked, 1s did not. Anything at or below 5 is not margin."""
-    assert GROUP_IDENTITY_SETTLE_SECONDS > 5
+def test_the_advice_does_not_suggest_waiting_it_out():
+    """Measured: still failing after 60 seconds. Telling someone to wait would
+    send them to do nothing for a minute and then hit it again."""
+    advice = member_identity_advice('ops').lower()
+    assert 'does not recover on its own' in advice
+
+
+def test_the_settle_window_exceeds_the_measured_boundary():
+    """Bisected: 3s still fails, 4s passes. Anything at or below 4 is not
+    margin."""
+    assert GROUP_IDENTITY_SETTLE_SECONDS > 4
