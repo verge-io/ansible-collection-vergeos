@@ -1,7 +1,7 @@
 {
  "_call": "client._request('GET','tag_members',{'fields':'all'})",
  "_meta": {
-  "captured": "2026-09-09",
+  "captured": "2026-09-10",
   "note": "Regenerate with tests/capture_api_fixtures.py. Do not hand-edit: the point of these files is that no human chose the field names.",
   "platform": "26.1.8"
  },

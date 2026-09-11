@@ -1,7 +1,7 @@
 {
  "_call": "client.vms.list()",
  "_meta": {
-  "captured": "2026-09-09",
+  "captured": "2026-09-10",
   "note": "Regenerate with tests/capture_api_fixtures.py. Do not hand-edit: the point of these files is that no human chose the field names.",
   "platform": "26.1.8"
  },
@@ -13,14 +13,14 @@
    "cluster_name": "conundrum-lab",
    "cpu_cores": 1,
    "created": 1787784428,
-   "description": "Import of receiver.ovf",
+   "description": "trace-probe-5",
    "enabled": true,
    "guest_agent": false,
    "ha_group": "",
    "is_snapshot": false,
    "machine": 48,
    "machine_type": "pc-i440fx-3.1",
-   "modified": 1787784441,
+   "modified": 1789089244,
    "name": "dr-test",
    "node_key": 1,
    "node_name": "node1",

@@ -1,5 +1,36 @@
 # What needs to be done to pyvergeos
 
+> **Status against pyvergeos 1.2.4 (2026-09-10): all three defects unchanged.**
+>
+> Re-tested after pulling 198 upstream commits. The 1.2.3 -> 1.2.4 delta is
+> three files and touches none of this:
+>
+> - `Drive.ms_2023_kek_applied` + `apply_universal_vars()` -- Microsoft 2023
+>   Secure Boot keys on EFI disks
+> - a version gate so 26.0 systems do not request that field
+> - `Tag` / `TagCategory` log object-type mappings
+>
+> | defect | 1.2.3 | 1.2.4 | evidence |
+> |---|---|---|---|
+> | **D1** name escaping | 84 occurrences / 47 files | **84 / 47, identical** | `filters.py:62,138,172` and `base.py:184` byte-for-byte unchanged |
+> | **D2** discarded body | present | **present** | `_handle_response` unchanged; `HTTP_SUCCESS_CODES` still `{200, 201}`; `APIError` still has no body; `simulate` appears nowhere in the package |
+> | **D3** membership refs | present | **present** | `member_type` still tests `"/users/" in ref`; `remove_user` still fails on platform-created rows |
+>
+> Coverage is also unchanged: **87** managers, **191** endpoints, **187** of
+> 322 tables reachable, **135** unreachable. Every P0/P1 gap below is still
+> open -- `cluster_status`, `machine_drive_stats`,
+> `snapshot_profile_period_tags`, `tag_references`, `schedule_tasks`,
+> `tenant_status`, `cloud_snapshot_actions`.
+>
+> **Our collection is unaffected by the upgrade.** 553 unit tests pass, the
+> live smoke test returns identical results, and re-capturing all 12 API
+> fixtures under 1.2.4 showed **zero field-set changes**.
+>
+> One thing worth borrowing: the 26.0 compatibility fix gates a field on
+> `client.os_version`. That is the same problem we hit -- a row's shape is not
+> a fixed property -- and it is good to see it handled explicitly upstream.
+
+
 *Plain-language summary first, technical detail second.*
 
 Everything here was measured against a live VergeOS 26.1.8 system

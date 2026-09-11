@@ -1,7 +1,7 @@
 {
  "_call": "client._request('GET','cluster_status',{'fields':'all'})",
  "_meta": {
-  "captured": "2026-09-09",
+  "captured": "2026-09-10",
   "note": "Regenerate with tests/capture_api_fixtures.py. Do not hand-edit: the point of these files is that no human chose the field names.",
   "platform": "26.1.8"
  },
@@ -9,11 +9,11 @@
   {
    "$key": 1,
    "cluster": 1,
-   "last_update": 1788976460,
+   "last_update": 1789090177,
    "online_cores": 64,
    "online_nodes": 2,
    "online_ram": 137472,
-   "phys_ram_used": 54186,
+   "phys_ram_used": 54392,
    "phys_total_cpu": 0,
    "phys_vram_used": 0,
    "running_machines": 7,
