@@ -1,0 +1,191 @@
+---
+# Live-verify ladder for nas_volume + nas_nfs_share against conundrum-lab.
+# Touches ONLY zz-verify-* objects on the NAS service given by -e nas_service=.
+# Cleans up in a rescue/always so a mid-ladder failure leaves nothing behind.
+#
+#   source ~/.config/vergeos/verify.env
+#   ansible-playbook verify-nas-modules.yml -e nas_service=nas1
+
+- name: nas_volume + nas_nfs_share live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vol: zz-verify-vol
+    share: zz-verify-share
+
+  tasks:
+    - name: "0. Preflight: a NAS service must be named"
+      ansible.builtin.assert:
+        that: ["nas_service is defined"]
+        fail_msg: "Pass -e nas_service=<name of a NAS service>"
+
+    - name: "nas_volume + nas_nfs_share ladder (cleanup runs even on failure)"
+      block:
+        - name: "1. Create scratch volume (10 GB, tier 1)"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            service: "{{ nas_service }}"
+            size_gb: 10
+            tier: 1
+            description: "scratch, ladder"
+            state: present
+          register: vol_create
+
+        - name: "Verify: Create scratch volume (10 GB, tier 1)"
+          ansible.builtin.assert:
+            that: [vol_create.changed]
+            fail_msg: "volume create did not report changed"
+
+        - name: "2. Re-run unchanged — must be idempotent"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            service: "{{ nas_service }}"
+            size_gb: 10
+            tier: 1
+            description: "scratch, ladder"
+            state: present
+          register: vol_again
+
+        - name: "Verify: Re-run unchanged — must be idempotent"
+          ansible.builtin.assert:
+            that: [not vol_again.changed]
+            fail_msg: "volume is not idempotent: {{ vol_again }}"
+
+        - name: "3. Drift the description — must correct it"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            service: "{{ nas_service }}"
+            size_gb: 10
+            tier: 1
+            description: "corrected by the ladder"
+            state: present
+          register: vol_drift
+
+        - name: "Verify: Drift the description — must correct it"
+          ansible.builtin.assert:
+            that: [vol_drift.changed]
+            fail_msg: "drift on description was not corrected"
+
+        - name: "4. Export it read-only over NFS"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allow_all: true
+            data_access: ro
+            squash: root_squash
+            state: present
+          register: share_create
+
+        - name: "Verify: Export it read-only over NFS"
+          ansible.builtin.assert:
+            that: [share_create.changed]
+            fail_msg: "share create did not report changed"
+
+        - name: "5. Re-run the share unchanged — must be idempotent"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allow_all: true
+            data_access: ro
+            squash: root_squash
+            state: present
+          register: share_again
+
+        - name: "Verify: Re-run the share unchanged — must be idempotent"
+          ansible.builtin.assert:
+            that: [not share_again.changed]
+            fail_msg: "share is not idempotent: {{ share_again }}"
+
+        - name: "6. Flip the share to rw — must be corrected"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allow_all: true
+            data_access: rw
+            squash: root_squash
+            state: present
+          register: share_drift
+
+        - name: "Verify: Flip the share to rw — must be corrected"
+          ansible.builtin.assert:
+            that: [share_drift.changed]
+            fail_msg: "share drift on data_access was not corrected"
+
+        - name: "7. Check mode must not change anything"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allow_all: true
+            data_access: ro
+            state: present
+          check_mode: true
+          register: share_check
+
+        - name: "Verify: Check mode must not change anything"
+          ansible.builtin.assert:
+            that: [share_check.changed]
+            fail_msg: "check mode should report the pending change"
+
+        - name: "7b. ...and the change really did not happen"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allow_all: true
+            data_access: rw
+            state: present
+          register: share_still_rw
+
+        - name: "Verify: ...and the change really did not happen"
+          ansible.builtin.assert:
+            that: [not share_still_rw.changed]
+            fail_msg: "check mode wrote through — share is no longer rw"
+
+      rescue:
+        - name: "Record: ...and the change really did not happen"
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+      always:
+        - name: "8. Delete share (always)"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            state: absent
+
+        - name: "9. Delete share again — idempotent absent"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            state: absent
+          register: share_gone
+
+        - name: "10. Delete volume (always)"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            state: absent
+
+        - name: "11. Delete volume again — idempotent absent"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            state: absent
+          register: vol_gone
+
+        - name: Fail the run if the ladder failed before cleanup
+          ansible.builtin.fail:
+            msg: "ladder FAILED — see the task above; cleanup still ran"
+          when: ladder_failed | default(false)
+
+        - name: "Verify: Fail the run if the ladder failed before cleanup"
+          ansible.builtin.assert:
+            that:
+              - not share_gone.changed
+              - not vol_gone.changed
+            fail_msg: "absent is not idempotent"
+
+        - name: "Report: Fail the run if the ladder failed before cleanup"
+          ansible.builtin.debug:
+            msg: >-
+              nas ladder PASSED: volume create → idempotent → drift →
+              NFS export → idempotent → drift → check-mode → delete x2,
+              zero leftovers

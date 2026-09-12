@@ -1,0 +1,163 @@
+---
+# Live-verify ladder for the vm_clone module against conundrum-lab.
+# Touches ONLY zz-verify-clone-* VMs. Cleans up in always/rescue.
+#
+#   source ~/.config/vergeos/verify.env
+#   ansible-playbook verify-vm-clone.yml
+
+- name: vm_clone live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    src: zz-verify-clone-src
+    clone: zz-verify-clone-new
+    snap_a: zz-snap-a
+    snap_b: zz-snap-b
+
+  tasks:
+    - name: "vm_clone ladder (cleanup runs even on failure)"
+      block:
+        - name: "1. Create the source VM (stopped, tiny)"
+          vergeio.vergeos.vm:
+            name: "{{ src }}"
+            cpu_cores: 1
+            ram: 512
+            state: present
+
+        - name: "2. Refuse to clone a VM that has no snapshots"
+          vergeio.vergeos.vm_clone:
+            name: "{{ clone }}"
+            source: "{{ src }}"
+          register: no_snaps
+          ignore_errors: true
+
+        - name: "Verify: Refuse to clone a VM that has no snapshots"
+          ansible.builtin.assert:
+            that:
+              - no_snaps is failed
+              - "'snapshot' in (no_snaps.msg | lower)"
+            fail_msg: "expected a clear refusal when the source has no snapshots, got: {{ no_snaps }}"
+
+        - name: "2b. ...and the refusal created nothing"
+          vergeio.vergeos.vm_info:
+            name: "{{ clone }}"
+          register: after_refusal
+
+        - name: "Verify: ...and the refusal created nothing"
+          ansible.builtin.assert:
+            that: [after_refusal.vms | length == 0]
+            fail_msg: "the refusal left a VM behind"
+
+        - name: "3. Take two snapshots, oldest first"
+          vergeio.vergeos.vm_snapshot:
+            vm_name: "{{ src }}"
+            snapshot_name: "{{ snap_a }}"
+            operation: create
+
+        - name: "3b. Pause so the two snapshots cannot share a timestamp"
+          ansible.builtin.pause:
+            seconds: 3
+
+        - name: "3c. Second, newer snapshot"
+          vergeio.vergeos.vm_snapshot:
+            vm_name: "{{ src }}"
+            snapshot_name: "{{ snap_b }}"
+            operation: create
+
+        - name: "4. Refuse a snapshot name that does not exist"
+          vergeio.vergeos.vm_clone:
+            name: "{{ clone }}"
+            source: "{{ src }}"
+            snapshot: zz-no-such-snapshot
+          register: bad_snap
+          ignore_errors: true
+
+        - name: "Verify: Refuse a snapshot name that does not exist"
+          ansible.builtin.assert:
+            that: [bad_snap is failed]
+            fail_msg: "a nonexistent snapshot name should fail loudly"
+
+        - name: "5. Clone from the NEWEST snapshot (snapshot omitted)"
+          vergeio.vergeos.vm_clone:
+            name: "{{ clone }}"
+            source: "{{ src }}"
+          register: cloned
+
+        - name: "Verify: Clone from the NEWEST snapshot (snapshot omitted)"
+          ansible.builtin.assert:
+            that:
+              - cloned.changed
+              - cloned.vm.name == clone
+            fail_msg: "clone did not report success: {{ cloned }}"
+
+        - name: "5b. The clone really exists"
+          vergeio.vergeos.vm_info:
+            name: "{{ clone }}"
+          register: clone_info
+
+        - name: "Verify: The clone really exists"
+          ansible.builtin.assert:
+            that: [clone_info.vms | length == 1]
+            fail_msg: "vm_clone reported success but no VM is there"
+
+        - name: "6. Re-run — must be idempotent, must NOT clone twice"
+          vergeio.vergeos.vm_clone:
+            name: "{{ clone }}"
+            source: "{{ src }}"
+          register: clone_again
+
+        - name: "Verify: Re-run — must be idempotent, must NOT clone twice"
+          ansible.builtin.assert:
+            that: [not clone_again.changed]
+            fail_msg: "vm_clone is not idempotent: {{ clone_again }}"
+
+        - name: "6b. Still exactly one VM by that name"
+          vergeio.vergeos.vm_info:
+            name: "{{ clone }}"
+          register: clone_count
+
+        - name: "Verify: Still exactly one VM by that name"
+          ansible.builtin.assert:
+            that: [clone_count.vms | length == 1]
+            fail_msg: "a second clone was created"
+
+      rescue:
+        - name: "Record: Still exactly one VM by that name"
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+      always:
+        - name: "7. Delete the clone (always)"
+          vergeio.vergeos.vm:
+            name: "{{ clone }}"
+            state: absent
+
+        - name: "8. Delete the source VM (always)"
+          vergeio.vergeos.vm:
+            name: "{{ src }}"
+            state: absent
+
+        - name: "9. Confirm zero leftovers"
+          vergeio.vergeos.vm_info:
+            name: "{{ item }}"
+          loop: ["{{ src }}", "{{ clone }}"]
+          register: leftovers
+
+        - name: Fail the run if the ladder failed before cleanup
+          ansible.builtin.fail:
+            msg: "ladder FAILED — see the task above; cleanup still ran"
+          when: ladder_failed | default(false)
+
+        - name: "Verify: Fail the run if the ladder failed before cleanup"
+          ansible.builtin.assert:
+            that:
+              - leftovers.results | map(attribute='vms') | map('length') | sum == 0
+            fail_msg: "objects left behind: {{ leftovers.results | map(attribute='vms') | list }}"
+
+        - name: "Report: Fail the run if the ladder failed before cleanup"
+          ansible.builtin.debug:
+            msg: >-
+              vm_clone ladder PASSED: no-snapshot refusal (side-effect free)
+              → bad-snapshot-name refusal → clone from newest → idempotent
+              re-run with no second clone → zero leftovers

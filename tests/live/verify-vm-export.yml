@@ -1,0 +1,134 @@
+---
+# Live-verify ladder for the vm_export module (branch
+# feature/backup-modules, run via integration-backup).
+#
+# PREREQUISITE: a RUNNING NAS service. The lab has one since
+# 2026-08-25: `nas1` (deployed by owner decision — Services recipe,
+# External network, DHCP, 4 cores / 8 GB). Ladder run PASSED against it
+# the same day (`ok=14 changed=7 failed=0`).
+#
+#   source ~/.config/vergeos/verify.env
+#   ANSIBLE_COLLECTIONS_PATH=<build path> \
+#     ansible-playbook verify-vm-export.yml -e nas_service=nas1
+
+- name: vm_export live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vol: zz-verify-vol
+    vm: zz-verify-vm
+    # nas_service must be passed in: -e nas_service=<name>
+
+  tasks:
+    - name: "0. Preflight: NAS service must be given and running"
+      ansible.builtin.assert:
+        that: ["nas_service is defined"]
+        fail_msg: >-
+          Pass -e nas_service=<name of a RUNNING NAS service>. The lab
+          currently has none deployed — see the header of this playbook.
+
+    - name: "vm_export ladder (cleanup runs even on failure)"
+      block:
+        - name: "1. Create scratch NAS volume (10 GB, tier 1)"
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ playbook_dir }}/scratch_vol.py"
+              - create
+              - "{{ vol }}"
+              - "{{ nas_service }}"
+          register: mkvol
+          changed_when: mkvol.stdout == 'created'
+
+        - name: "2. Create scratch VM to export (small, stopped)"
+          vergeio.vergeos.vm:
+            name: "{{ vm }}"
+            cpu_cores: 1
+            ram: 1024
+            state: present
+
+        - name: "2b. Give it a 1 GB disk so the export moves real data"
+          vergeio.vergeos.drive:
+            vm_name: "{{ vm }}"
+            name: "{{ vm }}-disk"
+            size: 1
+            state: present
+
+        - name: "3. Export config on the volume, keep 2 generations"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            max_exports: 2
+            state: present
+          register: cfg
+
+        - name: "Verify: Export config on the volume, keep 2 generations"
+          ansible.builtin.assert:
+            that: ["cfg.changed"]
+
+        - name: "4. Re-run — idempotent"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            max_exports: 2
+            state: present
+          register: cfg2
+
+        - name: "Verify: Re-run — idempotent"
+          ansible.builtin.assert:
+            that: ["not cfg2.changed"]
+
+        - name: "5. Run an export of the scratch VM and wait"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            max_exports: 2
+            start: true
+            export_name: ladder-run
+            vms: ["{{ vm }}"]
+          register: run
+
+        - name: "Verify: Run an export of the scratch VM and wait"
+          ansible.builtin.assert:
+            that:
+              - run.changed
+              - "'export finished' in run.actions"
+              - run.export.status != 'error'
+
+      rescue:
+        - name: Ladder failed — still clean up below
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+    - name: "6. Remove export config (always)"
+      vergeio.vergeos.vm_export:
+        volume: "{{ vol }}"
+        state: absent
+      failed_when: false
+
+    - name: "7. Delete scratch VM (always)"
+      vergeio.vergeos.vm:
+        name: "{{ vm }}"
+        state: absent
+      failed_when: false
+
+    # Strict on purpose: a silent failure here is how a leftover scratch
+    # volume survived the first run (online volumes refuse deletion —
+    # scratch_vol.py now disables before deleting).
+    - name: "8. Delete scratch volume (always)"
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/scratch_vol.py"
+          - delete
+          - "{{ vol }}"
+          - "{{ nas_service }}"
+      register: rmvol
+      changed_when: rmvol.stdout == 'deleted'
+
+    - name: Fail the run if the ladder failed before cleanup
+      ansible.builtin.fail:
+        msg: "Ladder failed before cleanup — see the first failed task above"
+      when: ladder_failed | default(false)
+
+    - name: "Report: Fail the run if the ladder failed before cleanup"
+      ansible.builtin.debug:
+        msg: "vm_export ladder PASSED: config → idempotent → export run finished → cleanup"

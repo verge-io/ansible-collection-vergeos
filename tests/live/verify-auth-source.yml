@@ -1,0 +1,201 @@
+---
+# Live-verify ladder for the auth_source / auth_source_info modules
+# (VergeOS 26.1.8). Uses a zz- scratch OpenID source with bogus
+# endpoints — it renders as a login-menu entry briefly but can never
+# authenticate anyone, and it is deleted on every path.
+#
+#   export VERGEOS_HOST=... VERGEOS_TOKEN=... VERGEOS_INSECURE=true
+#   ansible-playbook verify-auth-source.yml
+#
+# Proves, besides CRUD: the settings document survives a partial-field
+# change intact (the raw API REPLACES settings wholesale — the module
+# must always send the full document), idempotence against the
+# server-injected debug mirror key, driver immutability, and that
+# neither module ever emits client_secret.
+
+- name: Auth source live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    zz_settings:
+      client_id: zz-ladder-client
+      client_secret: zz-ladder-secret-123
+      scope: openid profile email
+      authorize_endpoint: https://idp.invalid/authorize
+      token_endpoint: https://idp.invalid/token
+
+  tasks:
+    - name: Ladder body
+      block:
+        - name: Cleanup first — scratch source must not pre-exist
+          vergeio.vergeos.auth_source:
+            name: zz-sso-ladder
+            state: absent
+
+        - name: "1. Create the scratch source"
+          vergeio.vergeos.auth_source:
+            name: zz-sso-ladder
+            driver: openid
+            settings: "{{ zz_settings }}"
+            menu: true
+            button_fa_icon: bi-question-circle
+            state: present
+          register: created
+
+        - name: "Create verdicts: changed, styled, settings never returned"
+          ansible.builtin.assert:
+            that:
+              - created is changed
+              - created.settings_changed
+              - created.auth_source.driver == 'openid'
+              - created.auth_source.menu
+              - created.auth_source.button_fa_icon == 'bi-question-circle'
+              - "'settings' not in created.auth_source"
+            fail_msg: "unexpected create result: {{ created }}"
+
+        - name: "2. Identical re-run must converge"
+          vergeio.vergeos.auth_source:
+            name: zz-sso-ladder
+            driver: openid
+            settings: "{{ zz_settings }}"
+            menu: true
+            button_fa_icon: bi-question-circle
+            state: present
+          register: rerun
+
+        - name: "Idempotence verdict (debug mirror key must not fake drift)"
+          ansible.builtin.assert:
+            that:
+              - rerun is not changed
+              - not rerun.settings_changed
+            fail_msg: "not idempotent: {{ rerun.actions }}"
+
+        - name: "3. Check-mode drift preview must not touch the system"
+          vergeio.vergeos.auth_source:
+            name: zz-sso-ladder
+            driver: openid
+            settings: "{{ zz_settings | combine({'scope': 'openid email'}) }}"
+            state: present
+          check_mode: true
+          register: preview
+
+        - name: Read back after the preview
+          vergeio.vergeos.auth_source_info:
+            name: zz-sso-ladder
+            include_settings: true
+          register: after_preview
+
+        - name: "Preview verdicts: would-change reported, nothing changed"
+          ansible.builtin.assert:
+            that:
+              - preview is changed
+              - preview.settings_changed
+              - after_preview.auth_sources[0].settings.scope == 'openid profile email'
+            fail_msg: >-
+              check mode leaked a change:
+              {{ after_preview.auth_sources }}
+
+        - name: "4. Real settings drift — scope narrowed"
+          vergeio.vergeos.auth_source:
+            name: zz-sso-ladder
+            driver: openid
+            settings: "{{ zz_settings | combine({'scope': 'openid email'}) }}"
+            state: present
+          register: drifted
+
+        - name: Read back the replaced document
+          vergeio.vergeos.auth_source_info:
+            name: zz-sso-ladder
+            include_settings: true
+          register: after_drift
+
+        - name: "Replace verdicts: scope changed, the REST of the doc survived"
+          ansible.builtin.assert:
+            that:
+              - drifted is changed
+              - drifted.settings_changed
+              - after_drift.auth_sources[0].settings.scope == 'openid email'
+              - after_drift.auth_sources[0].settings.client_id == 'zz-ladder-client'
+              - after_drift.auth_sources[0].settings.token_endpoint == 'https://idp.invalid/token'
+              - "'client_secret' not in after_drift.auth_sources[0].settings"
+            fail_msg: >-
+              partial update destroyed the settings document:
+              {{ after_drift.auth_sources }}
+
+        - name: "5. Styling-only drift"
+          vergeio.vergeos.auth_source:
+            name: zz-sso-ladder
+            driver: openid
+            settings: "{{ zz_settings | combine({'scope': 'openid email'}) }}"
+            button_fa_icon: bi-key
+            state: present
+          register: styled
+
+        - name: "Styling verdicts: changed without touching settings"
+          ansible.builtin.assert:
+            that:
+              - styled is changed
+              - not styled.settings_changed
+              - styled.auth_source.button_fa_icon == 'bi-key'
+            fail_msg: "unexpected styling result: {{ styled }}"
+
+        - name: "6. Driver change must be refused"
+          block:
+            - name: Attempt to switch the driver
+              vergeio.vergeos.auth_source:
+                name: zz-sso-ladder
+                driver: okta
+                state: present
+
+            - name: Unreachable — the refusal did not fire
+              ansible.builtin.fail:
+                msg: driver switch was accepted
+          rescue:
+            - name: Confirm the refusal names the constraint
+              ansible.builtin.assert:
+                that:
+                  - "'cannot be changed' in (ansible_failed_result.msg | default(''))"
+                fail_msg: "wrong failure: {{ ansible_failed_result | default({}) }}"
+
+        - name: "7. Delete"
+          vergeio.vergeos.auth_source:
+            name: zz-sso-ladder
+            state: absent
+          register: deleted
+
+        - name: "8. Delete again — converged"
+          vergeio.vergeos.auth_source:
+            name: zz-sso-ladder
+            state: absent
+          register: deleted_again
+
+        - name: Final listing
+          vergeio.vergeos.auth_source_info:
+          register: final
+
+        - name: "Deletion verdicts: gone, idempotent, zero leftovers"
+          ansible.builtin.assert:
+            that:
+              - deleted is changed
+              - deleted_again is not changed
+              - final.auth_sources | selectattr('name', 'search', '^zz-') | list | length == 0
+            fail_msg: "leftovers: {{ final.auth_sources }}"
+
+      rescue:
+        - name: Cleanup after failure — the scratch source must not survive
+          vergeio.vergeos.auth_source:
+            name: zz-sso-ladder
+            state: absent
+
+        - name: Ladder failed
+          ansible.builtin.fail:
+            msg: "rung failed: {{ ansible_failed_result | default({}) }}"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          auth_source ladder PASSED: create -> idempotent -> check-mode
+          -> whole-document replace survives partial change -> styling
+          -> driver refusal -> delete x2, zero leftovers, no secret in
+          any output

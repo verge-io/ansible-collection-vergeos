@@ -1,0 +1,155 @@
+---
+# Live-verify ladder for the file module against conundrum-lab.
+# Uploads a small generated file named zz-verify-file.img into the media
+# catalog, proves idempotence/force/absent, then removes it.
+#
+#   source ~/.config/vergeos/verify.env
+#   ansible-playbook verify-file.yml
+
+- name: file live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    fname: zz-verify-file.img
+    fpath: /tmp/zz-verify-file.img
+
+  tasks:
+    - name: "file ladder (cleanup runs even on failure)"
+      block:
+        - name: "1. Generate a small local file (1 MiB of zeros)"
+          ansible.builtin.command:
+            argv: [dd, "if=/dev/zero", "of={{ fpath }}", "bs=1024", "count=1024"]
+          changed_when: true
+
+        - name: "2. Upload it"
+          vergeio.vergeos.file:
+            src: "{{ fpath }}"
+            name: "{{ fname }}"
+            description: "scratch, ladder"
+            tier: 1
+            state: present
+          register: up
+
+        - name: "Verify: Upload it"
+          ansible.builtin.assert:
+            that: [up.changed]
+            fail_msg: "upload did not report changed: {{ up }}"
+
+        # NOTE: `filesize` settles asynchronously after an upload. Measured
+        # on 26.1.8: immediately after the POST it reads 786432 for a
+        # 1048576-byte file, reaching the true size a few seconds later.
+        # `allocated_bytes` is correct immediately. Poll rather than assert
+        # once, or this step is a flake.
+        - name: "3. It is really in the catalog, and filesize settles to 1 MiB"
+          vergeio.vergeos.file_info:
+            name: "{{ fname }}"
+          register: info
+          until:
+            - info.files | length == 1
+            - (info.files | first).filesize | int == 1048576
+          retries: 12
+          delay: 5
+
+        - name: "Verify: It is really in the catalog, and filesize settles to 1 MiB"
+          ansible.builtin.assert:
+            that:
+              - info.files | length == 1
+              - (info.files | first).filesize | int == 1048576
+              - (info.files | first).allocated_bytes | int == 1048576
+            fail_msg: "file not found or wrong size: {{ info.files }}"
+
+        - name: "4. Re-run — same name and size, must NOT re-upload"
+          vergeio.vergeos.file:
+            src: "{{ fpath }}"
+            name: "{{ fname }}"
+            state: present
+          register: up_again
+
+        - name: "Verify: Re-run — same name and size, must NOT re-upload"
+          ansible.builtin.assert:
+            that: [not up_again.changed]
+            fail_msg: "file module is not idempotent: {{ up_again }}"
+
+        - name: "5. Check mode on a forced re-upload reports, but does not act"
+          vergeio.vergeos.file:
+            src: "{{ fpath }}"
+            name: "{{ fname }}"
+            force: true
+            state: present
+          check_mode: true
+          register: forced_check
+
+        - name: "Verify: Check mode on a forced re-upload reports, but does not act"
+          ansible.builtin.assert:
+            that: [forced_check.changed]
+            fail_msg: "check mode should report the pending re-upload"
+
+        - name: "6. force=true really does re-upload"
+          vergeio.vergeos.file:
+            src: "{{ fpath }}"
+            name: "{{ fname }}"
+            force: true
+            state: present
+          register: forced
+
+        - name: "Verify: force=true really does re-upload"
+          ansible.builtin.assert:
+            that: [forced.changed]
+            fail_msg: "force=true did not re-upload"
+
+        - name: "6b. Still exactly one catalog entry after the re-upload"
+          vergeio.vergeos.file_info:
+            name: "{{ fname }}"
+          register: info2
+
+        - name: "Verify: Still exactly one catalog entry after the re-upload"
+          ansible.builtin.assert:
+            that: [info2.files | length == 1]
+            fail_msg: "force created a duplicate: {{ info2.files }}"
+
+      rescue:
+        - name: "Record: Still exactly one catalog entry after the re-upload"
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+      always:
+        - name: "7. Delete the file (always)"
+          vergeio.vergeos.file:
+            name: "{{ fname }}"
+            state: absent
+
+        - name: "8. Delete again — idempotent absent"
+          vergeio.vergeos.file:
+            name: "{{ fname }}"
+            state: absent
+          register: gone
+
+        - name: "9. Confirm zero leftovers"
+          vergeio.vergeos.file_info:
+            name: "{{ fname }}"
+          register: leftover
+
+        - name: "10. Remove the local scratch file"
+          ansible.builtin.file:
+            path: "{{ fpath }}"
+            state: absent
+
+        - name: Fail the run if the ladder failed before cleanup
+          ansible.builtin.fail:
+            msg: "ladder FAILED — see the task above; cleanup still ran"
+          when: ladder_failed | default(false)
+
+        - name: "Verify: Fail the run if the ladder failed before cleanup"
+          ansible.builtin.assert:
+            that:
+              - not gone.changed
+              - leftover.files | length == 0
+            fail_msg: "absent not idempotent, or a file was left behind"
+
+        - name: "Report: Fail the run if the ladder failed before cleanup"
+          ansible.builtin.debug:
+            msg: >-
+              file ladder PASSED: upload → size verified → idempotent →
+              check-mode force → real force re-upload with no duplicate →
+              delete x2, zero leftovers

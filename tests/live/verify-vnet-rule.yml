@@ -1,0 +1,134 @@
+---
+# Live-verify ladder for the vnet_rule module (branch
+# feature/vnet-rule-module, run via integration-vnet-rule so token auth
+# is available) against the lab (VergeOS 26.1.8).
+#
+# Touches ONLY a scratch network named zz-verify-net and rules on it;
+# never touches Core/DMZ/External or any existing network. The network
+# is deleted at the end even on failure (rescue).
+#
+# Auth: VERGEOS_HOST / VERGEOS_TOKEN / VERGEOS_INSECURE from the
+# environment (source ~/.config/vergeos/verify.env).
+
+- name: vnet_rule live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    net: zz-verify-net
+
+  tasks:
+    - name: "vnet_rule ladder (cleanup runs even on failure)"
+      block:
+        # Raw pyvergeos, not the collection network module: the stock
+        # module can't create an addressed network (finding #13 — it
+        # never sends network_address).
+        - name: "1. Create scratch internal network"
+          ansible.builtin.command:
+            argv: ["{{ ansible_playbook_python }}", scratch_net.py, create, "{{ net }}"]
+          register: mknet
+          changed_when: mknet.stdout == 'created'
+
+        - name: "2. Add SSH accept rule (applies)"
+          vergeio.vergeos.vnet_rule:
+            network: "{{ net }}"
+            name: zz-allow-ssh
+            protocol: tcp
+            destination_ports: "22"
+            state: present
+          register: create
+
+        - name: "Verify: Add SSH accept rule (applies)"
+          ansible.builtin.assert:
+            that:
+              - create.changed
+              - "'created rule ' ~ \"'zz-allow-ssh'\" in create.actions"
+              - "'applied rules on ' ~ \"'\" ~ net ~ \"'\" in create.actions"
+
+        - name: "3. Re-run identically — must be idempotent"
+          vergeio.vergeos.vnet_rule:
+            network: "{{ net }}"
+            name: zz-allow-ssh
+            protocol: tcp
+            destination_ports: "22"
+            state: present
+          register: rerun
+
+        - name: "Verify: Re-run identically — must be idempotent"
+          ansible.builtin.assert:
+            that: ["not rerun.changed"]
+            fail_msg: "NOT idempotent: {{ rerun.actions }}"
+
+        - name: "4. Drift: move SSH to port 2222"
+          vergeio.vergeos.vnet_rule:
+            network: "{{ net }}"
+            name: zz-allow-ssh
+            protocol: tcp
+            destination_ports: "2222"
+            state: present
+          register: drift
+
+        - name: "Verify: Drift: move SSH to port 2222"
+          ansible.builtin.assert:
+            that:
+              - drift.changed
+              - drift.rule.destination_ports == '2222'
+
+        - name: "5. Batch rule with apply: false — no rule refresh"
+          vergeio.vergeos.vnet_rule:
+            network: "{{ net }}"
+            name: zz-allow-https
+            protocol: tcp
+            destination_ports: "443"
+            apply: false
+            state: present
+          register: batch
+
+        - name: "Verify: Batch rule with apply: false — no rule refresh"
+          ansible.builtin.assert:
+            that:
+              - batch.changed
+              - "'applied rules on ' ~ \"'\" ~ net ~ \"'\" not in batch.actions"
+
+        - name: "6. Delete both rules"
+          vergeio.vergeos.vnet_rule:
+            network: "{{ net }}"
+            name: "{{ item }}"
+            state: absent
+          loop: [zz-allow-ssh, zz-allow-https]
+          register: deletes
+
+        - name: "Verify: Delete both rules"
+          ansible.builtin.assert:
+            that: ["deletes.results | map(attribute='changed') | list == [true, true]"]
+
+        - name: "7. Delete again — idempotent absent"
+          vergeio.vergeos.vnet_rule:
+            network: "{{ net }}"
+            name: zz-allow-ssh
+            state: absent
+          register: redelete
+
+        - name: "Verify: Delete again — idempotent absent"
+          ansible.builtin.assert:
+            that: ["not redelete.changed"]
+
+      rescue:
+        - name: Ladder failed — still clean up below
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+    - name: "8. Delete scratch network (always)"
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", scratch_net.py, delete, "{{ net }}"]
+      register: rmnet
+      changed_when: rmnet.stdout == 'deleted'
+
+    - name: Fail the run if the ladder failed before cleanup
+      ansible.builtin.fail:
+        msg: "Ladder failed before cleanup — see the first failed task above"
+      when: ladder_failed | default(false)
+
+    - name: "Report: Fail the run if the ladder failed before cleanup"
+      ansible.builtin.debug:
+        msg: "vnet_rule ladder PASSED: create+apply → idempotent → drift → batch(no-apply) → delete → idempotent-absent"

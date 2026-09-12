@@ -1,0 +1,173 @@
+---
+# Live-verify ladder for the catalog module (VergeOS 26.1.8). Uses a
+# zz- scratch catalog in the writable 'Local' repository; the stock
+# Marketplace/Verge.io catalogs are never touched. Cleanup always runs.
+#
+#   export VERGEOS_HOST=... VERGEOS_TOKEN=... VERGEOS_INSECURE=true
+#   ansible-playbook verify-catalog.yml
+
+- name: Catalog live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    cat: zz-golden-images
+
+  tasks:
+    - name: Ladder body
+      block:
+        - name: Cleanup first — scratch catalog must not pre-exist
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            state: absent
+
+        - name: "1. Create in Local, private"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            publishing_scope: private
+            state: present
+          register: created
+
+        - name: "2. Identical re-run must converge"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            publishing_scope: private
+            state: present
+          register: rerun
+
+        - name: "Create verdicts: made once, string key, converged"
+          ansible.builtin.assert:
+            that:
+              - created is changed
+              - created.catalog.publishing_scope == 'private'
+              - created.catalog.key | length >= 40
+              - created.catalog.repository_name == 'Local'
+              - rerun is not changed
+            fail_msg: "unexpected create results: {{ created }} / {{ rerun }}"
+
+        - name: "3. Check-mode tenant grant must not touch the system"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            publishing_scope: tenant
+            state: present
+          check_mode: true
+          register: preview
+
+        - name: Converged re-run proves the preview changed nothing
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            publishing_scope: private
+            state: present
+          register: still_private
+
+        - name: "Preview verdicts"
+          ansible.builtin.assert:
+            that:
+              - preview is changed
+              - still_private is not changed
+            fail_msg: "check mode leaked: {{ still_private }}"
+
+        - name: "4. Grant to tenants (publishing_scope: tenant)"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            publishing_scope: tenant
+            state: present
+          register: granted
+
+        - name: "5. Grant re-run must converge"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            publishing_scope: tenant
+            state: present
+          register: granted_again
+
+        - name: "Grant verdicts (name-only match, single repo)"
+          ansible.builtin.assert:
+            that:
+              - granted is changed
+              - granted.catalog.publishing_scope == 'tenant'
+              - granted_again is not changed
+            fail_msg: "unexpected grant results: {{ granted }}"
+
+        - name: "6. Disable without touching scope"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            enabled: false
+            state: present
+          register: disabled
+
+        - name: "7. Scope-only re-run must preserve enabled=false"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            publishing_scope: tenant
+            state: present
+          register: scope_only
+
+        - name: "Enabled-preservation verdicts"
+          ansible.builtin.assert:
+            that:
+              - disabled is changed
+              - not disabled.catalog.enabled
+              - scope_only is not changed
+              - not scope_only.catalog.enabled
+            fail_msg: >-
+              enabled was not preserved:
+              {{ disabled }} / {{ scope_only }}
+
+        - name: "8. Creating without a repository must be refused"
+          block:
+            - name: Present on a nonexistent catalog, no repository
+              vergeio.vergeos.catalog:
+                name: zz-no-repo-given
+                state: present
+
+            - name: Unreachable — the refusal did not fire
+              ansible.builtin.fail:
+                msg: create without repository was accepted
+          rescue:
+            - name: Confirm the refusal
+              ansible.builtin.assert:
+                that:
+                  - "'repository is required' in (ansible_failed_result.msg | default(''))"
+                fail_msg: "wrong failure: {{ ansible_failed_result | default({}) }}"
+
+        - name: "9. Delete"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            state: absent
+          register: deleted
+
+        - name: "10. Delete again — converged"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            state: absent
+          register: deleted_again
+
+        - name: "Deletion verdicts"
+          ansible.builtin.assert:
+            that:
+              - deleted is changed
+              - deleted_again is not changed
+            fail_msg: "unexpected deletion results"
+
+      rescue:
+        - name: Cleanup after failure — the scratch catalog must not survive
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            state: absent
+          failed_when: false
+
+        - name: Ladder failed
+          ansible.builtin.fail:
+            msg: "rung failed: {{ ansible_failed_result | default({}) }}"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          catalog ladder PASSED: create -> converge -> check-mode ->
+          tenant grant -> converge -> enabled preserved -> no-repo
+          refusal -> delete x2, zero leftovers

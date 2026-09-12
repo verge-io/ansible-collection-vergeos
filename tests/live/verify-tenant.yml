@@ -1,0 +1,146 @@
+---
+# Live-verify ladder for the tenant / tenant_info modules
+# (branch feature/tenant-module) against the lab (VergeOS 26.1.8).
+#
+# Touches ONLY a scratch tenant named zz-ansible-verify; never touches
+# real workloads. Every step asserts, and the tenant is deleted at the
+# end even on failure (rescue).
+#
+# Run from collection-contrib/ with the branch built + installed:
+#   cd upstream && git checkout feature/tenant-module
+#   ansible-galaxy collection build --force
+#   ansible-galaxy collection install vergeio-vergeos-*.tar.gz -p ~/.ansible/collections --force
+#   cd .. && export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=... VERGEOS_INSECURE=true
+#   ansible-playbook verify-tenant.yml
+#
+# Afterwards: paste the recap into pr-bodies/6-tenant-modules.md.
+
+- name: Tenant module live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    scratch: zz-ansible-verify
+
+  tasks:
+    - name: "tenant ladder (cleanup runs even on failure)"
+      block:
+        - name: "1. Create scratch tenant with node + storage"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            description: "ansible live-verify scratch tenant"
+            nodes:
+              - name: "{{ scratch }}-n1"
+                cpu_cores: 2
+                ram_gb: 4
+            storage:
+              - tier: 1
+                provisioned_gb: 10
+            state: present
+          register: create
+
+        - name: "Verify: the tenant was created"
+          ansible.builtin.assert:
+            that:
+              - create.changed
+              - "'created tenant ' ~ \"'\" ~ scratch ~ \"'\" in create.actions | join('|')"
+
+        - name: "2. Re-run identically — must be idempotent"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            description: "ansible live-verify scratch tenant"
+            nodes:
+              - name: "{{ scratch }}-n1"
+                cpu_cores: 2
+                ram_gb: 4
+            storage:
+              - tier: 1
+                provisioned_gb: 10
+            state: present
+          register: rerun
+
+        - name: "Verify: the identical re-run changed nothing"
+          ansible.builtin.assert:
+            that: ["not rerun.changed"]
+            fail_msg: "NOT idempotent: {{ rerun.actions }}"
+
+        - name: "3. Drift: grow node and storage"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            nodes:
+              - name: "{{ scratch }}-n1"
+                cpu_cores: 4
+                ram_gb: 4
+            storage:
+              - tier: 1
+                provisioned_gb: 20
+            state: present
+          register: drift
+
+        - name: "Verify: the node and storage drift was corrected"
+          ansible.builtin.assert:
+            that:
+              - drift.changed
+              - drift.tenant.nodes[0].cpu_cores == 4
+              - drift.tenant.storage[0].provisioned_gb == 20.0
+
+        - name: "4. Read back via tenant_info"
+          vergeio.vergeos.tenant_info:
+            name: "{{ scratch }}"
+          register: info
+
+        - name: "Verify: Read back via tenant_info"
+          ansible.builtin.assert:
+            that:
+              - info.tenants | length == 1
+              - info.tenants[0].nodes[0].cpu_cores == 4
+              - info.tenants[0].storage[0].provisioned_gb == 20.0
+
+        - name: "5. Power on (waits for running)"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            state: running
+          register: poweron
+
+        - name: "Verify: Power on (waits for running)"
+          ansible.builtin.assert:
+            that: ["poweron.changed", "poweron.tenant.running"]
+
+        - name: "6. Power off (waits for stopped)"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            state: stopped
+          register: poweroff
+
+        - name: "Verify: Power off (waits for stopped)"
+          ansible.builtin.assert:
+            that: ["poweroff.changed", "not poweroff.tenant.running"]
+
+      rescue:
+        - name: Ladder failed — still clean up below
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+    - name: "7. Delete scratch tenant (always)"
+      vergeio.vergeos.tenant:
+        name: "{{ scratch }}"
+        state: absent
+      register: delete
+
+    - name: "8. Confirm gone"
+      vergeio.vergeos.tenant_info:
+        name: "{{ scratch }}"
+      register: gone
+
+    - name: "Verify: Confirm gone"
+      ansible.builtin.assert:
+        that: ["gone.tenants | length == 0"]
+
+    - name: Fail the run if the ladder failed before cleanup
+      ansible.builtin.fail:
+        msg: "Ladder failed before cleanup — see the first failed task above"
+      when: ladder_failed | default(false)
+
+    - name: "Report: Fail the run if the ladder failed before cleanup"
+      ansible.builtin.debug:
+        msg: "tenant ladder PASSED: create → idempotent → drift-fix → info → power on/off → delete"
