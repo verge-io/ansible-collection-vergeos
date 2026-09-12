@@ -1,0 +1,61 @@
+- name: D2 fact-check - does tier work on CREATE?
+  hosts: localhost
+  gather_facts: false
+  vars: { vm_n: zz-fc-d2c }
+  module_defaults:
+    group/vergeio.vergeos.all: { insecure: true }
+  tasks:
+    - name: clean
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: absent }
+    - name: create vm
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        cpu_cores: 1
+        ram: 512
+        state: present
+    - name: get machine key
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "vms?fields=name,machine&filter=name eq '{{ vm_n }}'"]
+      register: vmrow
+      changed_when: false
+    - name: record
+      ansible.builtin.set_fact:
+        mkey: "{{ (vmrow.stdout | from_json | first).machine }}"
+
+    - name: "CREATE a drive WITH tier: 1"
+      vergeio.vergeos.drive:
+        vm_name: "{{ vm_n }}"
+        name: zz-fc-d2c-drive
+        size: 1
+        tier: 1
+        state: present
+    - name: read back
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "machine_drives?fields=name,preferred_tier&filter=machine eq {{ mkey }}"]
+      register: created
+      changed_when: false
+
+    - name: "now try to CHANGE it to tier 4 (update path)"
+      vergeio.vergeos.drive:
+        vm_name: "{{ vm_n }}"
+        name: zz-fc-d2c-drive
+        tier: 4
+        state: present
+      register: upd
+    - name: read back after update
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "machine_drives?fields=name,preferred_tier&filter=machine eq {{ mkey }}"]
+      register: updated
+      changed_when: false
+
+    - name: "D2 CREATE-vs-UPDATE FACT-CHECK"
+      ansible.builtin.debug:
+        msg:
+          - "created with tier:1  -> {{ created.stdout }}"
+          - "update to tier:4     -> changed={{ upd.changed }}, {{ updated.stdout }}"
+
+    - name: teardown
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: absent }

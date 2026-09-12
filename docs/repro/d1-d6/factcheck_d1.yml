@@ -1,0 +1,116 @@
+---
+# FACT-CHECK: convergence AND return-value fidelity for ALL FIVE modules,
+# not just vm. Each is updated three times with identical params.
+- name: D1 fact-check across all five
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vm_n: zz-fc-vm
+    user_n: zz-fc-user
+    net_n: zz-fc-net
+  module_defaults:
+    group/vergeio.vergeos.all: { insecure: true }
+  tasks:
+    - name: clean vm
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: absent }
+    - name: clean user
+      vergeio.vergeos.user: { name: "{{ user_n }}", state: absent }
+    - name: clean net
+      vergeio.vergeos.network: { name: "{{ net_n }}", state: absent }
+
+    - name: create vm
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        cpu_cores: 1
+        ram: 512
+        description: BEFORE
+        state: present
+    - name: create user
+      vergeio.vergeos.user:
+        name: "{{ user_n }}"
+        user_password: "Str0ng-Pass!23"
+        full_name: BEFORE
+        state: present
+    - name: create net
+      vergeio.vergeos.network:
+        name: "{{ net_n }}"
+        network_type: internal
+        description: BEFORE
+        state: present
+    - name: create nic
+      vergeio.vergeos.nic:
+        vm_name: "{{ vm_n }}"
+        network: "{{ net_n }}"
+        nic_type: virtio
+        state: present
+    - name: create drive
+      vergeio.vergeos.drive:
+        vm_name: "{{ vm_n }}"
+        name: zz-fc-drive
+        size: 1
+        drive_type: virtio
+        state: present
+
+    # --- three identical update runs each -------------------------------
+    - name: vm update x3
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        description: AFTER
+        state: present
+      register: vmr
+      loop: [1, 2, 3]
+    - name: user update x3
+      vergeio.vergeos.user:
+        name: "{{ user_n }}"
+        full_name: AFTER
+        state: present
+      register: usr
+      loop: [1, 2, 3]
+    - name: network update x3
+      vergeio.vergeos.network:
+        name: "{{ net_n }}"
+        description: AFTER
+        state: present
+      register: netr
+      loop: [1, 2, 3]
+    - name: nic update x3
+      vergeio.vergeos.nic:
+        vm_name: "{{ vm_n }}"
+        network: "{{ net_n }}"
+        nic_type: e1000
+        state: present
+      register: nicr
+      loop: [1, 2, 3]
+    - name: drive update x3
+      vergeio.vergeos.drive:
+        vm_name: "{{ vm_n }}"
+        name: zz-fc-drive
+        drive_type: sata
+        state: present
+      register: drvr
+      loop: [1, 2, 3]
+
+    - name: "D1 FACT-CHECK — convergence"
+      ansible.builtin.debug:
+        msg:
+          - "vm      changed per run: {{ vmr.results  | map(attribute='changed') | list }}"
+          - "user    changed per run: {{ usr.results  | map(attribute='changed') | list }}"
+          - "network changed per run: {{ netr.results | map(attribute='changed') | list }}"
+          - "nic     changed per run: {{ nicr.results | map(attribute='changed') | list }}"
+          - "drive   changed per run: {{ drvr.results | map(attribute='changed') | list }}"
+
+    - name: "D1 FACT-CHECK — what each module RETURNED on run 3"
+      ansible.builtin.debug:
+        msg:
+          - "vm.description      returned: {{ (vmr.results  | last).vm.description      | default('<absent>') }}"
+          - "user.displayname    returned: {{ (usr.results  | last).user.displayname    | default('<absent>') }}"
+          - "network.description returned: {{ (netr.results | last).network.description | default('<absent>') }}"
+          - "nic.interface       returned: {{ (nicr.results | last).nic.interface       | default('<absent>') }}"
+          - "drive.interface     returned: {{ (drvr.results | last).drive.interface     | default('<absent>') }}"
+
+    - name: teardown vm
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: absent }
+    - name: teardown user
+      vergeio.vergeos.user: { name: "{{ user_n }}", state: absent }
+    - name: teardown net
+      vergeio.vergeos.network: { name: "{{ net_n }}", state: absent }

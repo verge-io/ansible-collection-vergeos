@@ -10,6 +10,15 @@ fix is described, it was applied temporarily, verified, and reverted —
 `git status` was confirmed clean afterwards, and the lab was left with zero
 `zz-*` objects in any table.
 
+> **Revision 2 (2026-09-12).** A fact-check pass against the lab found that
+> several statements in revision 1 had been reasoned from source rather than
+> measured. Four were wrong and are corrected here: D1's wire signature is not
+> uniform across the five modules (`user` issues no PUT at all); D2 is broken
+> only on the **update** path — `tier` works on create; D6 is the single
+> standing lint failure **on this branch**, not on `main`, which has seven;
+> and the closing claim that no live ladder exercises the five affected
+> modules was false. Every correction is marked **[corrected in rev 2]**.
+
 Reproductions live in [`docs/repro/d1-d6/`](repro/d1-d6/). Run them with:
 
 ```bash
@@ -35,6 +44,12 @@ All five modules end their update path with a bare `obj.save()`. pyvergeos's
 `manager.update(key, **kwargs)`, which PUTs them as the request body — so a
 bare `save()` issues `PUT <resource>/<key>` with an empty JSON object. The
 attributes the modules set with `setattr` beforehand are never transmitted.
+**[corrected in rev 2]** The wire signature is not uniform: `vm`, `network`,
+`nic` and `drive` each emit an empty `PUT`, but `user` emits **no PUT at
+all** — `UserManager.update()` overrides the generic method with keyword-only
+parameters and ends `if not body: return self.get(key)`, so an empty body
+short-circuits into a bare `GET`. The operator-visible outcome is identical
+for all five; only the packet capture differs.
 VergeOS accepts the empty PUT with **HTTP 200**, so nothing raises, and the
 module then returns `dict(obj)` — the *locally mutated* object — so the task
 result reports the values the operator asked for while the server still
@@ -42,10 +57,26 @@ holds the old ones. The net effect is that every `state: present` update
 through these five modules is a silent no-op that reports `changed: true`,
 never converges (it reports `changed` on every subsequent run forever), and
 returns a result that actively contradicts the server. Creation is
-unaffected (`client.vms.create(**vm_data)` passes kwargs correctly) and so
-are power actions (`vm.power_on()` is a dedicated endpoint), which is why
-the collection appears to work in demos. This is pre-existing on `main` and
-is the highest-severity item of the six.
+unaffected — measured, not assumed: a VM created with
+`description: CREATED-VALUES, cpu_cores: 2, ram: 1024` reads back with
+exactly those values. Power actions do fire (`state: running` genuinely
+starts the VM; `state: stopped` uses `power_off(force=True)`), which is why
+the collection appears to work in demos. This is pre-existing on `main` —
+all five bare `save()` calls are present there at the same line numbers —
+and is the highest-severity item of the six.
+
+**[corrected in rev 2] An adjacent defect found while checking the power
+claim.** The power paths change state correctly but their wait loops never
+observe it: `ResourceObject.refresh()` **returns** a refreshed object and
+does not mutate `self`, so `vm.refresh()` followed by `dict(vm)` re-reads
+the stale copy. Both loops therefore run all 30 iterations every time.
+Measured: `state=running took 61s`, `state=stopped took 61s`, against a
+30 × 2s loop. Verified separately that `refresh()` does not mutate — after
+an out-of-band change, `dict(obj)` still read `ORIG` while the object
+`refresh()` returned read `CHANGED-OUT-OF-BAND`. This is the same family of
+mistake as D1 (a pyvergeos return-value convention the collection ignores)
+but it is **not** part of D1-D6 and is recorded here only because it
+qualifies the scope sentence above.
 
 ### Steps to reproduce
 
@@ -100,6 +131,21 @@ PUT    vms/36                       -> HTTP 200
 Note that **HTTP 200 is returned either way** — the status code is not a
 signature; the empty request body is.
 
+**[corrected in rev 2] Per-module wire signature**, captured by driving each
+module's own SDK manager exactly as the module does:
+
+```
+vm       PUT vms/36              HTTP 200  body={}
+network  PUT vnets/14            HTTP 200  body={}
+nic      PUT machine_nics/38     HTTP 200  body={}
+drive    PUT machine_drives/12   HTTP 200  body={}
+user     NO PUT ISSUED. requests made: ['GET']
+```
+
+`user` is the odd one out for the reason given in the summary. If you are
+hunting this in a packet capture, look for the empty PUT on four of the five
+and for an update that produced only a GET on `user`.
+
 **Operator-visible, all five modules** (module said `changed`, server
 disagrees):
 
@@ -111,12 +157,25 @@ nic     module changed=True   read-back: [{"name": "nic_0", "interface": "virtio
 drive   module changed=True   read-back: [{"name": "zz-d1b-drive", "interface": "virtio-scsi"}] (expected ahci)
 ```
 
-**Never converges, and the result misreports.** Three identical runs:
+**Never converges, and the result misreports.** Three identical runs of
+*each* of the five (rev 1 measured only `vm`):
 
 ```
-run1 changed=True  run2 changed=True  run3 changed=True
-module RETURNED    : description=AFTER cpu_cores=4 ram=2048
-server ACTUALLY has: [{"name": "zz-d1c-vm", "description": "BEFORE", "cpu_cores": 1, "ram": 512}]
+vm      changed per run: [True, True, True]
+user    changed per run: [True, True, True]
+network changed per run: [True, True, True]
+nic     changed per run: [True, True, True]
+drive   changed per run: [True, True, True]
+```
+
+and what each returned on run 3, against a server that never moved:
+
+```
+vm.description      returned: AFTER
+user.displayname    returned: AFTER
+network.description returned: AFTER
+nic.interface       returned: e1000
+drive.interface     returned: ahci
 ```
 
 This is why it went unnoticed: `r.vm.description` in a registered result
@@ -150,7 +209,7 @@ Persisted and converged. Reverted afterwards.
 
 ---
 
-## D2 — `drive`'s `tier` parameter compares a field that does not exist
+## D2 — `drive`'s `tier` never applies on update (create is fine)
 
 ### Summary
 
@@ -164,9 +223,17 @@ the wire that VergeOS accepts `PUT {"tier": 1}` with **HTTP 200 and silently
 ignores it**, while `PUT {"preferred_tier": 1}` and
 `PUT {"preferred_tier": "1"}` both apply correctly. So fixing D1 alone would
 change nothing here — the payload would finally be transmitted, and the
-platform would still discard it without complaint. The practical consequence
-is that tier placement cannot be expressed through this collection at all,
-which blocks the `tier_policy` role (the SPBM-parity story) outright.
+platform would still discard it without complaint. **[corrected in rev 2]**
+Rev 1 said tier placement "cannot be expressed through this collection at
+all". That is wrong. `tier` works correctly on **create**, because the create
+path goes through `DriveManager.create()`, which accepts `tier` and
+translates it — captured on the wire as
+`POST machine_drives {... 'preferred_tier': '1'}`. Only the **update** path
+is broken, because it writes the raw field name into `update_data` itself and
+never reaches that translation. So a drive can be *placed* on a tier but not
+*re-tiered*, which is precisely the half the `tier_policy` role's enforce
+mode needs (it retiers existing drives); that role lives in
+`vergeos_platform` and is not yet ported here.
 
 ### Steps to reproduce
 
@@ -215,6 +282,22 @@ PUT {'preferred_tier': '1'}    -> accepted, preferred_tier now '1'
 ```
 
 All three returned HTTP 200.
+
+**[corrected in rev 2] Create works, update does not** — same module, same
+parameter, measured back to back:
+
+```
+created with tier:1  -> [{"name": "zz-fc-d2c-drive", "preferred_tier": "1"}]
+update to tier:4     -> changed=True, [{"name": "zz-fc-d2c-drive", "preferred_tier": "1"}]
+```
+
+The SDK's create path does the translation the module's update path omits:
+
+```
+POST machine_drives  body={'machine': 41, 'interface': 'virtio-scsi',
+                           'media': 'disk', 'enabled': True, 'name': 'd0',
+                           'disksize': 1073741824, 'preferred_tier': '1'}
+```
 
 **In code** — `plugins/modules/drive.py:202-204`:
 
@@ -282,6 +365,22 @@ A. state=absent      -> failed=True
 B. hostname+user_data-> failed=True
    message           : parameters are mutually exclusive: hostname|user_data
 ```
+
+**[verified in rev 2] The files really do survive the failure**, so the VM is
+left in a partial state rather than untouched:
+
+```
+absent failed?       True
+files before disable: [{'name': '/user-data', 'owner': 'vms/36'},
+                       {'name': '/meta-data', 'owner': 'vms/36'}]
+files after  disable: [{'name': '/user-data', 'owner': 'vms/36'},
+                       {'name': '/meta-data', 'owner': 'vms/36'}]
+VERDICT: files REMAIN (partial state)
+```
+
+Note for anyone reproducing: `cloudinit_files` rows key their VM as
+`owner: "vms/<key>"`, not `vm`. Filtering on `vm` returns `[]` and looks like
+a clean teardown — that mistake cost me a run.
 
 **The accepted value set, measured directly:**
 
@@ -504,8 +603,12 @@ grep -c token plugins/module_utils/vergeos.py  ->  0
 ### Summary
 
 `meta/runtime.yml` declares a floor of ansible-core 2.14, which is
-end-of-life and is the collection's single standing ansible-lint failure on
-both `main` and `platform-port`. Beyond the lint rule, the declared floor is
+end-of-life and is the single standing ansible-lint failure **on this
+branch**. **[corrected in rev 2]** Rev 1 said "on both `main` and
+`platform-port`", which is wrong: `main` has **seven** failures — this one
+plus `role-name`, `no-handler` in `examples/snapshot_by_tag.yml`, and four
+`yaml[key-duplicates]` in `plugins/inventory/vergeos_vms.py`. The other six
+were fixed on the way to `integration-all`; D6 is what is left. Beyond the lint rule, the declared floor is
 not merely stale but untestable in practice: ansible-core 2.14 accepts only
 Python 3.9 through 3.11, so it cannot be installed on a current controller
 (this one runs Python 3.14.4) and therefore no CI on a modern image can ever
@@ -573,7 +676,7 @@ tests a module added in the port, not the five pre-existing ones.
 | | Defect | Severity | Independent? | Notes |
 |---|---|---|---|---|
 | D1 | five modules never persist updates | **critical** | needs D4 shipped with it | silent; reports success |
-| D2 | `drive.tier` wrong field | high | yes — survives a D1 fix | blocks `tier_policy` |
+| D2 | `drive.tier` wrong field on update | high | yes — survives a D1 fix | create works; retier does not |
 | D4 | `enabled` default | high | **prerequisite of D1** | latent until D1 lands |
 | D3 | `cloud_init` absent/constraint | medium | yes | fails loudly |
 | D5 | no token auth | medium | yes | hygiene, not correctness |
@@ -582,3 +685,9 @@ tests a module added in the port, not the five pre-existing ones.
 D1, D2 and D4 should land together. Shipping D1 alone would activate D4;
 shipping D1 without D2 would leave `drive.tier` looking fixed while the
 platform silently discards the payload.
+
+Not in scope but found during the rev 2 fact-check, and worth a decision of
+its own: `ResourceObject.refresh()` returns rather than mutates, so both
+power-state wait loops in `vm.py` run their full 60 seconds on every call
+(measured 61s for `state: running` and 61s for `state: stopped`). Same family
+as D1.

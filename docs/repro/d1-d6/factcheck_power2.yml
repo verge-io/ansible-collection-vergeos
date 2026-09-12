@@ -1,0 +1,33 @@
+- name: time the power paths
+  hosts: localhost
+  gather_facts: false
+  vars: { vm_n: zz-fc-pwr3 }
+  module_defaults:
+    group/vergeio.vergeos.all: { insecure: true }
+  tasks:
+    - name: clean
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: absent }
+    - name: create
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        cpu_cores: 1
+        ram: 512
+        state: present
+    - name: t0
+      ansible.builtin.set_fact: { t0: "{{ lookup('pipe','date +%s') }}" }
+    - name: power on
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: running }
+    - name: t1
+      ansible.builtin.set_fact: { t1: "{{ lookup('pipe','date +%s') }}" }
+    - name: power off
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: stopped }
+    - name: t2
+      ansible.builtin.set_fact: { t2: "{{ lookup('pipe','date +%s') }}" }
+    - name: TIMING
+      ansible.builtin.debug:
+        msg:
+          - "state=running took {{ (t1|int) - (t0|int) }}s"
+          - "state=stopped took {{ (t2|int) - (t1|int) }}s"
+          - "(the module's wait loop is 30 x 2s = 60s)"
+    - name: teardown
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: absent }

@@ -38,3 +38,17 @@ D6 needs no playbook:
 ```bash
 ansible-lint --offline meta/runtime.yml
 ```
+
+## Fact-check playbooks
+
+Added after a review pass found several claims in the first draft of the
+report were reasoned from source rather than measured. Each of these turned
+one of those into a measurement, and three of them changed the report.
+
+| File | Settles |
+|---|---|
+| `factcheck_d1.yml` | convergence + return-value fidelity for **all five** modules, not just `vm` |
+| `factcheck_power.yml` | does the create path persist? do power actions fire? |
+| `factcheck_power2.yml` | times the power paths (found the broken `refresh()` wait loop) |
+| `factcheck_d2_create.yml` | `tier` on **create** vs on **update** — they differ |
+| `factcheck_d3_files.yml` | do the cloud-init files really survive a failed `state: absent`? |
