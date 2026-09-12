@@ -77,19 +77,29 @@ def main():
     print('   after creating another group: %s' % probe(victim))
 
     print()
-    print('3. it rolls forward -- each create repairs the previous group')
+    print('3. several groups created inside one window -- only the LAST is hit')
     clean()
     trigger, _ = make('zz-trigger')
     client.groups.delete(trigger)
     users = [int(dict(u)['$key']) for u in client.users.list()]
-    made = []
-    for index in range(4):
-        made.append(make('zz-roll%d' % index))
-        line = '   after creating id=%-3d:' % made[-1][1]
-        for position, (key, identity) in enumerate(made):
-            line += '  id%d=%-8s' % (identity,
-                                     probe(key, users[position % len(users)]))
-        print(line)
+    made = [make('zz-roll%d' % index) for index in range(3)]
+    line = '  '
+    for position, (key, identity) in enumerate(made):
+        line += ' id%d=%-8s' % (identity, probe(key, users[position % len(users)]))
+    print(line)
+
+    print()
+    print('4. a group created AFTER the window closes is healthy, and repairs')
+    print('   the affected one -- the fault does not roll forward indefinitely')
+    clean()
+    trigger, _ = make('zz-trigger')
+    client.groups.delete(trigger)
+    victim, _ = make('zz-victim')
+    print('   victim, straight away       : %s' % probe(victim, users[0]))
+    time.sleep(10)
+    later, _ = make('zz-later')
+    print('   victim, after one new group : %s' % probe(victim, users[1 % len(users)]))
+    print('   the new group itself        : %s' % probe(later, users[2 % len(users)]))
 
     clean()
     print()

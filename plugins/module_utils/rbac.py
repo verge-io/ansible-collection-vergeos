@@ -219,32 +219,94 @@ def membership_changes(have_users, have_groups, want_users, want_groups,
 #   six times over ten seconds; it identified the error correctly every time
 #   and every attempt failed.
 #
-# What it actually is, as far as can be seen from outside: the defect rolls
-# forward. Creating the NEXT group repairs the previous one and arms itself.
-# Each row below re-tests every group created so far:
+#   NOT "each new group arms itself". This was a previous conclusion here and
+#   it is wrong. Creating a later group makes the affected one work again, and
+#   that new group is healthy unless it was itself created inside an open
+#   window:
+#       delete, create A, create B            -> A OK,  B DEFECT
+#       delete, create A, wait 10s, create B  -> A OK,  B OK
 #
-#   after creating id=7  :  id7=DEFECT
-#   after creating id=8  :  id7=OK      id8=DEFECT
-#   after creating id=9  :  id8=OK      id9=DEFECT
-#   after creating id=10 :  id9=OK      id10=DEFECT
+#   NOT "creating another group REPAIRS it". Also wrong, and this one matters:
+#   the later group only MASKS the defect. Delete that specific group and the
+#   affected group fails again. 5/5 runs; a never-affected group put through
+#   the identical sequence stays fine 3/3:
+#       G1 defective -> create G2 -> G1 OK -> delete G2 -> G1 DEFECT again
+#   The masking is durable while G2 exists (still OK after 60s), and it is
+#   exactly G2 that matters -- deleting some other, newer group has no effect.
 #
-# The window, measured by bisection: a group created 3s or less after a group
-# delete is affected; 4s or more is not.
+# What it actually is, as far as can be seen from outside: a group created
+# inside the window is PERMANENTLY defective. The group created next after it
+# masks that, and only until that masking group is itself deleted.
 #
-#   wait 0/0.5/1/2/3s -> DEFECT        wait 4/5/6s -> OK
+#   delete, create A, create B, create C (all inside) -> only C is affected
 #
-# Group deletion specifically arms it. Deleting a USER does not, even though
-# users and groups share the identity sequence.
+# Existing memberships are never lost -- they stay listed and usable. Only new
+# member inserts fail. So an affected group can work for days and then start
+# rejecting members after an unrelated group deletion.
+#
+# This is why the fix below REBUILDS the group rather than creating a decoy:
+# a group recreated outside the window is genuinely healthy and survives later
+# group create/delete cycles (verified).
+#
+# The window, six runs at each delay, from a settled system:
+#
+#   wait 1 / 2 / 2.5 / 3s -> 6/6 affected
+#   wait 3.5s             -> 2/6 affected     <- the edge is jittery
+#   wait 4 / 5s           -> 0/6 affected
+#
+# so the boundary is a little under 4s and is not sharp. Hence the 6s constant
+# below rather than 4.
+#
+# It is timed from the DELETE -- a create does not restart it:
+#
+#   delete, wait 2s, create A, wait 2.5s, create B -> A OK, B OK
+#   (B is 4.5s after the delete but only 2.5s after A)
+#
+# Group deletion specifically arms it, and nothing else does. Each of these is
+# a separate run from a quiet system, member add attempted immediately:
+#
+#   create Y                                 OK
+#   create X, create Y                       OK
+#   create X, DELETE X, create Y             DEFECT
+#   create X, wait 4s, create Y              OK
+#   create X, DELETE X, wait 4s, create Y    OK
+#   create USER, create Y                    OK
+#   create USER, delete USER, create Y       OK
+#   create Y, update Y                       OK
+#
+# and creating another group is the only thing that clears it once armed:
+#
+#   nothing / wait 60s / create a user / update the group / update another
+#   group / list groups / add a member to a DIFFERENT group   -> still DEFECT
+#   create another group                                      -> OK
+#
+# which is why the fix below rebuilds the group rather than waiting or
+# retrying. Reproduce with docs/repro/04_group_member_defect_http.py, which
+# needs only the Python standard library -- the defect is in the platform and
+# does not involve the SDK at all.
 #
 # Blast radius is narrow: on an affected group, rename, read, list members,
 # grant permissions and delete all work. Only the member insert fails, and the
 # group is indistinguishable from a healthy one in the API -- every field
 # matches.
+#
+# It is also unique to this one link. The same create/delete/create/insert-a-
+# child sequence was run against 15 parent/child pairs across 9 object types
+# (users, vnets, vms, tenants, tags, snapshot profiles, DNS views ...) and only
+# groups -> members reproduces. Sharper still: one armed group written into two
+# columns of the SAME members table, in the same second --
+#
+#   as members.member (a member of another group)  -> OK
+#   as members.group  (the group holding a member) -> DEFECT
+#
+# so the group record is reachable; only the members.group lookup fails, which
+# is the field the error names. See docs/repro/04b_group_member_scope.py.
 MEMBER_IDENTITY_MARKER = "error setting field 'members.group'"
 
 # How long to let the platform settle after a group delete before creating a
-# group that will take members. Measured boundary is between 3s and 4s; 6
-# leaves margin without being slow enough to notice.
+# group that will take members. 4s was never affected in 12 runs and 3.5s was
+# affected in 2 of 6, so the boundary is jittery; 6 leaves margin without being
+# slow enough to notice.
 GROUP_IDENTITY_SETTLE_SECONDS = 6.0
 
 
