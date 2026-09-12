@@ -1,0 +1,55 @@
+---
+# D5 — bearer-token auth: the platform and SDK support it; does the
+# collection?
+- name: D5 token auth
+  hosts: localhost
+  gather_facts: false
+  module_defaults:
+    group/vergeio.vergeos.all: { insecure: true }
+  tasks:
+    - name: clean any old key
+      vergeio.vergeos.api_key:
+        user: "{{ lookup('env','VERGEOS_USERNAME') }}"
+        name: zz-d5-key
+        state: absent
+    - name: "1. mint an API key (this module works today)"
+      vergeio.vergeos.api_key:
+        user: "{{ lookup('env','VERGEOS_USERNAME') }}"
+        name: zz-d5-key
+        state: present
+      register: key
+    - name: "2. the key authenticates over raw Bearer"
+      ansible.builtin.uri:
+        url: "https://{{ lookup('env','VERGEOS_HOST') }}/api/v4/vms?fields=name&limit=1"
+        headers:
+          Authorization: "Bearer {{ key.secret }}"
+        validate_certs: false
+      register: bearer
+
+    - name: "3. can a stock collection module use it? pass token:"
+      vergeio.vergeos.vm_info:
+        token: "{{ key.secret }}"
+        host: "{{ lookup('env','VERGEOS_HOST') }}"
+      register: tok
+      ignore_errors: true
+
+    - name: "4. can a module run with NO username/password at all?"
+      vergeio.vergeos.vm_info:
+        host: "{{ lookup('env','VERGEOS_HOST') }}"
+        username: ""
+        password: ""
+      register: nopw
+      ignore_errors: true
+
+    - name: "D5 RESULTS"
+      ansible.builtin.debug:
+        msg:
+          - "raw Bearer request  : HTTP {{ bearer.status }}"
+          - "module with token:  : failed={{ tok is failed }} -> {{ tok.msg | default('ok') }}"
+          - "module with empty pw: failed={{ nopw is failed }} -> {{ (nopw.msg | default('ok'))[:120] }}"
+
+    - name: teardown
+      vergeio.vergeos.api_key:
+        user: "{{ lookup('env','VERGEOS_USERNAME') }}"
+        name: zz-d5-key
+        state: absent

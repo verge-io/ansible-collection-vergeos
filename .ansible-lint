@@ -9,6 +9,13 @@ profile: production
 exclude_paths:
   - .github/
   - changelogs/
+  # Defect reproductions (docs/repro/). These are evidence: they are the
+  # playbooks that were actually run to produce the output quoted in
+  # docs/DEFECTS-D1-D6.md. Tidying them to satisfy name[casing] or
+  # jinja[spacing] after the fact would break the correspondence between
+  # the file and the transcript, which is the only thing they are for.
+  # They are not shipped behaviour and nothing imports them.
+  - docs/repro/
 
 # Rules relaxed ONLY for the integration test targets, with reasons.
 #

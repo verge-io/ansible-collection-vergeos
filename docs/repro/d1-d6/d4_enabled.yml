@@ -1,0 +1,52 @@
+---
+# D4 — does a partial update re-enable a deliberately disabled VM?
+- name: D4 enabled default
+  hosts: localhost
+  gather_facts: false
+  vars: { vm_n: zz-d4-vm }
+  module_defaults:
+    group/vergeio.vergeos.all: { insecure: true }
+  tasks:
+    - name: clean
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        state: absent
+    - name: "create the VM and deliberately DISABLE it"
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        cpu_cores: 1
+        ram: 512
+        enabled: false
+        state: present
+    - name: "confirm it is disabled"
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "vms?fields=name,enabled&filter=name eq '{{ vm_n }}'"]
+      register: before
+      changed_when: false
+
+    - name: "an unrelated partial update - operator never mentions `enabled`"
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        description: "touched by a reconciler that only cares about description"
+        state: present
+      register: partial
+
+    - name: "state after the partial update"
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "vms?fields=name,enabled,description&filter=name eq '{{ vm_n }}'"]
+      register: after
+      changed_when: false
+
+    - name: "D4 RESULTS"
+      ansible.builtin.debug:
+        msg:
+          - "before : {{ before.stdout }}"
+          - "after  : {{ after.stdout }}"
+          - "VERDICT: {{ 'RE-ENABLED (data-affecting)' if (after.stdout | from_json | first).enabled else 'disabled state preserved' }}"
+
+    - name: teardown
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        state: absent

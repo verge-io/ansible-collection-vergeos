@@ -1,0 +1,72 @@
+---
+# D3 — cloud_init: (a) can state=absent actually disable cloud-init?
+#                  (b) is hostname usable alongside explicit user_data?
+- name: D3 cloud_init
+  hosts: localhost
+  gather_facts: false
+  vars: { vm_n: zz-d3-vm }
+  module_defaults:
+    group/vergeio.vergeos.all: { insecure: true }
+  tasks:
+    - name: clean
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        state: absent
+    - name: create vm
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        cpu_cores: 1
+        ram: 512
+        state: present
+
+    - name: "A1. enable cloud-init with a hostname"
+      vergeio.vergeos.cloud_init:
+        vm_name: "{{ vm_n }}"
+        hostname: zz-d3-host
+        state: present
+      register: ci_on
+    - name: "A2. datasource after enable"
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "vms?fields=name,cloudinit_datasource&filter=name eq '{{ vm_n }}'"]
+      register: ds_on
+      changed_when: false
+
+    - name: "A3. now DISABLE it with state=absent"
+      vergeio.vergeos.cloud_init:
+        vm_name: "{{ vm_n }}"
+        state: absent
+      register: ci_off
+      ignore_errors: true
+    - name: "A4. datasource after the disable attempt"
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "vms?fields=name,cloudinit_datasource&filter=name eq '{{ vm_n }}'"]
+      register: ds_off
+      changed_when: false
+
+    - name: "B1. hostname together with explicit user_data"
+      vergeio.vergeos.cloud_init:
+        vm_name: "{{ vm_n }}"
+        hostname: zz-d3-host
+        user_data: |
+          #cloud-config
+          packages: [htop]
+        state: present
+      register: combo
+      ignore_errors: true
+
+    - name: "D3 RESULTS"
+      ansible.builtin.debug:
+        msg:
+          - "A. enable            -> changed={{ ci_on.changed }}, datasource={{ ds_on.stdout }}"
+          - "A. state=absent      -> failed={{ ci_off is failed }}"
+          - "   message           : {{ ci_off.msg | default('(none)') }}"
+          - "   datasource after  : {{ ds_off.stdout }}"
+          - "B. hostname+user_data-> failed={{ combo is failed }}"
+          - "   message           : {{ combo.msg | default('(none)') }}"
+
+    - name: teardown
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        state: absent
