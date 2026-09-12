@@ -52,3 +52,16 @@ one of those into a measurement, and three of them changed the report.
 | `factcheck_power2.yml` | times the power paths (found the broken `refresh()` wait loop) |
 | `factcheck_d2_create.yml` | `tier` on **create** vs on **update** — they differ |
 | `factcheck_d3_files.yml` | do the cloud-init files really survive a failed `state: absent`? |
+
+## Rev 3
+
+`d5_inventory_token.yml` mints a key and writes an inventory config that uses
+it as the only credential; `d5_workaround.yml` checks whether the token can be
+smuggled through the `password` field (it cannot). Between them they showed
+that D5 as first written was wrong — the inventory plugin has supported token
+auth all along.
+
+Note the filename rule: the inventory plugin's `verify_file()` only accepts
+sources ending `.vergeos_vms.yml` or `.vergeos_vms.yaml`. Any other name is
+rejected before the plugin ever reads the config, which looks like an auth
+failure and is not.

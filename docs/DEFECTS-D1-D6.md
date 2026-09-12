@@ -18,6 +18,13 @@ fix is described, it was applied temporarily, verified, and reverted —
 > standing lint failure **on this branch**, not on `main`, which has seven;
 > and the closing claim that no live ladder exercises the five affected
 > modules was false. Every correction is marked **[corrected in rev 2]**.
+>
+> **Revision 3 (2026-09-12).** D5 was challenged and re-checked, and it was
+> the worst of the lot: rev 1 and rev 2 both claimed the collection "cannot
+> use an API token". It can — the **inventory plugin already does**, and it
+> works against the lab with no username or password present. Only the
+> modules lack it. D5 is now an unfinished feature rather than a missing
+> one. Marked **[corrected in rev 3]**.
 
 Reproductions live in [`docs/repro/d1-d6/`](repro/d1-d6/). Run them with:
 
@@ -532,24 +539,27 @@ Reverted afterwards.
 
 ---
 
-## D5 — the collection cannot use an API token, though platform and SDK both can
+## D5 — token auth is wired into the inventory plugin but not into any module
 
 ### Summary
 
-`vergeos_argument_spec()` offers only `host`, `username`, `password` and
-`insecure`; the string `token` does not appear anywhere in
-`plugins/module_utils/vergeos.py`. pyvergeos has supported bearer tokens all
-along — `VergeClient.__init__` takes a `token` parameter and its own error
-message names it — and VergeOS 26.1.8 accepts a key minted by this
-collection's own `api_key` module on a raw `Authorization: Bearer` request.
-The gap is entirely in the collection's argument spec. The practical effect
-is that every playbook must embed a real user's password, which is the
-opposite of the credential hygiene the `api_key` module was added to
-provide, and it is self-defeating in a specific way: the collection can
-*create* rotation-ready API keys that it then cannot *consume*. It also has
-a concrete cost inside this repository — the platform's own ladder helpers
-hard-required `VERGEOS_TOKEN`, so every live ladder that used a scratch
-network was unrunnable until I gave them a password fallback.
+**[corrected in rev 3]** Rev 1 and rev 2 both said "the collection cannot use
+an API token". That is wrong, and the truth is more useful: token auth is
+already implemented in **half** the collection. The **inventory plugin
+supports it** through a per-site `api_key` option that it maps to the SDK's
+`token` parameter (`plugins/inventory/vergeos_vms.py:255-257`), and it works
+— verified live, enumerating 6 hosts and 4 groups from the lab with a key
+minted by this collection's own `api_key` module and with
+`VERGEOS_USERNAME`/`VERGEOS_PASSWORD` explicitly unset in the environment.
+What is missing is the other half: `vergeos_argument_spec()` offers only
+`host`, `username`, `password` and `insecure`, so **none of the 48 modules**
+accepts a token, and there is no workaround — passing the secret as
+`password` fails with `Login required`. So the collection can *discover* an
+estate with a token but cannot *act* on it with one, and the `api_key`
+module's own documented example persists a freshly minted secret to
+`/root/.vergeos_token`, a file nothing in the collection can subsequently
+consume for a write. This is an inconsistency to finish, not a feature to
+invent — which also makes it materially cheaper than rev 1 implied.
 
 ### Steps to reproduce
 
@@ -564,8 +574,25 @@ network was unrunnable until I gave them a password fallback.
 2. Prove the key works with a raw Bearer request to `/api/v4/vms`.
 3. Try to hand the same key to any stock module as `token:`.
 4. Try to run a module with empty `username`/`password`.
+5. **[added in rev 3]** Write an inventory config whose only credential is
+   that key, and run it with the username/password environment variables
+   removed:
+   ```yaml
+   # zz_tok.vergeos_vms.yml  (the .vergeos_vms.yml suffix is required)
+   plugin: vergeio.vergeos.vergeos_vms
+   sites:
+     - name: lab
+       host: "<host>"
+       api_key: "<the minted secret>"
+       insecure: true
+   ```
+   ```bash
+   env -u VERGEOS_USERNAME -u VERGEOS_PASSWORD \
+     ansible-inventory -i zz_tok.vergeos_vms.yml --list
+   ```
+6. **[added in rev 3]** Try the obvious workaround — the token as `password`.
 
-Full playbook: `d5_token.yml`.
+Full playbooks: `d5_token.yml`, `d5_inventory_token.yml`, `d5_workaround.yml`.
 
 ### Signatures
 
@@ -577,6 +604,40 @@ module with token:  : failed=True -> Unsupported parameters for (vergeio.vergeos
 module with empty pw: failed=True -> Task failed: Module failed:
                       Either token or username/password required
 ```
+
+**[added in rev 3] The inventory plugin, same key, no username or password
+anywhere** — this is the half that already works:
+
+```
+$ env -u VERGEOS_USERNAME -u VERGEOS_PASSWORD \
+    ansible-inventory -i zz_tok.vergeos_vms.yml --list
+  hosts : 6
+  groups: ['all', 'site_lab', 'status_running', 'status_stopped']
+```
+
+```python
+# plugins/inventory/vergeos_vms.py:255-257
+# SDK uses 'token' parameter, inventory config uses 'api_key'
+if site_config.get('api_key'):
+    conn_kwargs['token'] = site_config['api_key']
+else:
+    conn_kwargs['username'] = site_config.get('username')
+    conn_kwargs['password'] = site_config.get('password')
+```
+
+**[added in rev 3] There is no module-side workaround.** The token is not
+accepted in the password field:
+
+```
+token-as-password (real user): failed=True  Login required
+token-as-both                : failed=True  Login required
+```
+
+**A naming decision comes with this.** The same secret is already called
+three things: `token` in pyvergeos, `api_key` in the inventory plugin's
+config, and `VERGEOS_TOKEN` in the ladder helpers' environment. Whichever
+name the module parameter takes, the inventory plugin's existing `api_key`
+option is public surface and cannot simply be renamed.
 
 The last line is the sharpest signature: that wording comes from
 **pyvergeos**, not the collection —
@@ -679,7 +740,7 @@ tests a module added in the port, not the five pre-existing ones.
 | D2 | `drive.tier` wrong field on update | high | yes — survives a D1 fix | create works; retier does not |
 | D4 | `enabled` default | high | **prerequisite of D1** | latent until D1 lands |
 | D3 | `cloud_init` absent/constraint | medium | yes | fails loudly |
-| D5 | no token auth | medium | yes | hygiene, not correctness |
+| D5 | token auth in inventory only, not modules | medium | yes | half-built, not absent |
 | D6 | EOL `requires_ansible` | low | yes | policy statement |
 
 D1, D2 and D4 should land together. Shipping D1 alone would activate D4;
