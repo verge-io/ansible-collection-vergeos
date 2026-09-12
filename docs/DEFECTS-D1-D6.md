@@ -25,6 +25,14 @@ fix is described, it was applied temporarily, verified, and reverted —
 > works against the lab with no username or password present. Only the
 > modules lack it. D5 is now an unfinished feature rather than a missing
 > one. Marked **[corrected in rev 3]**.
+>
+> **Revision 4 (2026-09-12).** D5 challenged again, on whether it is a defect
+> at all. It is not. Password auth reaches everything: all 48 modules share
+> one auth path, 34 of them are exercised live under username/password with
+> zero auth failures, and the inventory plugin returns identical results on
+> either credential. **D5 is reclassified as an enhancement** and moved out of
+> the defect table. D1-D4 and D6 are unaffected. Marked
+> **[reclassified in rev 4]**.
 
 Reproductions live in [`docs/repro/d1-d6/`](repro/d1-d6/). Run them with:
 
@@ -539,13 +547,14 @@ Reverted afterwards.
 
 ---
 
-## D5 — token auth is wired into the inventory plugin but not into any module
+## D5 — ENHANCEMENT: finish token auth (inventory has it, modules do not)
 
 ### Summary
 
 **[corrected in rev 3]** Rev 1 and rev 2 both said "the collection cannot use
-an API token". That is wrong, and the truth is more useful: token auth is
-already implemented in **half** the collection. The **inventory plugin
+an API token", and framed it as a defect. Both parts were wrong. Token auth is
+already implemented in **half** the collection, and its absence from the other
+half costs no functionality. The **inventory plugin
 supports it** through a per-site `api_key` option that it maps to the SDK's
 `token` parameter (`plugins/inventory/vergeos_vms.py:255-257`), and it works
 — verified live, enumerating 6 hosts and 4 groups from the lab with a key
@@ -560,6 +569,21 @@ module's own documented example persists a freshly minted secret to
 `/root/.vergeos_token`, a file nothing in the collection can subsequently
 consume for a write. This is an inconsistency to finish, not a feature to
 invent — which also makes it materially cheaper than rev 1 implied.
+
+**[reclassified in rev 4] D5 is an enhancement, not a defect.** Challenged on
+whether anything is actually broken without a token, and the answer is no.
+Measured: all **48** modules resolve their credentials through the same
+`vergeos_argument_spec()` and `get_vergeos_client()` — there is no per-module
+auth code and therefore no module that could behave differently — and **34 of
+the 48 have been exercised live on this lab under username/password auth with
+zero auth failures**, spanning every write path in the eleven `tests/live`
+ladders plus fourteen read modules in one pass. The inventory plugin takes
+either credential and returns byte-identical results: 6 hosts and the same
+four groups with a token, and with a username and password. **Nothing in the
+collection is unreachable without a token.** D5 therefore does not belong in
+a defect list next to D1-D4 — it is a credential-hygiene improvement
+(revocable, rotatable, `ip_allow_list`-scoped credentials instead of a real
+user's password in a playbook), and it should be prioritised as such.
 
 ### Steps to reproduce
 
@@ -734,14 +758,26 @@ tests a module added in the port, not the five pre-existing ones.
 
 ## Priority
 
+**Defects** — something is broken or wrong:
+
 | | Defect | Severity | Independent? | Notes |
 |---|---|---|---|---|
 | D1 | five modules never persist updates | **critical** | needs D4 shipped with it | silent; reports success |
 | D2 | `drive.tier` wrong field on update | high | yes — survives a D1 fix | create works; retier does not |
 | D4 | `enabled` default | high | **prerequisite of D1** | latent until D1 lands |
-| D3 | `cloud_init` absent/constraint | medium | yes | fails loudly |
-| D5 | token auth in inventory only, not modules | medium | yes | half-built, not absent |
-| D6 | EOL `requires_ansible` | low | yes | policy statement |
+| D3 | `cloud_init` absent/constraint | medium | yes | fails loudly; leaves files |
+| D6 | EOL `requires_ansible` | low | yes | policy statement, not code |
+
+**Enhancement** — nothing is broken; this adds capability:
+
+| | Enhancement | Value | Cost |
+|---|---|---|---|
+| D5 | token auth for the modules | credential hygiene: revocable, rotatable, `ip_allow_list`-scoped, no user password in a playbook | low — SDK plumbing and a working reference implementation already in-tree |
+
+**[reclassified in rev 4]** D5 sat in the defect table for three revisions on
+the strength of a claim nobody had tested: that the gap cost functionality. It
+does not. Everything the collection can do, it can do on a username and
+password — so D5 competes with the feature backlog, not with D1.
 
 D1, D2 and D4 should land together. Shipping D1 alone would activate D4;
 shipping D1 without D2 would leave `drive.tier` looking fixed while the

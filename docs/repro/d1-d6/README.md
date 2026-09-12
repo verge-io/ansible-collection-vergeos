@@ -65,3 +65,13 @@ Note the filename rule: the inventory plugin's `verify_file()` only accepts
 sources ending `.vergeos_vms.yml` or `.vergeos_vms.yaml`. Any other name is
 rejected before the plugin ever reads the config, which looks like an auth
 failure and is not.
+
+## Rev 4
+
+`pw_smoke.yml` answers the question that reclassified D5: is anything
+unreachable without a token? No. Fourteen read modules in one pass, zero auth
+failures, on username/password. Combined with the eleven ladders (all write
+paths, all password auth) that is 34 of the 48 modules exercised live on
+password auth — and since all 48 share one `vergeos_argument_spec()` and one
+`get_vergeos_client()`, there is no mechanism by which the other 14 could
+differ.
