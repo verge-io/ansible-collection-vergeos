@@ -38,10 +38,9 @@
 
     - name: Show who has keys and when they were last used
       ansible.builtin.debug:
-        msg: "{{ all_keys.api_keys
-                 | map(attribute='user_name') | zip(
-                   all_keys.api_keys | map(attribute='name'),
-                   all_keys.api_keys | map(attribute='last_login'))
+        msg: "{{ all_keys.api_keys | map(attribute='user_name')
+                 | zip(all_keys.api_keys | map(attribute='name'),
+                       all_keys.api_keys | map(attribute='last_login'))
                  | list }}"
 
     - name: Revoke a departed service's key

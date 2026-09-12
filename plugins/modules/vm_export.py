@@ -89,7 +89,7 @@ EXAMPLES = r'''
     volume: backups
     start: true
     export_name: nightly
-    vms: [ app-server, db-server ]
+    vms: [app-server, db-server]
 
 - name: Remove the export configuration
   vergeio.vergeos.vm_export:

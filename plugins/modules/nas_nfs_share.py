@@ -98,7 +98,7 @@ EXAMPLES = r'''
   vergeio.vergeos.nas_nfs_share:
     name: backups
     volume: backups
-    allowed_hosts: [ 192.0.2.10 ]
+    allowed_hosts: [192.0.2.10]
     data_access: ro
     state: present
 
