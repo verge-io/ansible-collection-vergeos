@@ -15,13 +15,21 @@ requires_ansible: ">=2.14.0"
 action_groups:
   # Everything. The usual choice.
   all:
+    - api_key
+    - api_key_info
+    - auth_source
+    - auth_source_info
+    - catalog
     - cloud_init
     - cluster_info
     - drive
+    - file
     - file_info
     - group
     - group_info
     - member
+    - nas_nfs_share
+    - nas_volume
     - network
     - network_info
     - nic
@@ -31,24 +39,36 @@ action_groups:
     - physical_drive_info
     - site_sync
     - site_sync_info
+    - snapshot_profile
     - tag
     - tag_category
+    - tenant
+    - tenant_external_ip
+    - tenant_info
+    - tenant_network_block
     - update
     - update_info
     - user
     - vm
+    - vm_clone
     - vm_drive_info
+    - vm_export
     - vm_import
     - vm_info
     - vm_nic_info
     - vm_recipe_deploy
     - vm_recipe_info
     - vm_snapshot
+    - vnet_apply
+    - vnet_rule
+    - vnet_rule_info
     - windows_unattend
 
   # Read-only modules. Nothing in this group changes state, so defaults
   # applied here cannot cause a write.
   info:
+    - api_key_info
+    - auth_source_info
     - cluster_info
     - file_info
     - group_info
@@ -56,29 +76,45 @@ action_groups:
     - node_info
     - physical_drive_info
     - site_sync_info
+    - tenant_info
     - update_info
     - vm_drive_info
     - vm_info
     - vm_nic_info
     - vm_recipe_info
+    - vnet_rule_info
 
   # Modules that can change state.
   management:
+    - api_key
+    - auth_source
+    - catalog
     - cloud_init
     - drive
+    - file
     - group
     - member
+    - nas_nfs_share
+    - nas_volume
     - network
     - nic
     - node_maintenance
     - permission
     - site_sync
+    - snapshot_profile
     - tag
     - tag_category
+    - tenant
+    - tenant_external_ip
+    - tenant_network_block
     - update
     - user
     - vm
+    - vm_clone
+    - vm_export
     - vm_import
     - vm_recipe_deploy
     - vm_snapshot
+    - vnet_apply
+    - vnet_rule
     - windows_unattend
