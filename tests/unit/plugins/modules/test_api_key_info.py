@@ -7,41 +7,13 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
-class NotFoundError(Exception):
-    pass
-
-
-class AuthenticationError(Exception):
-    pass
-
-
-class ValidationError(Exception):
-    pass
-
-
-class APIError(Exception):
-    pass
-
-
-class VergeConnectionError(Exception):
-    pass
-
-
-@pytest.fixture(autouse=True)
-def mock_pyvergeos():
-    exceptions = MagicMock()
-    exceptions.NotFoundError = NotFoundError
-    exceptions.AuthenticationError = AuthenticationError
-    exceptions.ValidationError = ValidationError
-    exceptions.APIError = APIError
-    exceptions.VergeConnectionError = VergeConnectionError
-    sdk = MagicMock()
-    sdk.exceptions = exceptions
-    with patch.dict('sys.modules', {
-        'pyvergeos': sdk,
-        'pyvergeos.exceptions': exceptions,
-    }):
-        yield
+from pyvergeos.exceptions import (  # real classes: a Mock here is
+    APIError,                       # CALLED as a side_effect, not raised
+    AuthenticationError,
+    NotFoundError,
+    ValidationError,
+    VergeConnectionError,
+)
 
 
 def make_key(key=1, name='ansible-runner', user_name='automation',
@@ -79,9 +51,9 @@ def base_params(**overrides):
 
 
 def run_main(mock_module, mock_client):
-    with patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client',
+    with patch('ansible_collections.vergeio.vergeos.plugins.modules.api_key_info.get_vergeos_client',
                return_value=mock_client):
-        with patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True):
+        with patch('ansible_collections.vergeio.vergeos.plugins.modules.api_key_info.HAS_PYVERGEOS', True):
             with patch('ansible_collections.vergeio.vergeos.plugins.modules.api_key_info.AnsibleModule',
                        return_value=mock_module):
                 from ansible_collections.vergeio.vergeos.plugins.modules import (

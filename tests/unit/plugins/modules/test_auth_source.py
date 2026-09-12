@@ -14,42 +14,13 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
-class NotFoundError(Exception):
-    pass
-
-
-class AuthenticationError(Exception):
-    pass
-
-
-class ValidationError(Exception):
-    pass
-
-
-class APIError(Exception):
-    pass
-
-
-class VergeConnectionError(Exception):
-    pass
-
-
-@pytest.fixture(autouse=True)
-def mock_pyvergeos():
-    """Mock pyvergeos SDK for all tests, with real exception classes"""
-    exceptions = MagicMock()
-    exceptions.NotFoundError = NotFoundError
-    exceptions.AuthenticationError = AuthenticationError
-    exceptions.ValidationError = ValidationError
-    exceptions.APIError = APIError
-    exceptions.VergeConnectionError = VergeConnectionError
-    sdk = MagicMock()
-    sdk.exceptions = exceptions
-    with patch.dict('sys.modules', {
-        'pyvergeos': sdk,
-        'pyvergeos.exceptions': exceptions,
-    }):
-        yield
+from pyvergeos.exceptions import (  # real classes: a Mock here is
+    APIError,                       # CALLED as a side_effect, not raised
+    AuthenticationError,
+    NotFoundError,
+    ValidationError,
+    VergeConnectionError,
+)
 
 
 FULL_SETTINGS = {'client_id': 'id', 'client_secret': 's3cret',
