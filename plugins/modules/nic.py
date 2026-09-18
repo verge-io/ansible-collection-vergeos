@@ -48,9 +48,9 @@ options:
   nic_type:
     description:
       - Type of network interface.
+      - Defaults to C(virtio) when creating. Omit to leave unchanged on update.
     type: str
     choices: [ virtio, e1000, rtl8139 ]
-    default: virtio
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
@@ -179,7 +179,7 @@ def create_nic(module, client, vm, network):
     nic_data = {
         'network': network_name,
         'enabled': module.params['enabled'] if module.params['enabled'] is not None else True,
-        'interface': interface_mapping.get(module.params.get('nic_type', 'virtio'), 'virtio'),
+        'interface': interface_mapping.get(module.params['nic_type'] or 'virtio', 'virtio'),
     }
 
     if module.params.get('mac_address'):
@@ -253,7 +253,7 @@ def main():
         state=dict(type='str', default='present', choices=['present', 'absent']),
         mac_address=dict(type='str'),
         enabled=dict(type='bool'),
-        nic_type=dict(type='str', default='virtio', choices=['virtio', 'e1000', 'rtl8139']),
+        nic_type=dict(type='str', choices=['virtio', 'e1000', 'rtl8139']),
     )
 
     module = AnsibleModule(

@@ -38,9 +38,9 @@ options:
   drive_type:
     description:
       - Type of storage drive.
+      - Defaults to C(virtio) when creating. Omit to leave unchanged on update.
     type: str
     choices: [ virtio, ide, sata, scsi ]
-    default: virtio
   media_type:
     description:
       - Media type for the drive.
@@ -54,8 +54,8 @@ options:
   read_only:
     description:
       - Whether the drive is read-only.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
@@ -158,9 +158,9 @@ def create_drive(module, client, vm):
 
     drive_data = {
         'name': module.params['name'],
-        'interface': interface_mapping.get(module.params.get('drive_type', 'virtio'), 'virtio-scsi'),
+        'interface': interface_mapping.get(module.params['drive_type'] or 'virtio', 'virtio-scsi'),
         'media': module.params.get('media_type', 'disk'),
-        'readonly': module.params.get('read_only', False),
+        'readonly': module.params['read_only'] if module.params['read_only'] is not None else False,
     }
 
     if module.params.get('size'):
@@ -237,10 +237,10 @@ def main():
         name=dict(type='str', required=True),
         state=dict(type='str', default='present', choices=['present', 'absent']),
         size=dict(type='int'),
-        drive_type=dict(type='str', default='virtio', choices=['virtio', 'ide', 'sata', 'scsi']),
+        drive_type=dict(type='str', choices=['virtio', 'ide', 'sata', 'scsi']),
         media_type=dict(type='str', default='disk', choices=['disk', 'cdrom']),
         tier=dict(type='int'),
-        read_only=dict(type='bool', default=False),
+        read_only=dict(type='bool'),
     )
 
     module = AnsibleModule(
