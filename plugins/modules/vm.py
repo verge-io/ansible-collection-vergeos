@@ -184,10 +184,11 @@ def build_vm_data(module):
     """Build VM data dict from module params"""
     vm_data = {
         'name': module.params['name'],
+        'enabled': module.params['enabled'] if module.params['enabled'] is not None else True,
     }
 
     optional_fields = [
-        'description', 'enabled', 'os_family', 'cpu_cores',
+        'description', 'os_family', 'cpu_cores',
         'ram', 'machine_type', 'machine_subtype', 'bios_type',
         'network', 'boot_order'
     ]
