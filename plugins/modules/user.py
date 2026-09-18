@@ -42,8 +42,8 @@ options:
   enabled:
     description:
       - Whether the user account is enabled.
+      - Defaults to C(true) when creating. Omit to leave unchanged on update.
     type: bool
-    default: true
   role:
     description:
       - Role assigned to the user.
@@ -143,7 +143,7 @@ def create_user(module, client):
     user_data = {
         'name': module.params['name'],
         'password': module.params['user_password'],
-        'enabled': module.params.get('enabled', True),
+        'enabled': module.params['enabled'] if module.params['enabled'] is not None else True,
     }
 
     # Map module params to SDK fields
@@ -197,10 +197,7 @@ def update_user(module, client, user):
         user_dict.update({k: v for k, v in update_data.items() if k != 'password'})
         return True, user_dict
 
-    # Update user attributes and save
-    for key, value in update_data.items():
-        setattr(user, key, value)
-    user.save()
+    user = user.save(**update_data)
     return True, dict(user)
 
 
@@ -221,7 +218,7 @@ def main():
         user_password=dict(type='str', no_log=True),
         email=dict(type='str'),
         full_name=dict(type='str'),
-        enabled=dict(type='bool', default=True),
+        enabled=dict(type='bool'),
         role=dict(type='str', choices=['admin', 'user', 'readonly']),
         groups=dict(type='list', elements='str'),
     )

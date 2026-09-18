@@ -125,6 +125,40 @@ class TestVmStatePresent:
 
     @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
     @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    def test_partial_update_sends_changes_and_preserves_enabled(self, mock_get_client):
+        """Issues #80/#83: save() receives the changed fields; omitted enabled is not sent"""
+        mock_client = MagicMock()
+        mock_vm = MagicMock()
+        mock_vm.__iter__ = lambda self: iter({
+            '$key': 1, 'name': 'existing-vm', 'enabled': False, 'description': ''
+        }.items())
+        mock_vm.save.return_value = {'$key': 1, 'name': 'existing-vm', 'enabled': False, 'description': 'x'}
+        mock_client.vms.get.return_value = mock_vm
+        mock_get_client.return_value = mock_client
+
+        mock_module = MagicMock()
+        mock_module.params = {
+            'host': 'vergeos.example.com', 'username': 'admin', 'password': 'secret',
+            'insecure': False, 'name': 'existing-vm', 'state': 'present',
+            'description': 'x', 'enabled': None, 'os_family': None, 'cpu_cores': None,
+            'ram': None, 'machine_type': None, 'machine_subtype': None,
+            'bios_type': None, 'network': None, 'boot_order': None
+        }
+        mock_module.check_mode = False
+
+        with patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.AnsibleModule', return_value=mock_module):
+            from ansible_collections.vergeio.vergeos.plugins.modules import vm
+            mock_module.reset_mock()
+            try:
+                vm.main()
+            except SystemExit:
+                pass
+
+        mock_vm.save.assert_called_once_with(description='x')
+        assert mock_module.exit_json.call_args[1]['changed'] is True
+
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
     def test_no_change_when_vm_matches(self, mock_get_client):
         """Test that no change when VM already matches desired state"""
         # Setup mock client with VM that matches params

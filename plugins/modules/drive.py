@@ -217,10 +217,7 @@ def update_drive(module, client, drive):
         drive_dict.update(update_data)
         return True, drive_dict
 
-    # Update drive attributes and save
-    for key, value in update_data.items():
-        setattr(drive, key, value)
-    drive.save()
+    drive = drive.save(**update_data)
     return True, dict(drive)
 
 
