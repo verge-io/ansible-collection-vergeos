@@ -1,0 +1,97 @@
+---
+# Live ladder for the health_report role.
+# READ-ONLY throughout: this role never mutates anything, so there is
+# nothing to clean up.
+- name: health_report live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    fixtures: "{{ playbook_dir }}/../../tests/fixtures"
+  tasks:
+    - name: "1. Live structural run against the real system"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.health_report
+
+    - name: "1b. The report has the shape callers depend on"
+      ansible.builtin.assert:
+        that:
+          - health_report_result.overall in ['green', 'amber', 'red']
+          - health_report_result.checks | length == 5
+          - health_report_result.checks | map(attribute='check') | sort ==
+            ['alarms', 'capacity', 'nas', 'nodes', 'snapshots']
+          - health_report_result.digest | length > 0
+        fail_msg: "unexpected report shape: {{ health_report_result }}"
+
+    - name: "1c. Report what the live system actually said"
+      ansible.builtin.debug:
+        msg: "live overall={{ health_report_result.overall }} :: {{ health_report_result.digest }}"
+
+    - name: "2. Healthy fixture must be all-green"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.health_report
+      vars:
+        health_report_fixture: "{{ fixtures }}/health-healthy.json"
+
+    - name: "2b. Assert green"
+      ansible.builtin.assert:
+        that:
+          - health_report_result.overall == 'green'
+          - health_report_result.checks | selectattr('verdict', 'ne', 'green') | list | length == 0
+        fail_msg: "healthy fixture was not green: {{ health_report_result }}"
+
+    - name: "3. Sick fixture must be red"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.health_report
+      vars:
+        health_report_fixture: "{{ fixtures }}/health-sick.json"
+
+    - name: "3b. Assert red"
+      ansible.builtin.assert:
+        that: health_report_result.overall == 'red'
+        fail_msg: "sick fixture was not red: {{ health_report_result }}"
+
+    - name: "4. The CI gate fires on red"
+      block:
+        - name: "4a. Run with the gate armed on red"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.health_report
+          vars:
+            health_report_fixture: "{{ fixtures }}/health-sick.json"
+            health_report_fail_on: red
+        - name: "4b. Reaching here means the gate did not fire"
+          ansible.builtin.fail:
+            msg: "gate did NOT fire on red"
+      rescue:
+        - name: "4c. Gate fired, as it should"
+          ansible.builtin.debug:
+            msg: "gate fired on red, as it should"
+
+    - name: "5. The gate holds on green"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.health_report
+      vars:
+        health_report_fixture: "{{ fixtures }}/health-healthy.json"
+        health_report_fail_on: red
+
+    - name: "6. A bad gate value is refused before anything runs"
+      block:
+        - name: "6a. Run with a nonsense gate value"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.health_report
+          vars:
+            health_report_fixture: "{{ fixtures }}/health-healthy.json"
+            health_report_fail_on: purple
+        - name: "6b. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "a nonsense gate value was accepted"
+      rescue:
+        - name: "6c. Refused by the argument spec, as it should be"
+          ansible.builtin.debug:
+            msg: "bad gate value refused, as it should be"
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          health_report ladder PASSED: live structural run -> healthy
+          fixture green -> sick fixture red -> gate fires on red -> gate
+          holds on green -> bad gate value refused
