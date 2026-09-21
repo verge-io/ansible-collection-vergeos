@@ -1,0 +1,153 @@
+---
+# Live ladder for the restore_drill role.
+#
+# Builds its own scratch source VM so it never drills a real one, runs
+# a drill against it, and proves the failure path fails. Everything is
+# zz-* and torn down in the always: block.
+- name: restore_drill live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    src: zz-drill-src
+    clone: zz-drill-src-drill
+  tasks:
+    - name: "0. Clean any leftovers from a previous run"
+      vergeio.vergeos.vm:
+        insecure: true
+        name: "{{ item }}"
+        state: absent
+      loop: ["{{ clone }}", "{{ src }}"]
+
+    - name: "1. Refuse a drill with no VM named"
+      block:
+        - name: "1a. Call with an empty VM"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.restore_drill
+          vars:
+            restore_drill_vm: ""
+        - name: "1b. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "an empty restore_drill_vm was accepted"
+      rescue:
+        - name: "1c. Refused, as it should be"
+          ansible.builtin.debug:
+            msg: "empty VM refused"
+
+    - name: "2. Refuse to clone over the source"
+      block:
+        - name: "2a. Point the clone name at the source"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.restore_drill
+          vars:
+            restore_drill_vm: "{{ src }}"
+            restore_drill_clone_name: "{{ src }}"
+        - name: "2b. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "a drill that would overwrite its source was accepted"
+      rescue:
+        - name: "2c. Refused, as it should be"
+          ansible.builtin.debug:
+            msg: "self-overwrite refused"
+
+    - name: "3. A real drill against a scratch VM"
+      block:
+        - name: "3a. Create the source VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ src }}"
+            cpu_cores: 1
+            ram: 512
+            state: present
+
+        - name: "3b. Run the drill with a short window"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.restore_drill
+          vars:
+            restore_drill_vm: "{{ src }}"
+            restore_drill_boot_seconds: 10
+
+        - name: "3c. The drill reported a pass"
+          ansible.builtin.assert:
+            that: restore_drill_passed | bool
+            fail_msg: "drill did not pass: {{ restore_drill_state.vms | default('?') }}"
+
+        - name: "3d. The clone was cleaned up"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ clone }}"
+          register: clone_after
+          changed_when: false
+
+        - name: "3e. Assert no clone left behind"
+          ansible.builtin.assert:
+            that: clone_after.vms | length == 0
+            fail_msg: "the drill clone was left behind"
+
+        - name: "3f. The source VM is untouched and still stopped"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ src }}"
+          register: src_after
+          changed_when: false
+
+        - name: "3g. Assert the source survived"
+          ansible.builtin.assert:
+            that:
+              - src_after.vms | length == 1
+              - not (src_after.vms | first).running
+            fail_msg: >-
+              the drill changed the source VM:
+              {{ src_after.vms | default('?') }}
+
+        - name: "4. Re-run the drill -- it must be repeatable"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.restore_drill
+          vars:
+            restore_drill_vm: "{{ src }}"
+            restore_drill_boot_seconds: 10
+
+        - name: "4b. Passed again, still no leftovers"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ clone }}"
+          register: clone_after2
+          changed_when: false
+
+        - name: "4c. Assert clean"
+          ansible.builtin.assert:
+            that:
+              - restore_drill_passed | bool
+              - clone_after2.vms | length == 0
+            fail_msg: "second drill left something behind or did not pass"
+
+      always:
+        - name: "5. Teardown"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ item }}"
+            state: absent
+          loop: ["{{ clone }}", "{{ src }}"]
+
+        - name: "5b. Confirm zero leftovers"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ item }}"
+          loop: ["{{ clone }}", "{{ src }}"]
+          register: leftovers
+          changed_when: false
+
+        - name: "5c. Assert clean"
+          ansible.builtin.assert:
+            that: >-
+              leftovers.results | map(attribute='vms')
+              | map('length') | sum == 0
+            fail_msg: "objects left behind"
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          restore_drill ladder PASSED: empty VM refused ->
+          self-overwrite refused -> a real drill snapshots, clones,
+          boots, holds the window and passes -> clone removed, source
+          untouched and still stopped -> the drill is repeatable ->
+          zero leftovers
