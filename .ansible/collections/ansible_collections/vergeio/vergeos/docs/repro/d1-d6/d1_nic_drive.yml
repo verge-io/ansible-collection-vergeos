@@ -1,0 +1,107 @@
+---
+# D1 — scoped retest for nic and drive: read back ONLY the scratch VM's
+# machine, so the result cannot be confused with the lab's other devices.
+- name: D1 nic + drive, scoped read-back
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vm_n: zz-d1b-vm
+    net_n: zz-d1b-net
+  module_defaults:
+    group/vergeio.vergeos.all: { insecure: true }
+  tasks:
+    - name: clean vm
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: absent }
+    - name: clean net
+      vergeio.vergeos.network: { name: "{{ net_n }}", state: absent }
+    - name: create vm
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        cpu_cores: 1
+        ram: 512
+        state: present
+    - name: create net
+      vergeio.vergeos.network:
+        name: "{{ net_n }}"
+        network_type: internal
+        state: present
+
+    - name: find the machine key for the scratch VM
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "vms?fields=name,machine&filter=name eq '{{ vm_n }}'"]
+      register: vmrow
+      changed_when: false
+    - name: record machine key
+      ansible.builtin.set_fact:
+        mkey: "{{ (vmrow.stdout | from_json | first).machine }}"
+
+    - name: "nic: create as virtio"
+      vergeio.vergeos.nic:
+        vm_name: "{{ vm_n }}"
+        network: "{{ net_n }}"
+        nic_type: virtio
+        state: present
+    - name: "nic: read-back AFTER CREATE (scoped to this machine)"
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "machine_nics?fields=name,interface,enabled&filter=machine eq {{ mkey }}"]
+      register: nic_before
+      changed_when: false
+
+    - name: "nic: UPDATE virtio -> e1000"
+      vergeio.vergeos.nic:
+        vm_name: "{{ vm_n }}"
+        network: "{{ net_n }}"
+        nic_type: e1000
+        state: present
+      register: nic_upd
+    - name: "nic: read-back AFTER UPDATE"
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "machine_nics?fields=name,interface,enabled&filter=machine eq {{ mkey }}"]
+      register: nic_after
+      changed_when: false
+
+    - name: "drive: create as virtio (-> virtio-scsi)"
+      vergeio.vergeos.drive:
+        vm_name: "{{ vm_n }}"
+        name: zz-d1b-drive
+        size: 1
+        drive_type: virtio
+        state: present
+    - name: "drive: read-back AFTER CREATE"
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "machine_drives?fields=name,interface&filter=machine eq {{ mkey }}"]
+      register: drv_before
+      changed_when: false
+
+    - name: "drive: UPDATE virtio -> sata (should become ahci)"
+      vergeio.vergeos.drive:
+        vm_name: "{{ vm_n }}"
+        name: zz-d1b-drive
+        drive_type: sata
+        state: present
+      register: drv_upd
+    - name: "drive: read-back AFTER UPDATE"
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "machine_drives?fields=name,interface&filter=machine eq {{ mkey }}"]
+      register: drv_after
+      changed_when: false
+
+    - name: "D1 nic/drive RESULTS"
+      ansible.builtin.debug:
+        msg:
+          - "nic   reported changed={{ nic_upd.changed }}"
+          - "  before update: {{ nic_before.stdout }}"
+          - "  after  update: {{ nic_after.stdout }}   (expected interface=e1000)"
+          - "drive reported changed={{ drv_upd.changed }}"
+          - "  before update: {{ drv_before.stdout }}"
+          - "  after  update: {{ drv_after.stdout }}   (expected interface=ahci)"
+
+    - name: teardown vm
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: absent }
+    - name: teardown net
+      vergeio.vergeos.network: { name: "{{ net_n }}", state: absent }

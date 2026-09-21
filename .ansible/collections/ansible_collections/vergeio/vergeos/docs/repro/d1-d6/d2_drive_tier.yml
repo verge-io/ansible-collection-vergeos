@@ -1,0 +1,83 @@
+---
+# D2 — the drive module's `tier` parameter.
+- name: D2 drive tier convergence
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vm_n: zz-d2-vm
+    drv: zz-d2-drive
+  module_defaults:
+    group/vergeio.vergeos.all: { insecure: true }
+  tasks:
+    - name: clean
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        state: absent
+    - name: create vm
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        cpu_cores: 1
+        ram: 512
+        state: present
+    - name: find machine key
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "vms?fields=name,machine&filter=name eq '{{ vm_n }}'"]
+      register: vmrow
+      changed_when: false
+    - name: record
+      ansible.builtin.set_fact:
+        mkey: "{{ (vmrow.stdout | from_json | first).machine }}"
+
+    - name: create a 1 GB drive (no tier given)
+      vergeio.vergeos.drive:
+        vm_name: "{{ vm_n }}"
+        name: "{{ drv }}"
+        size: 1
+        state: present
+    - name: tier as created
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "machine_drives?fields=name,preferred_tier&filter=machine eq {{ mkey }}"]
+      register: t0
+      changed_when: false
+
+    - name: "ask for tier 1 - run 1"
+      vergeio.vergeos.drive:
+        vm_name: "{{ vm_n }}"
+        name: "{{ drv }}"
+        tier: 1
+        state: present
+      register: d1
+    - name: "ask for tier 1 - run 2"
+      vergeio.vergeos.drive:
+        vm_name: "{{ vm_n }}"
+        name: "{{ drv }}"
+        tier: 1
+        state: present
+      register: d2
+    - name: "ask for tier 1 - run 3"
+      vergeio.vergeos.drive:
+        vm_name: "{{ vm_n }}"
+        name: "{{ drv }}"
+        tier: 1
+        state: present
+      register: d3
+    - name: tier after three runs
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "machine_drives?fields=name,preferred_tier&filter=machine eq {{ mkey }}"]
+      register: t1
+      changed_when: false
+
+    - name: "D2 RESULTS"
+      ansible.builtin.debug:
+        msg:
+          - "as created          : {{ t0.stdout }}"
+          - "asked for tier 1 x3 : changed={{ d1.changed }},{{ d2.changed }},{{ d3.changed }}"
+          - "after three runs    : {{ t1.stdout }}"
+
+    - name: teardown
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        state: absent

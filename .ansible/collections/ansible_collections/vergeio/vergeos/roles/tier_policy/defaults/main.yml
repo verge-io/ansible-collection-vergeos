@@ -1,0 +1,38 @@
+---
+# tier_policy -- SPBM-style storage-tier placement policy.
+#
+# Declares which tier each VM's drives belong on, audits the configured
+# preferred_tier against that, and (in enforce mode) corrects drift and
+# re-audits to prove it converged.
+
+# Connection.
+tier_policy_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+tier_policy_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+tier_policy_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+tier_policy_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(false, true) | bool }}"
+
+# Placement rules, evaluated first-match-wins per drive:
+#
+#   tier_policy_rules:
+#     - {match: "db-*",  tier: 1}                 # every drive of db-*
+#     - {match: "app-*", drive: "data*", tier: 1} # just its data drives
+#     - {match: "app-*", tier: 4}                 # everything else on app-*
+tier_policy_rules: []
+
+# WARNING. This makes EVERY unmatched drive on the system subject to
+# policy. Combined with enforce, it retiers VMs you never named.
+# Leave it null unless that is exactly what you want; null reports
+# unmatched drives as 'unclassified' -- visible, and untouched.
+tier_policy_default_tier: null
+
+# report  = audit only, read-only.
+# enforce = correct drift through the drive module, then re-audit and
+#           fail if anything still drifts.
+tier_policy_mode: report
+
+# Report-mode CI gate: fail the play when any drive is off policy.
+tier_policy_fail_on_drift: false
+
+# Optional: audit a saved {drives: [...]} JSON instead of the live API.
+# Enforce is refused against a fixture -- there is nothing to retier.
+tier_policy_fixture: ""

@@ -1,0 +1,63 @@
+---
+# Example playbook: Manage users and organization members
+#
+# The 'user' module uses 'name' for the target username and 'user_password'
+# for the user's password. Auth credentials (username/password) are separate.
+# The 'member' module uses 'name' for the target member username.
+- name: Manage VergeIO users and members
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vergeos_host: "{{ lookup('env', 'VERGEOS_HOST') | default('vergeos.example.com', true) }}"
+    vergeos_username: "{{ lookup('env', 'VERGEOS_USERNAME') | default('admin', true) }}"
+    vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+    vergeos_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true) }}"
+
+  tasks:
+    - name: Create a new admin user
+      vergeio.vergeos.user:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: "john.doe"
+        user_password: "secure_password"
+        email: "john.doe@example.com"
+        full_name: "John Doe"
+        role: admin
+        enabled: true
+        state: present
+
+    - name: Create a readonly user
+      vergeio.vergeos.user:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: "viewer"
+        user_password: "viewer_password"
+        email: "viewer@example.com"
+        full_name: "Read Only User"
+        role: readonly
+        state: present
+
+    - name: Add user to group
+      vergeio.vergeos.member:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        group: "engineering"
+        name: "john.doe"
+        state: present
+
+    - name: Add another user to group
+      vergeio.vergeos.member:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        group: "engineering"
+        name: "viewer"
+        state: present

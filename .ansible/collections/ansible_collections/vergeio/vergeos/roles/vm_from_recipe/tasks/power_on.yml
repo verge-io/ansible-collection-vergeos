@@ -1,0 +1,50 @@
+---
+# Power the VM on, then wait for it to actually be running.
+#
+# ⚠️ This goes through the vergeio.vergeos.vm module, whose `enabled` parameter
+# defaults to true. On the convergence path -- a VM this role found rather than
+# built -- that would re-enable a VM someone deliberately disabled. It is why
+# vm_from_recipe_power_on is opt-in. A VM this role just deployed is already
+# enabled and merely stopped, so there is nothing to clobber.
+
+- name: Power on the VM
+  vergeio.vergeos.vm:
+    host: "{{ vm_from_recipe_host }}"
+    username: "{{ vm_from_recipe_username }}"
+    password: "{{ vm_from_recipe_password }}"
+    insecure: "{{ vm_from_recipe_insecure }}"
+    name: "{{ vm_from_recipe_name }}"
+    state: running
+
+# Power-on is ASYNCHRONOUS: the request returns immediately and the machine
+# takes several seconds to go stopped -> starting -> running. Reading the
+# status in the same breath is a race, and it was a live one -- in a
+# 28-recipe sweep two recipes reported `stopped` for VMs that were starting
+# normally, and nothing was wrong with either of them.
+- name: Poll until the VM reports running
+  vergeio.vergeos.vm_info:
+    host: "{{ vm_from_recipe_host }}"
+    username: "{{ vm_from_recipe_username }}"
+    password: "{{ vm_from_recipe_password }}"
+    insecure: "{{ vm_from_recipe_insecure }}"
+    name: "{{ vm_from_recipe_name }}"
+  register: vm_from_recipe_running
+  # Not the verdict; the assert below is.
+  failed_when: false
+  changed_when: false
+  retries: "{{ (vm_from_recipe_power_on_grace | int // (vm_from_recipe_poll_interval | int)) | int }}"
+  delay: "{{ vm_from_recipe_poll_interval | int }}"
+  # `running` is the real field. vm_info's documentation mentions a
+  # `power_state` field that the API does not return; reading that would test
+  # `undefined | bool`, which is false forever.
+  until: (vm_from_recipe_running.vms | default([{}]) | first).running | default(false) | bool
+
+- name: A powered-on VM must reach running
+  ansible.builtin.assert:
+    that: (vm_from_recipe_running.vms | default([{}]) | first).running | default(false) | bool
+    fail_msg: >-
+      VM '{{ vm_from_recipe_name }}' was powered on but was still
+      '{{ (vm_from_recipe_running.vms | default([{}]) | first).status
+          | default('unknown') }}' after
+      {{ vm_from_recipe_power_on_grace }}s.
+    quiet: true

@@ -1,0 +1,56 @@
+---
+# Tenant-per-customer as code.
+#
+# Auth comes from the standard environment variables:
+#   VERGEOS_HOST, VERGEOS_USERNAME, VERGEOS_PASSWORD, VERGEOS_INSECURE
+#
+# Run:  ansible-playbook examples/manage_tenants.yml
+
+- name: Manage tenants declaratively
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    customers:
+      - name: acme
+        description: ACME Corp production tenant
+        nodes:
+          - name: acme-node1
+            cpu_cores: 8
+            ram_gb: 32
+        storage:
+          - tier: 1
+            provisioned_gb: 500
+      - name: globex
+        description: Globex staging tenant
+        nodes:
+          - name: globex-node1
+            cpu_cores: 4
+            ram_gb: 16
+        storage:
+          - tier: 3
+            provisioned_gb: 250
+
+  tasks:
+    - name: Ensure each customer tenant exists and is running
+      vergeio.vergeos.tenant:
+        name: "{{ item.name }}"
+        description: "{{ item.description }}"
+        nodes: "{{ item.nodes }}"
+        storage: "{{ item.storage }}"
+        state: running
+      loop: "{{ customers }}"
+
+    - name: Report the tenant fleet
+      vergeio.vergeos.tenant_info:
+      register: fleet
+
+    - name: Show fleet summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.name }}: {{ 'running' if item.running else 'stopped' }},
+          {{ item.nodes | length }} node(s),
+          {{ item.storage | map(attribute='provisioned_gb') | sum }} GB provisioned
+      loop: "{{ fleet.tenants }}"
+      loop_control:
+        label: "{{ item.name }}"

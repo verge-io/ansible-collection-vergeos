@@ -1,0 +1,63 @@
+- name: D3 fact-check - does the failed absent leave files behind?
+  hosts: localhost
+  gather_facts: false
+  vars: { vm_n: zz-fc-ci }
+  module_defaults:
+    group/vergeio.vergeos.all: { insecure: true }
+  tasks:
+    - name: clean
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: absent }
+    - name: create vm
+      vergeio.vergeos.vm:
+        name: "{{ vm_n }}"
+        cpu_cores: 1
+        ram: 512
+        state: present
+    - name: get vm key
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "vms?fields=name,$key&filter=name eq '{{ vm_n }}'"]
+      register: vmrow
+      changed_when: false
+    - name: record
+      ansible.builtin.set_fact:
+        vmkey: "{{ (vmrow.stdout | from_json | first)['$key'] }}"
+
+    - name: enable cloud-init
+      vergeio.vergeos.cloud_init:
+        vm_name: "{{ vm_n }}"
+        hostname: zz-fc-host
+        state: present
+      register: en
+
+    - name: files BEFORE the disable attempt
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "cloudinit_files?fields=name,owner"]
+      register: files_before
+      changed_when: false
+
+    - name: attempt state=absent
+      vergeio.vergeos.cloud_init:
+        vm_name: "{{ vm_n }}"
+        state: absent
+      register: off_attempt
+      ignore_errors: true
+
+    - name: files AFTER the failed disable
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "cloudinit_files?fields=name,owner"]
+      register: files_after
+      changed_when: false
+
+    - name: "D3 FILE FACT-CHECK"
+      ansible.builtin.debug:
+        msg:
+          - "absent failed?      {{ off_attempt is failed }}"
+          - "files before disable: {{ files_before.stdout | from_json | selectattr('owner','equalto','vms/'~vmkey) | list }}"
+          - "files after  disable: {{ files_after.stdout | from_json | selectattr('owner','equalto','vms/'~vmkey) | list }}"
+          - "VERDICT: {{ 'files REMAIN (partial state)' if (files_after.stdout | from_json | selectattr('owner','equalto','vms/'~vmkey) | list | length) > 0 else 'files were removed' }}"
+
+    - name: teardown
+      vergeio.vergeos.vm: { name: "{{ vm_n }}", state: absent }

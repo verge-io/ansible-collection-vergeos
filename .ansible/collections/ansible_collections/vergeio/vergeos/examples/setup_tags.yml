@@ -1,0 +1,79 @@
+---
+# Setup tag infrastructure for multi-site inventory testing
+# This playbook creates tag categories and tags on multiple VergeOS sites
+#
+# Usage:
+#   export VERGEOS_PASSWORD="your-password"
+#   ansible-playbook examples/setup_tags.yml
+#
+# This creates:
+#   - 'App' tag category (allows tagging VMs)
+#   - 'DB' tag for database servers
+#   - 'WEB' tag for web servers
+#
+- name: Setup tag infrastructure on all sites
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    vergeos_sites:
+      - name: sitea
+        host: "{{ lookup('env', 'VERGEOS_SITEA_HOST') | default('sitea.example.com', true) }}"
+      - name: siteb
+        host: "{{ lookup('env', 'VERGEOS_SITEB_HOST') | default('siteb.example.com', true) }}"
+    vergeos_username: "{{ lookup('env', 'VERGEOS_USERNAME') | default('admin', true) }}"
+    vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+    vergeos_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true) }}"
+
+  tasks:
+    - name: Create App tag category on all sites
+      vergeio.vergeos.tag_category:
+        host: "{{ item.host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: App
+        description: "Application type tags"
+        taggable_vms: true
+        state: present
+      loop: "{{ vergeos_sites }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create DB tag on all sites
+      vergeio.vergeos.tag:
+        host: "{{ item.host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: DB
+        category: App
+        description: "Database servers"
+        state: present
+      loop: "{{ vergeos_sites }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create WEB tag on all sites
+      vergeio.vergeos.tag:
+        host: "{{ item.host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: WEB
+        category: App
+        description: "Web servers"
+        state: present
+      loop: "{{ vergeos_sites }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Display completion message
+      ansible.builtin.debug:
+        msg: |
+          Tag infrastructure created on {{ vergeos_sites | length }} sites.
+
+          Next steps:
+          1. Apply tags to VMs: ansible-playbook -i inventory.vergeos_vms.yml examples/apply_tags.yml
+          2. Verify inventory: ansible-inventory -i inventory.vergeos_vms.yml --graph

@@ -518,24 +518,13 @@ none. Filed as verge-io/engineering#20.
 
 ---
 
-## B19 — pyvergeos does not escape `{` in filter literals, so a lookup by name can hit a different object
-**Status:** OPEN (upstream pyvergeos **#100**; docs gap **docs-vergeos#58**) ·
-**Severity:** high · **Measured on 26.1.8 / pyvergeos 1.2.7, 2026-09-21**
+## B19 — PLATFORM: filter literals strip `{...}`, so a lookup by name can hit a different object
+**Status:** OPEN (VergeOS, **verge-io/engineering#20**) · **Severity:** high ·
+**Measured on 26.1.8, 2026-09-21**
 
-> **Revised.** First filed as a VergeOS parser defect (engineering#20, now
-> closed). That was wrong twice over, because I asserted "there is no escape"
-> without testing one. `\{` works, including for a lone `{`. The filter
-> grammar reserves exactly three characters inside a string literal --
-> `\`, `'` and `{` -- all take a backslash escape, `}` is not reserved, and a
-> 92-character ASCII sweep found no others. The platform is behaving to its
-> own grammar; the SDK is not following it.
-
-`quote_value()` escapes `\` and `'` -- correctly, per pyvergeos #72/#76 --
-but omits `{`. An unescaped balanced `{...}` is consumed by the filter
-grammar, so the query resolves to whatever the remaining string names; an
-unescaped lone `{` returns HTTP 422. VergeOS stores such names correctly and
-returns them correctly by `$key`, so this is purely a filter-construction
-defect:
+VergeOS stores a name containing braces correctly but cannot filter for it.
+The braces are stripped from the filter literal before comparison, so the
+query resolves to whatever the stripped string names:
 
 ```
 key 41 -> 'zz-jw-br{x}ace'      (read back by key: correct)
@@ -544,22 +533,14 @@ key 42 -> 'zz-jw-brace'         (read back by key: correct)
 GET vms?filter=name eq 'zz-jw-br{x}ace'  ->  [{"name":"zz-jw-brace"}]
 ```
 
-The escape fixes it, which is the whole point:
+Token content is irrelevant — `{x}`, `{}`, `{now}`, `{user}`, `{0}` all behave
+identically, so it is stripping rather than macro expansion. Only bare braces:
+`${x}`, `%{x}`, `#{x}`, `[x]`, `(x)` are all literal. Confirmed on `vnets`,
+`vms` and `users`, stable across three runs.
 
-```
-name eq 'zz-jw-br{x}ace'    ->  wrong row
-name eq 'zz-jw-br\{x}ace'   ->  correct row
-name eq 'zz-p-{lead'        ->  HTTP 422
-name eq 'zz-p-\{lead'       ->  correct row
-```
-
-Verified end-to-end: monkeypatching `quote_value` to also escape `{` made all
-six probe names resolve correctly with no regression on the `'` and `\` cases.
-
-A second, independent platform behaviour is adjacent but **not** the cause: a
-filter naming a field the table does not have is treated as an empty column
-rather than rejected, so `unknown eq ''` and `unknown ne 'x'` match every row.
-Noted on engineering#20; not separately filed.
+A second, independent platform behaviour compounds it: a filter naming a
+field the table does not have is treated as an **empty column** rather than
+rejected, so `unknown eq ''` and `unknown ne 'x'` match every row.
 
 ### Why this is in OUR bug list
 
@@ -581,7 +562,7 @@ escaping bug. It now matches client-side like every other name lookup here,
 which is immune to this and to B18. Pinned by `TestLookupIsClientSideAndNeverFiltersByName` and by rung 10 of `verify-catalog.yml`, which creates a
 neighbour differing only by a brace token and asserts it survives.
 
-**Do not reintroduce a server-side `name eq '...'` lookup anywhere** until
-pyvergeos#100 is released and `requirements.txt` floors past it. That is now the
+**Do not reintroduce a server-side `name eq '...'` lookup anywhere** until this
+is fixed on the platform and `requirements.txt` floors past it. That is now the
 third distinct reason (B1 escaping, B18 SDK fail-open, B19 brace stripping) —
 the client-side matching that keeps getting flagged as redundant is load-bearing.

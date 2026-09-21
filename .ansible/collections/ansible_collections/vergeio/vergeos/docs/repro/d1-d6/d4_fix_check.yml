@@ -1,0 +1,55 @@
+- name: D4 fix - does removing the default break anything?
+  hosts: localhost
+  gather_facts: false
+  vars: { a: zz-d4a, b: zz-d4b, c: zz-d4c }
+  module_defaults:
+    group/vergeio.vergeos.all: { insecure: true }
+  tasks:
+    - name: clean
+      vergeio.vergeos.vm: { name: "{{ item }}", state: absent }
+      loop: ["{{ a }}", "{{ b }}", "{{ c }}"]
+
+    - name: "1. create WITHOUT enabled - should still come up enabled"
+      vergeio.vergeos.vm:
+        name: "{{ a }}"
+        cpu_cores: 1
+        ram: 512
+        state: present
+    - name: "2. create WITH enabled=false - must be disabled"
+      vergeio.vergeos.vm:
+        name: "{{ b }}"
+        cpu_cores: 1
+        ram: 512
+        enabled: false
+        state: present
+    - name: "3. create disabled, then EXPLICITLY enable it"
+      vergeio.vergeos.vm:
+        name: "{{ c }}"
+        cpu_cores: 1
+        ram: 512
+        enabled: false
+        state: present
+    - name: "3b. explicit enable=true must still work"
+      vergeio.vergeos.vm:
+        name: "{{ c }}"
+        enabled: true
+        state: present
+      register: explicit_enable
+
+    - name: read back all three
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", readback.py,
+               "vms?fields=name,enabled"]
+      register: rb
+      changed_when: false
+
+    - name: "D4 FIX RESULTS"
+      ansible.builtin.debug:
+        msg:
+          - "expected: {{ a }}=true (platform default), {{ b }}=false, {{ c }}=true (explicit)"
+          - "actual  : {{ rb.stdout | from_json | selectattr('name','match','^zz-d4') | list }}"
+          - "explicit enable reported changed={{ explicit_enable.changed }}"
+
+    - name: teardown
+      vergeio.vergeos.vm: { name: "{{ item }}", state: absent }
+      loop: ["{{ a }}", "{{ b }}", "{{ c }}"]

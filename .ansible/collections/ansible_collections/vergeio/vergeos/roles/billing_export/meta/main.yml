@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  author: VergeIO
+  description: >-
+    Read-only usage export for invoicing and chargeback pipelines.
+    Writes the system's billing period records and a per-tenant
+    allocation snapshot to two date-stamped CSVs.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.16"
+  galaxy_tags:
+    - vergeos
+    - billing
+    - chargeback
+dependencies: []

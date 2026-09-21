@@ -1,0 +1,60 @@
+---
+argument_specs:
+  main:
+    short_description: Build a golden template VM from a local qcow2
+    description:
+      - Packs a local qcow2 into a minimal OVA with no NICs, uploads it to
+        the media catalog, imports it as a stopped template VM, enforces the
+        template's specs, and takes a snapshot that consumers clone from.
+      - An existing template is never rebuilt. Version templates by name so a
+        rebuild is a new artefact rather than a mutation of the image other
+        VMs were cloned from.
+      - The OVA carries no NICs deliberately - a template with a network
+        binding drags it into every clone.
+    author:
+      - VergeIO (@vergeio)
+    options:
+      image_pipeline_host:
+        description: VergeOS hostname or IP. Defaults to C(VERGEOS_HOST).
+        type: str
+        required: true
+      image_pipeline_username:
+        description: Username. Defaults to C(VERGEOS_USERNAME).
+        type: str
+      image_pipeline_password:
+        description: Password. Defaults to C(VERGEOS_PASSWORD).
+        type: str
+      image_pipeline_insecure:
+        description: Skip SSL validation. Defaults to C(VERGEOS_INSECURE).
+        type: bool
+      image_pipeline_src:
+        description: Path to a local qcow2 on the controller.
+        type: str
+        required: true
+      image_pipeline_template_name:
+        description: Name of the golden template VM. Also names the OVA.
+        type: str
+        required: true
+      image_pipeline_media_name:
+        description: Name the OVA takes in the media catalog.
+        type: str
+      image_pipeline_cores:
+        description: CPU cores enforced on the template.
+        type: int
+        default: 2
+      image_pipeline_ram_mb:
+        description: RAM in MB enforced on the template.
+        type: int
+        default: 2048
+      image_pipeline_os_family:
+        description: OS family enforced on the template.
+        type: str
+        default: linux
+      image_pipeline_snapshot_name:
+        description: Snapshot taken on the template for consumers to clone.
+        type: str
+        default: golden
+      image_pipeline_import_timeout:
+        description: Seconds to wait for the import to finish.
+        type: int
+        default: 900

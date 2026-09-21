@@ -1,0 +1,160 @@
+---
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that: restore_drill_host | length > 0
+    fail_msg: "restore_drill needs restore_drill_host (or VERGEOS_HOST)."
+    quiet: true
+
+- name: Preflight -- a VM to drill
+  ansible.builtin.assert:
+    that: restore_drill_vm | length > 0
+    fail_msg: "restore_drill needs restore_drill_vm."
+    quiet: true
+
+- name: Resolve drill names
+  ansible.builtin.set_fact:
+    restore_drill_clone: >-
+      {{ restore_drill_clone_name
+         if restore_drill_clone_name | length > 0
+         else restore_drill_vm ~ '-drill' }}
+    restore_drill_snapshot: >-
+      {{ restore_drill_snapshot_name
+         if restore_drill_snapshot_name | length > 0
+         else 'drill-' ~ lookup('pipe', 'date +%s') }}
+
+- name: Refuse to clone over the source VM
+  ansible.builtin.assert:
+    that: restore_drill_clone != restore_drill_vm
+    fail_msg: >-
+      the clone name resolves to the source VM name
+      ('{{ restore_drill_vm }}'). A drill must never write to the thing
+      it is verifying.
+    quiet: true
+
+# Everything that creates something lives in the block, so the always:
+# below tears it down even when the boot fails -- which is the case
+# this role exists to detect, and therefore the case where leaving a
+# half-booted clone behind would be worst.
+- name: Run the drill
+  block:
+    - name: Take a fresh drill snapshot
+      vergeio.vergeos.vm_snapshot:
+        host: "{{ restore_drill_host }}"
+        username: "{{ restore_drill_username }}"
+        password: "{{ restore_drill_password }}"
+        insecure: "{{ restore_drill_insecure }}"
+        vm_name: "{{ restore_drill_vm }}"
+        snapshot_name: "{{ restore_drill_snapshot }}"
+        description: "restore drill snapshot (auto-removed)"
+        operation: create
+      when: restore_drill_take_snapshot | bool
+      register: restore_drill_snap
+
+    - name: Clone from the snapshot
+      vergeio.vergeos.vm_clone:
+        host: "{{ restore_drill_host }}"
+        username: "{{ restore_drill_username }}"
+        password: "{{ restore_drill_password }}"
+        insecure: "{{ restore_drill_insecure }}"
+        name: "{{ restore_drill_clone }}"
+        source: "{{ restore_drill_vm }}"
+        snapshot: >-
+          {{ restore_drill_snapshot
+             if restore_drill_take_snapshot | bool else omit }}
+      register: restore_drill_cloned
+
+    - name: Isolate clone NICs before boot
+      vergeio.vergeos.nic:
+        host: "{{ restore_drill_host }}"
+        username: "{{ restore_drill_username }}"
+        password: "{{ restore_drill_password }}"
+        insecure: "{{ restore_drill_insecure }}"
+        vm_name: "{{ restore_drill_clone }}"
+        network: "{{ item }}"
+        enabled: false
+        state: present
+      loop: "{{ restore_drill_isolate_networks }}"
+
+    - name: Boot the clone
+      vergeio.vergeos.vm:
+        host: "{{ restore_drill_host }}"
+        username: "{{ restore_drill_username }}"
+        password: "{{ restore_drill_password }}"
+        insecure: "{{ restore_drill_insecure }}"
+        name: "{{ restore_drill_clone }}"
+        state: running
+
+    - name: Hold the stability window
+      ansible.builtin.pause:
+        seconds: "{{ restore_drill_boot_seconds }}"
+
+    - name: Read clone state after the window
+      vergeio.vergeos.vm_info:
+        host: "{{ restore_drill_host }}"
+        username: "{{ restore_drill_username }}"
+        password: "{{ restore_drill_password }}"
+        insecure: "{{ restore_drill_insecure }}"
+        name: "{{ restore_drill_clone }}"
+      register: restore_drill_state
+      changed_when: false
+
+    # The power field on a raw VM row is `running` (bool). The
+    # documented `power_state` does not exist on it.
+    - name: Verdict
+      ansible.builtin.set_fact:
+        restore_drill_passed: >-
+          {{ restore_drill_state.vms | length == 1
+             and (restore_drill_state.vms[0].running | default(false) | bool) }}
+
+  always:
+    - name: Stop the clone
+      vergeio.vergeos.vm:
+        host: "{{ restore_drill_host }}"
+        username: "{{ restore_drill_username }}"
+        password: "{{ restore_drill_password }}"
+        insecure: "{{ restore_drill_insecure }}"
+        name: "{{ restore_drill_clone }}"
+        state: stopped
+      when: not (restore_drill_keep_clone | bool)
+      failed_when: false
+
+    # Stopped first, deliberately: a running VM refuses deletion.
+    - name: Remove the clone
+      vergeio.vergeos.vm:
+        host: "{{ restore_drill_host }}"
+        username: "{{ restore_drill_username }}"
+        password: "{{ restore_drill_password }}"
+        insecure: "{{ restore_drill_insecure }}"
+        name: "{{ restore_drill_clone }}"
+        state: absent
+      when: not (restore_drill_keep_clone | bool)
+
+    - name: Remove the drill snapshot
+      vergeio.vergeos.vm_snapshot:
+        host: "{{ restore_drill_host }}"
+        username: "{{ restore_drill_username }}"
+        password: "{{ restore_drill_password }}"
+        insecure: "{{ restore_drill_insecure }}"
+        vm_name: "{{ restore_drill_vm }}"
+        snapshot_id: "{{ restore_drill_snap.snapshot_id }}"
+        operation: delete
+      when:
+        - restore_drill_take_snapshot | bool
+        - not (restore_drill_keep_snapshot | bool)
+        - restore_drill_snap.snapshot_id is defined
+
+- name: Fail loudly if the drill did not pass
+  ansible.builtin.fail:
+    msg: >-
+      RESTORE DRILL FAILED for '{{ restore_drill_vm }}': the clone did
+      not stay running for {{ restore_drill_boot_seconds }}s
+      (state: {{ restore_drill_state.vms | default('<unread>') }}).
+  when: not (restore_drill_passed | default(false))
+
+- name: Drill passed
+  ansible.builtin.debug:
+    msg: >-
+      restore drill PASSED for '{{ restore_drill_vm }}': a clone of
+      {{ 'a fresh snapshot' if restore_drill_take_snapshot | bool
+         else 'the newest existing snapshot' }}
+      booted and stayed running for {{ restore_drill_boot_seconds }}s.

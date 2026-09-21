@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  author: VergeIO
+  description: >-
+    SureBackup-style restore verification for VergeOS. Clones a VM from
+    a snapshot, boots it, holds a stability window, and fails loudly if
+    it does not stay running. The source VM is never touched.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.16"
+  galaxy_tags:
+    - vergeos
+    - backup
+    - disasterrecovery
+    - verification
+dependencies: []

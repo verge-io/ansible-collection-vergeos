@@ -1,0 +1,142 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy a VM from a VergeOS recipe and wait for it to be usable
+    description:
+      - Deploys a VM from a native VergeOS recipe, then waits for the VM to be
+        genuinely usable rather than merely present.
+      - The deploy is asynchronous - the platform accepts it and returns a VM
+        key long before the VM can boot, because every stock cloud-image recipe
+        builds its OS drive by importing an image that is still downloading
+        when the VM row appears.
+      - Post-conditions are asserted on both paths, whether this run deployed
+        the VM or converged on one that was already there.
+    author:
+      - VergeIO (@vergeio)
+    options:
+      vm_from_recipe_host:
+        description:
+          - VergeOS hostname or IP address.
+          - Defaults to the C(VERGEOS_HOST) environment variable.
+        type: str
+        required: true
+      vm_from_recipe_username:
+        description:
+          - Username. Defaults to the C(VERGEOS_USERNAME) environment variable.
+        type: str
+      vm_from_recipe_password:
+        description:
+          - Password. Defaults to the C(VERGEOS_PASSWORD) environment variable.
+        type: str
+      vm_from_recipe_insecure:
+        description:
+          - Skip SSL certificate validation.
+          - Defaults to the C(VERGEOS_INSECURE) environment variable.
+        type: bool
+        default: false
+      vm_from_recipe_recipe:
+        description:
+          - Recipe name as it appears in the catalog, matched exactly.
+        type: str
+        required: true
+      vm_from_recipe_catalog:
+        description:
+          - Catalog name, to disambiguate when two catalogs carry a recipe of
+            the same name.
+        type: str
+        default: ""
+      vm_from_recipe_name:
+        description:
+          - Name for the new VM, and the idempotence key. An existing VM of
+            this name is never re-deployed over.
+        type: str
+        required: true
+      vm_from_recipe_answers:
+        description:
+          - Recipe question answers, keyed by question variable name.
+          - Answer network questions explicitly; their defaults do not reliably
+            attach a NIC.
+        type: dict
+        default: {}
+      vm_from_recipe_prune_unknown:
+        description:
+          - Drop and report answers this recipe does not define instead of
+            failing.
+        type: bool
+        default: false
+      vm_from_recipe_auto_update:
+        description:
+          - Update the instance when the recipe publishes a new version.
+        type: bool
+        default: false
+      vm_from_recipe_simulate:
+        description:
+          - Run the server-side simulation before deploying.
+        type: bool
+        default: true
+      vm_from_recipe_fail_on_hints:
+        description:
+          - Treat unanswered questions with empty defaults as fatal.
+        type: bool
+        default: false
+      vm_from_recipe_wait:
+        description:
+          - Wait for the deploy to produce a VM row.
+        type: bool
+        default: true
+      vm_from_recipe_wait_for_drives:
+        description:
+          - Wait for the VM's drives to finish importing.
+        type: bool
+        default: true
+      vm_from_recipe_wait_timeout:
+        description:
+          - Seconds to allow for a drive import to finish.
+        type: int
+        default: 1800
+      vm_from_recipe_drive_grace:
+        description:
+          - Seconds to allow for a drive row to appear at all. Separate from
+            O(vm_from_recipe_wait_timeout) so that a VM the recipe left with no
+            drives fails quickly instead of burning the whole import budget.
+        type: int
+        default: 120
+      vm_from_recipe_poll_interval:
+        description:
+          - Seconds between polls.
+        type: int
+        default: 10
+      vm_from_recipe_verify_drives:
+        description:
+          - Assert the VM has at least one drive and none still importing.
+        type: bool
+        default: true
+      vm_from_recipe_verify_nics:
+        description:
+          - Assert every NIC is attached to a network.
+        type: bool
+        default: true
+      vm_from_recipe_power_on:
+        description:
+          - Power the VM on once its drives are ready.
+          - Opt-in because power-on goes through the M(vergeio.vergeos.vm)
+            module, whose C(enabled) parameter defaults to true, so on the
+            convergence path it would re-enable a deliberately disabled VM.
+        type: bool
+        default: false
+      vm_from_recipe_power_on_grace:
+        description:
+          - Seconds to allow an asynchronous power-on to reach running.
+        type: int
+        default: 120
+      vm_from_recipe_verify_boot:
+        description:
+          - Prove the guest boots by watching for guest disk writes.
+          - Requires the VM to be running.
+        type: bool
+        default: false
+      vm_from_recipe_boot_timeout:
+        description:
+          - Seconds to allow the guest to come up and write something.
+        type: int
+        default: 600

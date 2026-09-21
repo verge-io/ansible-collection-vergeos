@@ -1,0 +1,39 @@
+---
+# Wait for one triggered sync to stop running.
+#
+# A full replication run legitimately takes hours, so the budget is generous
+# and the poll is slow. Polling faster does not move data faster.
+
+- name: "Wait for replication to finish: {{ dr_sync_name }}"
+  vergeio.vergeos.site_sync_info:
+    host: "{{ dr_replication_host }}"
+    username: "{{ dr_replication_username }}"
+    password: "{{ dr_replication_password }}"
+    insecure: "{{ dr_replication_insecure }}"
+    direction: outgoing
+    name: "{{ dr_sync_name }}"
+  register: dr_replication_run
+  # Not the verdict. The assert below is, so a sync that never finishes is
+  # reported with its last known state rather than as a bare attempt count.
+  failed_when: false
+  changed_when: false
+  retries: "{{ (dr_replication_wait_timeout | int // (dr_replication_poll_interval | int)) | int }}"
+  delay: "{{ dr_replication_poll_interval | int }}"
+  until: >-
+    (dr_replication_run.outgoing | default([]) | length > 0)
+    and not ((dr_replication_run.outgoing | first).syncing | default(false) | bool)
+
+- name: "Replication must have finished: {{ dr_sync_name }}"
+  ansible.builtin.assert:
+    that:
+      - dr_replication_run.outgoing | default([]) | length > 0
+      - not ((dr_replication_run.outgoing | first).syncing | default(false) | bool)
+    fail_msg: >-
+      sync '{{ dr_sync_name }}' was still running after
+      {{ dr_replication_wait_timeout }}s. The platform reports status
+      '{{ (dr_replication_run.outgoing | default([{}]) | first).status
+          | default('unknown') }}'
+      ({{ (dr_replication_run.outgoing | default([{}]) | first).status_info
+          | default('no detail') }}).
+      Raise dr_replication_wait_timeout if it is simply a large first sync.
+    quiet: true

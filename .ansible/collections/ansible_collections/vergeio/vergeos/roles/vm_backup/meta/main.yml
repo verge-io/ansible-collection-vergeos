@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  author: VergeIO
+  description: >-
+    Backup policy as code for VergeOS: snapshot schedule, NAS export
+    volume, read-only NFS exposure for external backup tooling, and the
+    VM export configuration with generation retention.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.16"
+  galaxy_tags:
+    - vergeos
+    - backup
+    - snapshot
+    - nas
+dependencies: []

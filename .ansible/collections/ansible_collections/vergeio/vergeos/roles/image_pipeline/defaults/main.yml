@@ -1,0 +1,40 @@
+---
+# image_pipeline -- a local qcow2 in, a versioned golden template out.
+#
+# Composes primitives rather than reinventing them:
+#   local qcow2
+#     -> minimal OVA (no NICs; consumers attach their own)
+#     -> media-catalog upload via `file` (idempotent by size)
+#     -> `vm_import` (waits; the VM lands stopped)
+#     -> spec enforcement via `vm`
+#     -> golden snapshot via `vm_snapshot`
+#
+# An existing template is NEVER rebuilt. Version by name --
+# web-golden-v3 -- so a rebuild is an explicit new artefact rather than
+# a mutation of the one your VMs were cloned from.
+
+# Connection.
+image_pipeline_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+image_pipeline_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+image_pipeline_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+image_pipeline_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(false, true) | bool }}"
+
+# Path to a local qcow2. Required.
+image_pipeline_src: ""
+
+# Name of the golden template VM. Also names the OVA. Required.
+image_pipeline_template_name: ""
+
+# Name the OVA takes in the media catalog.
+image_pipeline_media_name: "{{ image_pipeline_template_name }}.ova"
+
+# Specs enforced on the template after import.
+image_pipeline_cores: 2
+image_pipeline_ram_mb: 2048
+image_pipeline_os_family: linux
+
+# Snapshot created on the template. Consumers clone from this.
+image_pipeline_snapshot_name: golden
+
+# Ceiling for the import wait. Large images take a while to ingest.
+image_pipeline_import_timeout: 900
