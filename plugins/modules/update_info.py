@@ -16,7 +16,8 @@ description:
   - Report the update source and branch in use, whether updates are pending,
     downloaded or installed, and whether a reboot is outstanding.
   - Reading this does not contact the update source. Use
-    M(vergeio.vergeos.update) with O(state=checked) to refresh first.
+    M(vergeio.vergeos.update) with O(vergeio.vergeos.update#module:state=checked)
+    to refresh first.
 options:
   packages:
     description:

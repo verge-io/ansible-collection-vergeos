@@ -132,8 +132,13 @@ def resolve_repository_key(module, client, name):
 
 
 def find_catalogs(client, name, repo_key=None):
-    escaped = name.replace("'", "''")
-    matches = client.catalogs.list(filter="name eq '%s'" % escaped)
+    # Let the SDK build the filter. Hand-rolling it here used the SQL-style
+    # doubling ("'" -> "''"), which VergeOS 26.1.8 rejects outright --
+    # measured: filter=name eq 'o''brien' returns ValidationError "Invalid
+    # argument", while the SDK's quote_value form returns HTTP 200 with no
+    # match. So any catalog whose name contained an apostrophe made this
+    # module fail rather than report "not found".
+    matches = client.catalogs.list(name=name)
     if repo_key is not None:
         matches = [c for c in matches
                    if dict(c).get('repository') == repo_key]

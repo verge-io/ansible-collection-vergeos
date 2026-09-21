@@ -12,6 +12,8 @@
 
   vars:
     cat: zz-golden-images
+    # Apostrophe on purpose -- see rung 9.
+    cat_quoted: "zz-o'brien images"
 
   tasks:
     - name: Ladder body
@@ -135,13 +137,72 @@
                   - "'repository is required' in (ansible_failed_result.msg | default(''))"
                 fail_msg: "wrong failure: {{ ansible_failed_result | default({}) }}"
 
-        - name: "9. Delete"
+        # The name below contains an apostrophe on purpose. This module used
+        # to build its own OData filter with SQL-style escaping ("'" -> "''"),
+        # which VergeOS 26.1.8 rejects with ValidationError "Invalid
+        # argument" -- so a catalog named like this could not be looked up,
+        # created, converged or deleted. Every rung below failed before the
+        # fix; the absent-on-missing rung is the telling one, because a
+        # no-op is the one thing that should never be able to fail.
+        - name: "9. A name containing an apostrophe is a lookup, not a crash"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_quoted }}"
+            state: absent
+          register: quoted_missing
+
+        - name: "9b. Absent on a missing awkward name is a converged no-op"
+          ansible.builtin.assert:
+            that: quoted_missing is not changed
+            fail_msg: >-
+              absent on a nonexistent catalog named {{ cat_quoted }} was not
+              a no-op: {{ quoted_missing }}
+
+        - name: "9c. Create it"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_quoted }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            publishing_scope: private
+            state: present
+          register: quoted_created
+
+        - name: "9d. Re-run converges rather than creating a duplicate"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_quoted }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            publishing_scope: private
+            state: present
+          register: quoted_again
+
+        - name: "9e. Verdicts for the awkward name"
+          ansible.builtin.assert:
+            that:
+              - quoted_created is changed
+              - quoted_created.catalog.name == cat_quoted
+              - quoted_again is not changed
+            fail_msg: >-
+              apostrophe round-trip failed:
+              {{ quoted_created }} / {{ quoted_again }}
+
+        - name: "9f. Delete it again"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_quoted }}"
+            state: absent
+          register: quoted_deleted
+
+        - name: "9g. It really went"
+          ansible.builtin.assert:
+            that: quoted_deleted is changed
+            fail_msg: "the awkward-named catalog survived deletion"
+
+        - name: "10. Delete"
           vergeio.vergeos.catalog:
             name: "{{ cat }}"
             state: absent
           register: deleted
 
-        - name: "10. Delete again — converged"
+        - name: "11. Delete again — converged"
           vergeio.vergeos.catalog:
             name: "{{ cat }}"
             state: absent
@@ -155,10 +216,13 @@
             fail_msg: "unexpected deletion results"
 
       rescue:
-        - name: Cleanup after failure — the scratch catalog must not survive
+        - name: Cleanup after failure — no scratch catalog may survive
           vergeio.vergeos.catalog:
-            name: "{{ cat }}"
+            name: "{{ item }}"
             state: absent
+          loop:
+            - "{{ cat }}"
+            - "{{ cat_quoted }}"
           failed_when: false
 
         - name: Ladder failed
@@ -170,4 +234,6 @@
         msg: >-
           catalog ladder PASSED: create -> converge -> check-mode ->
           tenant grant -> converge -> enabled preserved -> no-repo
-          refusal -> delete x2, zero leftovers
+          refusal -> a name containing an apostrophe round-trips
+          (absent no-op, create, converge, delete) -> delete x2,
+          zero leftovers

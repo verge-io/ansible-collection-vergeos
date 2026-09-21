@@ -30,4 +30,12 @@ build_ignore:
   - __pycache__
   - '*.pyc'
   - .venv
-  - tests/
+  # No trailing slashes. build_ignore is fnmatch against the path relative to
+  # the collection root, so 'tests/' matches nothing and shipped the whole
+  # test tree (151 entries) until this was corrected.
+  - tests
+  # Gitignored, but build_ignore does not read .gitignore, so these shipped
+  # whenever the artifact was built from a working tree rather than a clean
+  # clone.
+  - .probe
+  - .pytest_cache

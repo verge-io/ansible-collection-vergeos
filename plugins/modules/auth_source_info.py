@@ -31,7 +31,12 @@ options:
     type: bool
     default: false
 notes:
-  - This module does not modify the system and always returns
+  # Folded scalar: C(changed: false) contains ": ", which YAML reads as a
+  # mapping key inside a plain scalar and rejects. Quoting it is not
+  # cosmetic -- unquoted, the whole DOCUMENTATION block fails to parse and
+  # ansible-doc reports the module as having no documentation at all.
+  - >-
+    This module does not modify the system and always returns
     C(changed: false).
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos

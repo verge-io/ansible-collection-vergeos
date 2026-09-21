@@ -199,3 +199,58 @@ class TestAbsent:
 
         client.catalogs.delete.assert_not_called()
         assert module.exit_json.call_args.kwargs['changed'] is False
+
+
+class TestLookupDelegatesEscapingToTheSDK:
+    """The filter must be built by pyvergeos, never by hand here.
+
+    This module used to assemble ``filter="name eq '%s'"`` after escaping
+    the name SQL-style (``'`` -> ``''``). VergeOS 26.1.8 rejects that form:
+    measured against a live system, ``name eq 'o''brien'`` returns
+    ValidationError "Invalid argument", while the SDK's own ``quote_value``
+    (backslash) form returns HTTP 200 with no match. The practical cost was
+    that a catalog whose name contained an apostrophe made every lookup
+    FAIL rather than report "not found" -- including the ``state: absent``
+    path, which should be a no-op.
+
+    These assertions pin the call shape rather than the resulting string,
+    because the correct escape is the SDK's business and has already
+    changed once upstream.
+    """
+
+    def test_lookup_passes_the_name_as_a_filter_kwarg(self):
+        client = make_client(catalogs=[make_catalog()])
+        module = make_module(base_params())
+
+        run(module, client)
+
+        assert client.catalogs.list.call_args.kwargs.get('name') == \
+            'Golden Images'
+
+    def test_lookup_does_not_hand_build_a_filter_string(self):
+        client = make_client(catalogs=[make_catalog()])
+        module = make_module(base_params())
+
+        run(module, client)
+
+        assert 'filter' not in client.catalogs.list.call_args.kwargs
+        assert client.catalogs.list.call_args.args == ()
+
+    @pytest.mark.parametrize('name', [
+        "O'Brien's Images",   # the character that actually broke it
+        'back\\slash',
+        'quote"dbl',
+        'semi;colon',
+        'per%cent',
+    ])
+    def test_awkward_names_are_passed_through_unmangled(self, name):
+        """No escaping, doubling or stripping happens on this side."""
+        client = make_client(catalogs=[])
+        module = make_module(base_params(name=name, state='absent'))
+
+        run(module, client)
+
+        assert client.catalogs.list.call_args.kwargs.get('name') == name
+        # and a missing catalog is still a converged no-op, not a failure
+        module.fail_json.assert_not_called()
+        assert module.exit_json.call_args.kwargs['changed'] is False

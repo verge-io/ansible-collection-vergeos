@@ -13,7 +13,12 @@ module: vnet_apply
 short_description: Apply pending firewall rule changes on a VergeOS network
 version_added: "2.1.0"
 description:
-  - Trigger a network's firewall rule refresh so previously staged rule
+  # Folded scalar: C(apply: false) contains ": ", which YAML reads as a
+  # mapping key inside a plain scalar and rejects. Unquoted, the whole
+  # DOCUMENTATION block fails to parse and ansible-doc reports the module
+  # as having no documentation at all.
+  - >-
+    Trigger a network's firewall rule refresh so previously staged rule
     changes take effect — the companion to batching several
     M(vergeio.vergeos.vnet_rule) tasks with C(apply: false).
   - Idempotent, the network reports whether a rule apply is pending
