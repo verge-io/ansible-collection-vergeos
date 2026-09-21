@@ -1,0 +1,222 @@
+---
+# Live ladder for the lb_stack role.
+#
+# Boots a real VM from the debian13-golden template and lets cloud-init
+# install haproxy, so it needs guest internet and takes several
+# minutes. Everything is zz-* and torn down in the always: block.
+#
+#   ansible-playbook verify-lb-stack.yml -e lb_template=debian13-golden
+- name: lb_stack live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    lb_vm: zz-lb
+    lb_template: debian13-golden
+    spec:
+      hostname: zz-lb
+      frontends:
+        - name: web
+          bind_port: 80
+          default_backend: app
+      backends:
+        - name: app
+          httpchk: true
+          servers:
+            - {name: a, host: 192.0.2.10, port: 8081}
+            - {name: b, host: 192.0.2.11, port: 8081}
+  tasks:
+    - name: "0. The golden template must exist"
+      vergeio.vergeos.vm_info:
+        insecure: true
+        name: "{{ lb_template }}"
+      register: tmpl
+      changed_when: false
+
+    - name: "0b. Refuse to run without it"
+      ansible.builtin.assert:
+        that: tmpl.vms | length == 1
+        fail_msg: >-
+          template '{{ lb_template }}' not found. Build one first with
+          the image_pipeline role, or pass -e lb_template=<name>.
+
+    # The role clones from a SNAPSHOT of the template, which is what
+    # image_pipeline leaves behind. If the template was built by hand,
+    # or its snapshot has since been pruned, there is nothing to clone.
+    # Ensure it here so the ladder states its own prerequisite instead
+    # of depending on undocumented lab state.
+    - name: "0c. The template needs a 'golden' snapshot to clone from"
+      vergeio.vergeos.vm_snapshot:
+        insecure: true
+        vm_name: "{{ lb_template }}"
+        operation: list
+      register: tmpl_snaps
+      changed_when: false
+
+    - name: "0d. Create it if it is missing"
+      vergeio.vergeos.vm_snapshot:
+        insecure: true
+        vm_name: "{{ lb_template }}"
+        snapshot_name: golden
+        operation: create
+      when: >-
+        'golden' not in (tmpl_snaps.snapshots | default([])
+                         | map(attribute='name') | list)
+
+    - name: "0e. Clean leftovers"
+      vergeio.vergeos.vm:
+        insecure: true
+        name: "{{ lb_vm }}"
+        state: absent
+
+    - name: "1. A spec with no frontends is refused"
+      block:
+        - name: "1a. Call with an empty spec"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.lb_stack
+          vars:
+            lb_stack_name: "{{ lb_vm }}"
+            lb_stack_template: "{{ lb_template }}"
+            lb_stack_spec: {}
+        - name: "1b. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "an empty spec was accepted"
+      rescue:
+        - name: "1c. Refused, as it should be"
+          ansible.builtin.debug:
+            msg: "empty spec refused"
+
+    - name: "1d. The refusal created nothing"
+      vergeio.vergeos.vm_info:
+        insecure: true
+        name: "{{ lb_vm }}"
+      register: after_refusal
+      changed_when: false
+
+    - name: "1e. Assert side-effect free"
+      ansible.builtin.assert:
+        that: after_refusal.vms | length == 0
+        fail_msg: "the refused run left a VM behind"
+
+    - name: "2. Deploy the LB"
+      block:
+        - name: "2a. Run the role"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.lb_stack
+          vars:
+            lb_stack_name: "{{ lb_vm }}"
+            lb_stack_template: "{{ lb_template }}"
+            lb_stack_network: External
+            lb_stack_spec: "{{ spec }}"
+
+        - name: "2b. It reported a clone"
+          ansible.builtin.assert:
+            that:
+              - lb_stack_result.cloned | bool
+              - lb_stack_result.frontends == [80]
+            fail_msg: "unexpected result: {{ lb_stack_result }}"
+
+        - name: "2c. The VM exists and is running"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ lb_vm }}"
+          register: lb_info
+          changed_when: false
+
+        - name: "2d. Assert running with the declared specs"
+          ansible.builtin.assert:
+            that:
+              - lb_info.vms | length == 1
+              - (lb_info.vms | first).running
+              - (lb_info.vms | first).cpu_cores == 1
+              - (lb_info.vms | first).ram == 1024
+            fail_msg: "LB VM wrong: {{ lb_info.vms }}"
+
+        - name: "2e. It has a NIC on the service network"
+          vergeio.vergeos.vm_nic_info:
+            insecure: true
+            vm: "{{ lb_vm }}"
+          register: lb_nics
+          changed_when: false
+
+        - name: "2f. Assert exactly one NIC"
+          ansible.builtin.assert:
+            that: lb_nics.nics | default([]) | length == 1
+            fail_msg: >-
+              expected one NIC, got
+              {{ lb_nics.nics | default([]) | map(attribute='name') | list }}
+
+        - name: "2g. cloud-init is enabled and carries the rendered config"
+          ansible.builtin.command:
+            argv: ["{{ ansible_playbook_python }}",
+                   "{{ playbook_dir }}/../../docs/repro/d1-d6/readback.py",
+                   "vms?fields=name,cloudinit_datasource&filter=name eq '{{ lb_vm }}'"]
+          register: ci_row
+          changed_when: false
+
+        - name: "2h. Assert the datasource"
+          ansible.builtin.assert:
+            that: >-
+              (ci_row.stdout | from_json | first).cloudinit_datasource
+              == 'nocloud'
+            fail_msg: "cloud-init not configured: {{ ci_row.stdout }}"
+
+        - name: "3. Adoption -- a second run must not clone again"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.lb_stack
+          vars:
+            lb_stack_name: "{{ lb_vm }}"
+            lb_stack_template: "{{ lb_template }}"
+            lb_stack_network: External
+            lb_stack_spec: "{{ spec }}"
+
+        - name: "3b. Reported as already existing"
+          ansible.builtin.assert:
+            that: not (lb_stack_result.cloned | bool)
+            fail_msg: "the second run cloned a second VM"
+
+        - name: "3c. Still exactly one VM by that name"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ lb_vm }}"
+          register: lb_again
+          changed_when: false
+
+        - name: "3d. Assert no duplicate"
+          ansible.builtin.assert:
+            that: lb_again.vms | length == 1
+            fail_msg: "a duplicate LB was created"
+
+      always:
+        - name: "4. Stop the LB"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ lb_vm }}"
+            state: stopped
+          failed_when: false
+
+        - name: "4b. Delete it"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ lb_vm }}"
+            state: absent
+
+        - name: "4c. Confirm zero leftovers"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ lb_vm }}"
+          register: leftover
+          changed_when: false
+
+        - name: "4d. Assert clean"
+          ansible.builtin.assert:
+            that: leftover.vms | length == 0
+            fail_msg: "LB VM left behind"
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          lb_stack ladder PASSED: an empty spec is refused side-effect
+          free -> the LB clones from the golden template, boots with the
+          declared specs, gets one NIC and a nocloud cloud-init document
+          -> a second run adopts rather than cloning again -> zero
+          leftovers

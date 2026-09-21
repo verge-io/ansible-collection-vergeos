@@ -1,0 +1,66 @@
+---
+argument_specs:
+  main:
+    short_description: An haproxy load-balancer VM, deployed as code
+    description:
+      - Clones a golden template, renders haproxy (and optionally keepalived)
+        configuration into a cloud-init document from a declarative spec,
+        attaches a NIC and boots.
+      - VergeOS has no NSX-ALB-style fabric load balancer. This is the
+        mitigation and it is labelled honestly - you get a VM running
+        haproxy, and you operate it. It does not become a platform service
+        because Ansible created it.
+      - Run the role twice, with different names and C(ha.state) MASTER and
+        BACKUP, for an active/backup VIP pair.
+    author:
+      - VergeIO (@vergeio)
+    options:
+      lb_stack_host:
+        description: VergeOS hostname or IP. Defaults to C(VERGEOS_HOST).
+        type: str
+        required: true
+      lb_stack_username:
+        description: Username. Defaults to C(VERGEOS_USERNAME).
+        type: str
+      lb_stack_password:
+        description: Password. Defaults to C(VERGEOS_PASSWORD).
+        type: str
+      lb_stack_insecure:
+        description: Skip SSL validation. Defaults to C(VERGEOS_INSECURE).
+        type: bool
+      lb_stack_name:
+        description: Name of the load-balancer VM.
+        type: str
+        required: true
+      lb_stack_template:
+        description:
+          - Golden template VM to clone, as produced by C(image_pipeline).
+        type: str
+        required: true
+      lb_stack_snapshot:
+        description: Snapshot of the template to clone from.
+        type: str
+        default: golden
+      lb_stack_network:
+        description: Network the load balancer's NIC attaches to.
+        type: str
+        default: External
+      lb_stack_cpu_cores:
+        description: CPU cores for the LB VM.
+        type: int
+        default: 1
+      lb_stack_ram_mb:
+        description: RAM in MB for the LB VM.
+        type: int
+        default: 1024
+      lb_stack_power:
+        description: Boot the VM after deploying it.
+        type: bool
+        default: true
+      lb_stack_spec:
+        description:
+          - The declarative spec - C(hostname), C(frontends), C(backends),
+            and an optional C(ha) block for a keepalived VIP. Rendered to
+            haproxy.cfg, keepalived.conf and cloud-init user-data.
+        type: dict
+        required: true

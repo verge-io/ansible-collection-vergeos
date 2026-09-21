@@ -1,0 +1,108 @@
+---
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that: k3s_node_host | length > 0
+    fail_msg: "k3s_node needs k3s_node_host (or VERGEOS_HOST)."
+    quiet: true
+
+- name: Preflight -- name, template and a usable spec
+  ansible.builtin.assert:
+    that:
+      - k3s_node_name | length > 0
+      - k3s_node_template | length > 0
+      - k3s_node_spec.role | default('') in ['server', 'agent']
+    fail_msg: >-
+      k3s_node needs k3s_node_name, k3s_node_template, and a
+      k3s_node_spec whose role is 'server' or 'agent'.
+    quiet: true
+
+- name: Preflight -- an agent needs somewhere to join
+  ansible.builtin.assert:
+    that: k3s_node_spec.server_url | default('') | length > 0
+    fail_msg: >-
+      an agent needs k3s_node_spec.server_url pointing at a server.
+      Without it the node boots, installs k3s, and joins nothing.
+    quiet: true
+  when: k3s_node_spec.role | default('') == 'agent'
+
+# Rendered before anything is created. A spec that cannot render
+# should not leave a half-built VM behind.
+- name: Render the cloud-init document from the spec
+  ansible.builtin.command:
+    argv: ["{{ ansible_playbook_python }}",
+           "{{ role_path }}/files/k3s_render.py", '--spec', '-']
+    stdin: "{{ k3s_node_spec | to_json }}"
+  register: k3s_node_userdata
+  changed_when: false
+  no_log: true
+
+- name: Does the node VM already exist?
+  vergeio.vergeos.vm_info:
+    host: "{{ k3s_node_host }}"
+    username: "{{ k3s_node_username }}"
+    password: "{{ k3s_node_password }}"
+    insecure: "{{ k3s_node_insecure }}"
+    name: "{{ k3s_node_name }}"
+  register: k3s_node_existing
+  changed_when: false
+
+- name: Clone the golden template
+  vergeio.vergeos.vm_clone:
+    host: "{{ k3s_node_host }}"
+    username: "{{ k3s_node_username }}"
+    password: "{{ k3s_node_password }}"
+    insecure: "{{ k3s_node_insecure }}"
+    name: "{{ k3s_node_name }}"
+    source: "{{ k3s_node_template }}"
+    snapshot: "{{ k3s_node_snapshot }}"
+  when: k3s_node_existing.vms | default([]) | length == 0
+  register: k3s_node_cloned
+
+# no_log because the spec carries the cluster token.
+- name: Attach the rendered cloud-init configuration
+  vergeio.vergeos.cloud_init:
+    host: "{{ k3s_node_host }}"
+    username: "{{ k3s_node_username }}"
+    password: "{{ k3s_node_password }}"
+    insecure: "{{ k3s_node_insecure }}"
+    vm_name: "{{ k3s_node_name }}"
+    datasource: nocloud
+    user_data: "{{ k3s_node_userdata.stdout }}"
+  no_log: true
+
+- name: NIC on the cluster network
+  vergeio.vergeos.nic:
+    host: "{{ k3s_node_host }}"
+    username: "{{ k3s_node_username }}"
+    password: "{{ k3s_node_password }}"
+    insecure: "{{ k3s_node_insecure }}"
+    vm_name: "{{ k3s_node_name }}"
+    network: "{{ k3s_node_network }}"
+    state: present
+
+- name: Specs and power
+  vergeio.vergeos.vm:
+    host: "{{ k3s_node_host }}"
+    username: "{{ k3s_node_username }}"
+    password: "{{ k3s_node_password }}"
+    insecure: "{{ k3s_node_insecure }}"
+    name: "{{ k3s_node_name }}"
+    cpu_cores: "{{ k3s_node_cpu_cores }}"
+    ram: "{{ k3s_node_ram_mb }}"
+    state: running
+
+- name: Deployment summary
+  ansible.builtin.set_fact:
+    k3s_node_result:
+      vm: "{{ k3s_node_name }}"
+      cloned: "{{ k3s_node_cloned is not skipped }}"
+      role: "{{ k3s_node_spec.role }}"
+      network: "{{ k3s_node_network }}"
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: >-
+      k3s {{ k3s_node_spec.role }} '{{ k3s_node_name }}'
+      {{ 'cloned from ' ~ k3s_node_template if k3s_node_result.cloned
+         else 'already existed' }} on {{ k3s_node_network }}.
+      The k3s install runs in-guest and needs internet access.
