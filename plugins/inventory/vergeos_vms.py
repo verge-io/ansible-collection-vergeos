@@ -123,6 +123,7 @@ sites:
     password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
 
 # Multi-site configuration
+---
 plugin: vergeio.vergeos.vergeos_vms
 sites:
   - name: denver
@@ -135,6 +136,7 @@ sites:
     password: "{{ lookup('env', 'CHICAGO_PASS') }}"
 
 # Full configuration with caching and filtering
+---
 plugin: vergeio.vergeos.vergeos_vms
 cache: true
 cache_plugin: jsonfile

@@ -39,7 +39,7 @@
     - name: Generate timestamp for snapshot name
       ansible.builtin.set_fact:
         snapshot_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
-      run_once: true
+      run_once: true # noqa: run-once - intentional: one timestamp shared across all hosts
       delegate_to: localhost
 
     - name: Create snapshot of VM
@@ -58,7 +58,7 @@
     - name: Display snapshot result
       ansible.builtin.debug:
         msg: "Created snapshot '{{ snapshot_prefix }}-{{ snapshot_timestamp }}' for VM '{{ vergeos_name }}' at {{ vergeos_site }}"
-      when: snapshot_result.changed | default(false)
+      when: snapshot_result is changed # noqa: no-handler - reporting, not a config change
 
     - name: Display snapshot error
       ansible.builtin.debug:
