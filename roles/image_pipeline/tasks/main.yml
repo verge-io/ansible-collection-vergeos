@@ -1,0 +1,163 @@
+---
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that: image_pipeline_host | length > 0
+    fail_msg: "image_pipeline needs image_pipeline_host (or VERGEOS_HOST)."
+    quiet: true
+
+- name: Preflight -- a source image and a template name
+  ansible.builtin.assert:
+    that:
+      - image_pipeline_src | length > 0
+      - image_pipeline_template_name | length > 0
+    fail_msg: >-
+      image_pipeline needs image_pipeline_src and
+      image_pipeline_template_name.
+    quiet: true
+
+- name: Preflight -- the source image exists
+  ansible.builtin.stat:
+    path: "{{ image_pipeline_src }}"
+  register: image_pipeline_srcstat
+  failed_when: not image_pipeline_srcstat.stat.exists
+
+- name: Is the template already present?
+  vergeio.vergeos.vm_info:
+    host: "{{ image_pipeline_host }}"
+    username: "{{ image_pipeline_username }}"
+    password: "{{ image_pipeline_password }}"
+    insecure: "{{ image_pipeline_insecure }}"
+    name: "{{ image_pipeline_template_name }}"
+  register: image_pipeline_existing
+  changed_when: false
+
+# An existing template is never rebuilt. Somebody's VMs were cloned
+# from it; silently replacing it underneath them would be the worst
+# kind of helpful. Version by name instead.
+- name: Build, upload and import
+  when: image_pipeline_existing.vms | default([]) | length == 0
+  block:
+    - name: Read the image's virtual size
+      ansible.builtin.command:
+        argv: [qemu-img, info, --output=json, "{{ image_pipeline_src }}"]
+      register: image_pipeline_qinfo
+      changed_when: false
+
+    - name: Working directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: image-pipeline
+      register: image_pipeline_work
+
+    - name: Stage the disk under the template name
+      ansible.builtin.command:
+        argv: [cp, --reflink=auto, "{{ image_pipeline_src }}",
+               "{{ image_pipeline_work.path }}/{{ image_pipeline_template_name }}.qcow2"]
+      changed_when: true
+
+    # No NICs in the OVF on purpose. A golden template that carries a
+    # network binding drags it into every clone.
+    - name: Render the OVF
+      ansible.builtin.template:
+        src: golden.ovf.j2
+        dest: "{{ image_pipeline_work.path }}/{{ image_pipeline_template_name }}.ovf"
+        mode: "0644"
+      vars:
+        template_name: "{{ image_pipeline_template_name }}"
+        template_cores: "{{ image_pipeline_cores }}"
+        template_ram_mb: "{{ image_pipeline_ram_mb }}"
+        template_os_family: "{{ image_pipeline_os_family }}"
+        _image_bytes: "{{ image_pipeline_srcstat.stat.size }}"
+        _image_virtual_bytes: >-
+          {{ (image_pipeline_qinfo.stdout | from_json)['virtual-size'] }}
+
+    # OVF first, then the disk. The order is part of the OVA format,
+    # not a preference.
+    - name: Pack the OVA
+      ansible.builtin.command:
+        argv: [tar, -C, "{{ image_pipeline_work.path }}", -cf,
+               "{{ image_pipeline_work.path }}/{{ image_pipeline_media_name }}",
+               "{{ image_pipeline_template_name }}.ovf",
+               "{{ image_pipeline_template_name }}.qcow2"]
+      changed_when: true
+
+    - name: Upload to the media catalog
+      vergeio.vergeos.file:
+        host: "{{ image_pipeline_host }}"
+        username: "{{ image_pipeline_username }}"
+        password: "{{ image_pipeline_password }}"
+        insecure: "{{ image_pipeline_insecure }}"
+        name: "{{ image_pipeline_media_name }}"
+        src: "{{ image_pipeline_work.path }}/{{ image_pipeline_media_name }}"
+        state: present
+
+    - name: Import as the template VM
+      vergeio.vergeos.vm_import:
+        host: "{{ image_pipeline_host }}"
+        username: "{{ image_pipeline_username }}"
+        password: "{{ image_pipeline_password }}"
+        insecure: "{{ image_pipeline_insecure }}"
+        name: "{{ image_pipeline_template_name }}"
+        ova_file_name: "{{ image_pipeline_media_name }}"
+        preserve_drive_format: true
+        poll_timeout: "{{ image_pipeline_import_timeout }}"
+        state: present
+
+    - name: Enforce the template specs
+      vergeio.vergeos.vm:
+        host: "{{ image_pipeline_host }}"
+        username: "{{ image_pipeline_username }}"
+        password: "{{ image_pipeline_password }}"
+        insecure: "{{ image_pipeline_insecure }}"
+        name: "{{ image_pipeline_template_name }}"
+        cpu_cores: "{{ image_pipeline_cores }}"
+        ram: "{{ image_pipeline_ram_mb }}"
+        os_family: "{{ image_pipeline_os_family }}"
+        state: stopped
+
+  always:
+    - name: Remove the working directory
+      ansible.builtin.file:
+        path: "{{ image_pipeline_work.path }}"
+        state: absent
+      when: image_pipeline_work.path is defined
+
+- name: Existing snapshots of the template
+  vergeio.vergeos.vm_snapshot:
+    host: "{{ image_pipeline_host }}"
+    username: "{{ image_pipeline_username }}"
+    password: "{{ image_pipeline_password }}"
+    insecure: "{{ image_pipeline_insecure }}"
+    vm_name: "{{ image_pipeline_template_name }}"
+    operation: list
+  register: image_pipeline_snaps
+  changed_when: false
+
+- name: Ensure the golden snapshot
+  vergeio.vergeos.vm_snapshot:
+    host: "{{ image_pipeline_host }}"
+    username: "{{ image_pipeline_username }}"
+    password: "{{ image_pipeline_password }}"
+    insecure: "{{ image_pipeline_insecure }}"
+    vm_name: "{{ image_pipeline_template_name }}"
+    snapshot_name: "{{ image_pipeline_snapshot_name }}"
+    operation: create
+  when: >-
+    image_pipeline_snapshot_name not in
+    (image_pipeline_snaps.snapshots | default([]) | map(attribute='name') | list)
+
+- name: Pipeline result
+  ansible.builtin.set_fact:
+    image_pipeline_result:
+      template: "{{ image_pipeline_template_name }}"
+      media: "{{ image_pipeline_media_name }}"
+      created: "{{ image_pipeline_existing.vms | default([]) | length == 0 }}"
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: >-
+      template '{{ image_pipeline_template_name }}'
+      {{ 'imported from ' ~ image_pipeline_src
+         if image_pipeline_result.created
+         else 'already present -- zero-change run' }};
+      golden snapshot '{{ image_pipeline_snapshot_name }}' ensured.
