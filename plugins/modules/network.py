@@ -221,11 +221,15 @@ def update_network(module, client, network):
     changed = False
     update_data = {}
 
-    # Map our friendly parameter names to API fields
+    # Map our friendly parameter names to API fields. Unlike the create
+    # path (where the SDK translates ip_address), updates send raw API
+    # fields: the router IP field is 'ipaddress'. 'network' (CIDR) only
+    # takes effect once the parameter exists in the argument spec.
     param_mapping = {
         'description': 'description',
         'network_type': 'type',
-        'ip_address': 'ip_address',
+        'ip_address': 'ipaddress',
+        'network': 'network',
         'subnet_mask': 'subnet_mask',
         'gateway': 'gateway',
         'dhcp_enabled': 'dhcp_enabled',
