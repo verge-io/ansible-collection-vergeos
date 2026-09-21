@@ -30,7 +30,7 @@
     label: "{{ rule.name }}"
   register: network_policy_staged
 
-- name: "List existing rules on {{ policy.network }} (exact mode)"
+- name: "List existing rules (exact mode) on {{ policy.network }}"
   vergeio.vergeos.vnet_rule_info:
     host: "{{ network_policy_host }}"
     username: "{{ network_policy_username }}"
@@ -45,7 +45,7 @@
 # platform's own, deleting one is not a policy decision the operator
 # made, and an "exact" policy that silently removed them would break
 # the network it was meant to secure.
-- name: "Purge unmanaged rules on {{ policy.network }} (exact mode)"
+- name: "Purge unmanaged rules (exact mode) on {{ policy.network }}"
   vergeio.vergeos.vnet_rule:
     host: "{{ network_policy_host }}"
     username: "{{ network_policy_username }}"
