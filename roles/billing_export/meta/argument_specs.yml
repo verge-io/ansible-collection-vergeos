@@ -1,0 +1,42 @@
+---
+argument_specs:
+  main:
+    short_description: Export VergeOS usage to CSV for chargeback
+    description:
+      - Reads the platform's own billing period records (capacity and usage
+        per period, per storage tier) and a per-tenant allocation snapshot
+        summed from each tenant's node and storage sub-resources.
+      - Writes two date-stamped CSVs per run. Read-only against the platform;
+        the only thing it writes to is the controller's filesystem.
+    author:
+      - VergeIO (@vergeio)
+    options:
+      billing_export_host:
+        description: VergeOS hostname or IP. Defaults to C(VERGEOS_HOST).
+        type: str
+      billing_export_username:
+        description: Username. Defaults to C(VERGEOS_USERNAME).
+        type: str
+      billing_export_password:
+        description: Password. Defaults to C(VERGEOS_PASSWORD).
+        type: str
+      billing_export_insecure:
+        description: Skip SSL validation. Defaults to C(VERGEOS_INSECURE).
+        type: bool
+      billing_export_dest:
+        description:
+          - Output directory, created if it does not exist. Files are written
+            as C(vergeos-billing-system-YYYYMMDD.csv) and
+            C(vergeos-billing-tenants-YYYYMMDD.csv).
+        type: str
+        required: true
+      billing_export_periods:
+        description: How many of the most recent system billing periods to include.
+        type: int
+        default: 12
+      billing_export_fixture:
+        description:
+          - Path to a saved JSON document with C(billing) and C(tenants).
+            Builds the CSVs offline instead of reading the live API.
+        type: str
+        default: ""

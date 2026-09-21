@@ -1,0 +1,97 @@
+---
+# Live ladder for the billing_export role.
+# Read-only against the platform. Writes CSVs to a scratch directory on
+# the controller and removes it at the end.
+- name: billing_export live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    dest: /tmp/zz-billing-ladder
+  tasks:
+    - name: "0. Clean scratch output"
+      ansible.builtin.file:
+        path: "{{ dest }}"
+        state: absent
+
+    - name: "1. Export against the live system"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.billing_export
+      vars:
+        billing_export_dest: "{{ dest }}"
+
+    - name: "1b. The summary has the shape callers depend on"
+      ansible.builtin.assert:
+        that:
+          - billing_export_result.files | length == 2
+          - billing_export_result.system_rows is defined
+          - billing_export_result.tenant_rows is defined
+        fail_msg: "unexpected summary: {{ billing_export_result }}"
+
+    - name: "2. Both CSVs really exist on disk"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ billing_export_result.files }}"
+      register: csvs
+
+    - name: "2b. Non-empty, and named as documented"
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.size > 0
+          - "'vergeos-billing-' in item.stat.path"
+        fail_msg: "missing or empty CSV: {{ item.stat.path | default(item) }}"
+      loop: "{{ csvs.results }}"
+      loop_control:
+        label: "{{ item.stat.path | default('?') }}"
+
+    - name: "3. Each CSV has a header row"
+      ansible.builtin.command:
+        cmd: "head -1 {{ item }}"
+      loop: "{{ billing_export_result.files }}"
+      register: headers
+      changed_when: false
+
+    - name: "3b. Header looks like a header"
+      ansible.builtin.assert:
+        that: item.stdout | length > 0 and ',' in item.stdout
+        fail_msg: "no usable header: {{ item.stdout }}"
+      loop: "{{ headers.results }}"
+      loop_control:
+        label: "{{ item.item | basename }}"
+
+    - name: "4. Report what was exported"
+      ansible.builtin.debug:
+        msg: >-
+          live export: {{ billing_export_result.system_rows }} system
+          period(s), {{ billing_export_result.tenant_rows }} tenant row(s)
+
+    - name: "5. Re-running overwrites rather than duplicating"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.billing_export
+      vars:
+        billing_export_dest: "{{ dest }}"
+
+    - name: "5b. Still exactly two files in the directory"
+      ansible.builtin.find:
+        paths: "{{ dest }}"
+        patterns: "*.csv"
+      register: found
+
+    - name: "5c. Assert no duplicates accumulated"
+      ansible.builtin.assert:
+        that: found.files | length == 2
+        fail_msg: >-
+          expected 2 CSVs after two runs on the same day, found
+          {{ found.files | length }}
+
+    - name: "6. Teardown scratch output"
+      ansible.builtin.file:
+        path: "{{ dest }}"
+        state: absent
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          billing_export ladder PASSED: live export -> two non-empty
+          date-stamped CSVs with headers -> re-run overwrites rather
+          than duplicating -> scratch removed
