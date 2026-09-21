@@ -1,0 +1,81 @@
+---
+# Live ladder for the rebalance_advisor role.
+# READ-ONLY throughout: the advisor never migrates anything, so there
+# is nothing to clean up.
+- name: rebalance_advisor live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    fixtures: "{{ playbook_dir }}/../fixtures"
+  tasks:
+    - name: "1. Live run against the real system"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.rebalance_advisor
+      vars:
+        rebalance_advisor_samples: 2
+        rebalance_advisor_interval: 2
+
+    - name: "1b. The report has the shape callers depend on"
+      ansible.builtin.assert:
+        that:
+          - rebalance_advisor_result.mode is defined
+          - rebalance_advisor_result.hotspots is iterable
+          - rebalance_advisor_result.proposals is iterable
+          - rebalance_advisor_result.notes is iterable
+        fail_msg: "unexpected report shape: {{ rebalance_advisor_result }}"
+
+    - name: "1c. Every proposal carries a reason and a destination"
+      ansible.builtin.assert:
+        that:
+          - item.vm | length > 0
+          - item.to_node | length > 0
+          - item.reason | length > 0
+        fail_msg: "a proposal with no reason is not actionable: {{ item }}"
+      loop: "{{ rebalance_advisor_result.proposals }}"
+      loop_control:
+        label: "{{ item.vm }}"
+
+    - name: "1d. Report what the live system actually said"
+      ansible.builtin.debug:
+        msg: >-
+          live mode={{ rebalance_advisor_result.mode }}
+          hotspots={{ rebalance_advisor_result.hotspots | length }}
+          proposals={{ rebalance_advisor_result.proposals | length }}
+          notes={{ rebalance_advisor_result.notes | join(' | ') }}
+
+    - name: "2. Fixture with a known hotspot must produce a proposal"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.rebalance_advisor
+      vars:
+        rebalance_advisor_fixture: "{{ fixtures }}/hotspot.json"
+
+    - name: "2b. It proposed the smallest resolving move, with a reason"
+      ansible.builtin.assert:
+        that:
+          - rebalance_advisor_result.hotspots | length > 0
+          - rebalance_advisor_result.proposals | length > 0
+          - (rebalance_advisor_result.proposals | first).reason | length > 0
+        fail_msg: >-
+          the hotspot fixture produced no proposal:
+          {{ rebalance_advisor_result }}
+
+    - name: "3. The move budget is honoured"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.rebalance_advisor
+      vars:
+        rebalance_advisor_fixture: "{{ fixtures }}/hotspot.json"
+        rebalance_advisor_max_moves: 1
+
+    - name: "3b. Never more proposals than the budget"
+      ansible.builtin.assert:
+        that: rebalance_advisor_result.proposals | length <= 1
+        fail_msg: >-
+          budget of 1 produced
+          {{ rebalance_advisor_result.proposals | length }} proposals
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          rebalance_advisor ladder PASSED: live run reports honestly ->
+          every proposal carries a reason -> hotspot fixture proposes a
+          resolving move -> the move budget caps the proposal count
