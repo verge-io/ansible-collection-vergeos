@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  author: VergeIO
+  description: >-
+    Evacuate a VergeOS node into maintenance mode, or bring it back.
+    Read-only preflight by default; the drain itself requires explicit
+    consent and passes an N-1 capacity gate first, because the platform
+    will accept a drain it cannot finish.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.16"
+  galaxy_tags:
+    - vergeos
+    - maintenance
+    - capacity
+dependencies: []

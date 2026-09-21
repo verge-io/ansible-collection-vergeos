@@ -1,0 +1,33 @@
+---
+# Bringing a node back needs no capacity gate and no consent gate: it
+# adds capacity rather than removing it, and it is how you recover from
+# a drain that went wrong.
+- name: Return the node to service
+  vergeio.vergeos.node_maintenance:
+    host: "{{ node_drain_host }}"
+    username: "{{ node_drain_username }}"
+    password: "{{ node_drain_password }}"
+    insecure: "{{ node_drain_insecure }}"
+    name: "{{ node_drain_node }}"
+    state: active
+  register: node_drain_restore
+
+- name: Confirm it is out of maintenance
+  vergeio.vergeos.node_info:
+    host: "{{ node_drain_host }}"
+    username: "{{ node_drain_username }}"
+    password: "{{ node_drain_password }}"
+    insecure: "{{ node_drain_insecure }}"
+    name: "{{ node_drain_node }}"
+  register: node_drain_after
+  until: not (node_drain_after.nodes | first).maintenance
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Restored
+  ansible.builtin.debug:
+    msg: >-
+      '{{ node_drain_node }}' is back in service
+      (online={{ (node_drain_after.nodes | first).online }},
+      maintenance={{ (node_drain_after.nodes | first).maintenance }}).

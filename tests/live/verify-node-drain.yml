@@ -1,0 +1,146 @@
+---
+# Live ladder for the node_drain role.
+#
+# This one MOVES REAL STATE: it puts a node into maintenance mode.
+# It is written to be safe on this lab because it refuses to run unless
+# the target node has NO running VMs, so the evacuation set is empty and
+# nothing migrates. The node is always returned to service in the
+# always: block, including on failure.
+#
+#   ansible-playbook verify-node-drain.yml -e drain_target=node2
+- name: node_drain live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    drain_target: node2
+  tasks:
+    - name: "0. Read current VM placement"
+      vergeio.vergeos.vm_info:
+        insecure: true
+      register: before
+      changed_when: false
+
+    - name: "0b. Refuse to run this ladder against a busy node"
+      ansible.builtin.assert:
+        that: >-
+          before.vms | selectattr('running')
+          | selectattr('node_name', 'equalto', drain_target)
+          | list | length == 0
+        fail_msg: >-
+          '{{ drain_target }}' is running VMs
+          ({{ before.vms | selectattr('running')
+              | selectattr('node_name', 'equalto', drain_target)
+              | map(attribute='name') | list }}).
+          This ladder only drains an already-empty node, so it never
+          migrates a live workload. Pass -e drain_target=<empty node>.
+
+    - name: "1. Preflight only -- confirm defaults to no, nothing happens"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.node_drain
+      vars:
+        node_drain_node: "{{ drain_target }}"
+
+    - name: "1b. The capacity verdict was produced"
+      ansible.builtin.assert:
+        that:
+          - node_drain_check.node == drain_target
+          - node_drain_check.fits is defined
+          - node_drain_check.reason | length > 0
+        fail_msg: >-
+          no usable capacity verdict:
+          {{ node_drain_check | default('<unset>') }}
+
+    - name: "1c. Read the node back after the preflight"
+      vergeio.vergeos.node_info:
+        insecure: true
+        name: "{{ drain_target }}"
+      register: after_preflight
+      changed_when: false
+
+    - name: "1d. Assert the preflight changed nothing"
+      ansible.builtin.assert:
+        that: not (after_preflight.nodes | first).maintenance
+        fail_msg: "preflight drained the node; it must be read-only"
+
+    - name: "2. An unknown node is refused before anything happens"
+      block:
+        - name: "2a. Ask to drain a node that does not exist"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.node_drain
+          vars:
+            node_drain_node: zz-no-such-node
+        - name: "2b. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "a nonexistent node was accepted"
+      rescue:
+        - name: "2c. Refused, as it should be"
+          ansible.builtin.debug:
+            msg: "unknown node refused"
+
+    - name: "3. Real drain, then restore"
+      block:
+        - name: "3a. Drain it for real"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.node_drain
+          vars:
+            node_drain_node: "{{ drain_target }}"
+            node_drain_confirm: "yes"
+
+        - name: "3b. Read the node back"
+          vergeio.vergeos.node_info:
+            insecure: true
+            name: "{{ drain_target }}"
+          register: drained
+          changed_when: false
+
+        - name: "3c. Assert it reports maintenance"
+          ansible.builtin.assert:
+            that: (drained.nodes | first).maintenance
+            fail_msg: >-
+              drain reported success but the node is not in maintenance
+
+        - name: "3d. Read placement during the drain"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: during
+          changed_when: false
+
+        - name: "3e. Assert zero running VMs remain on it"
+          ansible.builtin.assert:
+            that: >-
+              during.vms | selectattr('running')
+              | selectattr('node_name', 'equalto', drain_target)
+              | list | length == 0
+            fail_msg: "VMs still running on the drained node"
+
+      always:
+        - name: "4. Return the node to service, even on failure"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.node_drain
+          vars:
+            node_drain_node: "{{ drain_target }}"
+            node_drain_state: active
+
+        - name: "4b. Read the node back after restore"
+          vergeio.vergeos.node_info:
+            insecure: true
+            name: "{{ drain_target }}"
+          register: restored
+          changed_when: false
+
+        - name: "4c. Assert it is back in service"
+          ansible.builtin.assert:
+            that:
+              - not (restored.nodes | first).maintenance
+              - (restored.nodes | first).online
+            fail_msg: >-
+              node was NOT returned to service:
+              {{ restored.nodes | first }}
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          node_drain ladder PASSED: read-only preflight produces a
+          capacity verdict and changes nothing -> unknown node refused ->
+          real drain enters maintenance with zero VMs left behind ->
+          node returned to service
