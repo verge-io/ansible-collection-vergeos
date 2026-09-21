@@ -31,8 +31,8 @@ options:
   datasource:
     description:
       - The cloud-init datasource type.
-      - Set to C(nocloud) to enable cloud-init.
-      - Set to empty string or omit to disable cloud-init.
+      - Set to C(nocloud) to enable cloud-init (default with I(state=present)).
+      - Use I(state=absent) to disable cloud-init and remove its files.
     type: str
     choices: [ nocloud, '' ]
   user_data:
@@ -57,7 +57,9 @@ options:
     description:
       - Convenience parameter to set hostname in both user-data and meta-data.
       - Generates standard user-data and meta-data if not explicitly provided.
-      - Mutually exclusive with explicit I(user_data) or I(meta_data).
+      - May be combined with I(user_data) or I(meta_data); explicit content
+        takes precedence and I(hostname) only fills in whichever file was
+        not supplied.
     type: str
   network:
     description:
@@ -375,13 +377,20 @@ def remove_cloudinit(client, module):
 
     # Get VM
     vm = get_vm(client, module, vm_name, vm_id_param)
-    vm_key = str(dict(vm).get('$key'))
+    vm_dict = dict(vm)
+    vm_key = str(vm_dict.get('$key'))
 
-    # Disable cloud-init datasource
-    enable_cloudinit_datasource(client, module, vm_key, '')
+    # Disable cloud-init datasource. VergeOS rejects '' as a datasource
+    # value; the supported disable value is 'none'.
+    changed = False
+    current_datasource = str(vm_dict.get('cloudinit_datasource') or 'none')
+    if current_datasource.lower() != 'none':
+        enable_cloudinit_datasource(client, module, vm_key, 'none')
+        changed = True
 
     # Delete cloud-init files
-    changed = delete_cloudinit_files(client, module, vm_key)
+    files_deleted = delete_cloudinit_files(client, module, vm_key)
+    changed = changed or files_deleted
 
     module.exit_json(
         changed=changed,
@@ -422,8 +431,6 @@ def main():
         required_one_of=[('vm_name', 'vm_id')],
         mutually_exclusive=[
             ('vm_name', 'vm_id'),
-            ('hostname', 'user_data'),
-            ('hostname', 'meta_data'),
             ('network', 'network_config'),
         ],
     )
