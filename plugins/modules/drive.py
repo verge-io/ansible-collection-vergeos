@@ -198,9 +198,15 @@ def update_drive(module, client, drive):
             update_data['interface'] = target_interface
             changed = True
 
-    # Check tier
+    # Check tier.
+    # The live row carries 'preferred_tier' as a STRING; there is no 'tier'
+    # key on it, so comparing drive_dict['tier'] is always None != <int> and
+    # the module reports changed forever. Compare the real field, but keep
+    # sending the friendly name 'tier' -- pyvergeos >= 1.2.7 translates it to
+    # preferred_tier inside DriveManager.update(), and that translation is
+    # only reached for kwargs passed to save() (see the save call below).
     if module.params.get('tier') is not None:
-        if drive_dict.get('tier') != module.params['tier']:
+        if str(drive_dict.get('preferred_tier') or '') != str(module.params['tier']):
             update_data['tier'] = module.params['tier']
             changed = True
 
@@ -217,11 +223,15 @@ def update_drive(module, client, drive):
         drive_dict.update(update_data)
         return True, drive_dict
 
-    # Update drive attributes and save
-    for key, value in update_data.items():
-        setattr(drive, key, value)
-    drive.save()
-    return True, dict(drive)
+    # Pass the diff as kwargs, not via setattr.
+    # pyvergeos >= 1.2.7 sends attribute-set (dirty) fields as a RAW PUT and
+    # routes only kwargs through the manager's typed update(). The tier ->
+    # preferred_tier translation lives in that typed update(), so a dirty
+    # 'tier' goes out untranslated and the platform discards it silently
+    # (HTTP 200, no change). Measured both ways on 26.1.8:
+    #   setattr + save()      -> PUT {'tier': 1}            tier unchanged
+    #   save(**{'tier': 1})   -> PUT {'preferred_tier': '1'} tier applied
+    return True, dict(drive.save(**update_data))
 
 
 def delete_drive(module, client, drive):

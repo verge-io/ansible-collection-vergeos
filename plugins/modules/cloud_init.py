@@ -34,7 +34,7 @@ options:
       - Set to C(nocloud) to enable cloud-init.
       - Set to empty string or omit to disable cloud-init.
     type: str
-    choices: [ nocloud, '' ]
+    choices: [ nocloud, none, '' ]
   user_data:
     description:
       - Contents of the /user-data cloud-init file.
@@ -205,11 +205,23 @@ def get_vm(client, module, vm_name=None, vm_id=None):
 
 
 def enable_cloudinit_datasource(client, module, vm_key, datasource):
-    """Enable cloud-init datasource on the VM."""
+    """Set the VM's cloud-init datasource.
+
+    Goes through the SDK model rather than a raw _request. The platform
+    rejects an empty datasource outright --
+    ``value '' is not in list for field 'cloudinit_datasource'`` -- and the
+    value that disables cloud-init is ``'none'``. pyvergeos >= 1.2.7
+    normalises '' to 'none' on a VM write, but only on the model path; a
+    raw client._request bypasses that and fails. Measured on 26.1.8:
+
+        client._request PUT {'cloudinit_datasource': ''}  -> ValidationError
+        vm.save(cloudinit_datasource='')                  -> PUT {... 'none'}
+    """
     if module.check_mode:
         return True
 
-    client._request('PUT', f'vms/{vm_key}', json_data={'cloudinit_datasource': datasource})
+    vm = client.vms.get(int(vm_key))
+    vm.save(cloudinit_datasource=datasource)
     return True
 
 
@@ -377,8 +389,10 @@ def remove_cloudinit(client, module):
     vm = get_vm(client, module, vm_name, vm_id_param)
     vm_key = str(dict(vm).get('$key'))
 
-    # Disable cloud-init datasource
-    enable_cloudinit_datasource(client, module, vm_key, '')
+    # Disable cloud-init. 'none' is the platform's disable value; '' is
+    # rejected. pyvergeos >= 1.2.7 would normalise '' for us, but saying it
+    # outright does not depend on that staying true.
+    enable_cloudinit_datasource(client, module, vm_key, 'none')
 
     # Delete cloud-init files
     changed = delete_cloudinit_files(client, module, vm_key)
@@ -395,7 +409,7 @@ def main():
     argument_spec.update(
         vm_name=dict(type='str'),
         vm_id=dict(type='str'),
-        datasource=dict(type='str', choices=['nocloud', '']),
+        datasource=dict(type='str', choices=['nocloud', 'none', '']),
         user_data=dict(type='str'),
         meta_data=dict(type='str'),
         network_config=dict(type='str'),
@@ -422,8 +436,6 @@ def main():
         required_one_of=[('vm_name', 'vm_id')],
         mutually_exclusive=[
             ('vm_name', 'vm_id'),
-            ('hostname', 'user_data'),
-            ('hostname', 'meta_data'),
             ('network', 'network_config'),
         ],
     )

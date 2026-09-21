@@ -38,8 +38,11 @@ options:
   enabled:
     description:
       - Whether the VM is enabled.
+      - When omitted, the existing value is preserved on update and the
+        platform default applies on create. This matters for partial
+        updates - a task that sets only I(description) must not also
+        re-enable a VM somebody deliberately disabled.
     type: bool
-    default: true
   os_family:
     description:
       - The operating system family for the VM.
@@ -303,7 +306,7 @@ def main():
             choices=['present', 'absent', 'running', 'stopped']
         ),
         description=dict(type='str'),
-        enabled=dict(type='bool', default=True),
+        enabled=dict(type='bool'),
         os_family=dict(type='str', choices=['linux', 'windows', 'other']),
         cpu_cores=dict(type='int'),
         ram=dict(type='int'),
