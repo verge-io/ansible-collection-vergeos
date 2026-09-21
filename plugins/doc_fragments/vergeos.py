@@ -20,15 +20,27 @@ options:
   username:
     description:
       - The username for authenticating with VergeOS.
+      - Required unless I(api_key) is provided.
       - Can also be set via the C(VERGEOS_USERNAME) environment variable.
     type: str
-    required: true
+    required: false
   password:
     description:
       - The password for authenticating with VergeOS.
+      - Required unless I(api_key) is provided.
       - Can also be set via the C(VERGEOS_PASSWORD) environment variable.
     type: str
-    required: true
+    required: false
+  api_key:
+    description:
+      - VergeOS API key for Bearer-token authentication.
+      - Takes precedence over I(username)/I(password) when both are supplied.
+      - Bypasses 2FA/TOTP enforcement, matching the inventory plugin's
+        per-site C(api_key) option; intended for automation.
+      - Either I(api_key) or both I(username) and I(password) must be provided.
+      - Can also be set via the C(VERGEOS_API_KEY) environment variable.
+    type: str
+    required: false
   insecure:
     description:
       - If set to C(true), SSL certificates will not be validated.
