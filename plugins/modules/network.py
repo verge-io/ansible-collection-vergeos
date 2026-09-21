@@ -236,10 +236,7 @@ def update_network(module, client, network):
         network_dict.update(update_data)
         return True, network_dict
 
-    # Update network attributes and save
-    for key, value in update_data.items():
-        setattr(network, key, value)
-    network.save()
+    network = network.save(**update_data)
     return True, dict(network)
 
 
