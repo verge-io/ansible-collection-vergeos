@@ -1,0 +1,9 @@
+{
+  "drives": [
+    {"vm": "db-1", "drive": "disk1", "tier": 2},
+    {"vm": "db-2", "drive": "disk1", "tier": 4},
+    {"vm": "app-1", "drive": "data0", "tier": 2},
+    {"vm": "app-1", "drive": "os", "tier": 4},
+    {"vm": "stray-vm", "drive": "disk1", "tier": 3}
+  ]
+}
