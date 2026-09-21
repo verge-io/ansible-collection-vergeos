@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Render a declarative LB spec into haproxy/keepalived/cloud-init.
 
 The honest-label answer to "VergeOS has no NSX-ALB": a load balancer

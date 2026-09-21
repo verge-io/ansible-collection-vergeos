@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Create/delete the scratch NAS volume for the vm_export ladder.
 
 Auth from VERGEOS_HOST / VERGEOS_TOKEN / VERGEOS_INSECURE env.

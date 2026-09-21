@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Render a k3s node spec into cloud-init user-data.
 
 The honest-label answer to "VergeOS has no Tanzu/NKE": DIY Kubernetes

@@ -1,0 +1,2 @@
+docs/repro/04_group_member_defect_http.py shebang
+docs/repro/04b_group_member_scope.py shebang

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Create/delete the scratch network for the vnet_rule live ladder.
 
 Used because the stock collection `network` module cannot create an

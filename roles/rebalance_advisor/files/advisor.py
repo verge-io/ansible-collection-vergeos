@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """VergeOS rebalance advisor — ADS-style hotspot remediation proposals.
 
 Recommend-only by design: the advisor never migrates anything. It reads

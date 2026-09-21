@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Rendering tests for the k3s node recipe (pure function, no API)."""
 
 import os

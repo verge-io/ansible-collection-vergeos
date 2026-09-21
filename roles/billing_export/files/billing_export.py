@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """VergeOS billing export — system billing periods + per-tenant usage.
 
 Reads the system `billing` records (period-scoped capacity/usage the

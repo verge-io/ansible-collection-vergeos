@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """VergeOS storage-tier drift audit — SPBM-style placement policy.
 
 Declares which storage tier each VM's drives belong on (glob rules,

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Verdict-shaping tests for the health scan (pure function, no API)."""
 
 import os

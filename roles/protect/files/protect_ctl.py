@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """protect_ctl — scan/assign helper for the protect tag reconciler.
 
 Verbs:

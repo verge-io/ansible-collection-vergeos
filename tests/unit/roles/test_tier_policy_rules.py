@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Policy-evaluation tests for the tier audit (pure function, no API)."""
 
 import os

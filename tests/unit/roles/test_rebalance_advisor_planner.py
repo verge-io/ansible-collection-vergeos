@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Planner tests for the rebalance advisor (pure function, no API)."""
 
 import os

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Shaping tests for the billing export (pure functions, no API)."""
 
 import os

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """VergeOS daily-green health scan — read-only, silence-is-the-alert.
 
 Five checks, each green / amber / red, rolled into one overall verdict

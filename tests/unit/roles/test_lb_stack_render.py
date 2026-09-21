@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Rendering tests for the LB stack (pure functions, no API)."""
 
 import os
