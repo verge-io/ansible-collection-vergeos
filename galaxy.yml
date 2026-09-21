@@ -8,7 +8,7 @@ authors:
 description: Ansible collection for managing VergeOS virtualization infrastructure
 license:
   - GPL-3.0-or-later
-license_file: ''
+license_file: ""
 tags:
   - vergeio
   - vergeos
@@ -26,8 +26,8 @@ build_ignore:
   - .claude
   - .mcp.json
   - CLAUDE.md
-  - '*.tar.gz'
+  - "*.tar.gz"
   - __pycache__
-  - '*.pyc'
+  - "*.pyc"
   - .venv
   - tests/

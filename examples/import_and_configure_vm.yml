@@ -18,8 +18,8 @@
     # ova_file_id: "41"
 
     # Network configuration
-    network_name: "External"          # VergeOS network to attach NIC to
-    network_interface: "ens1"         # Interface name inside the VM for cloud-init
+    network_name: "External" # VergeOS network to attach NIC to
+    network_interface: "ens1" # Interface name inside the VM for cloud-init
     ip_address: "192.168.1.11/24"
     gateway: "192.168.1.1"
     dns_servers:
