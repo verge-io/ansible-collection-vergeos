@@ -63,10 +63,17 @@ Affected stock modules while open: `vm_info`, `vm`, `network`,
   (`find_node`), `module_utils/site_sync.py` (`find_by_name`),
   `module_utils/vm_recipes.py` and `modules/member.py` were kept because
   `requirements.txt` declared `pyvergeos>=1.0.1` and the collection had to
-  work on SDKs that still carried the defect. **That floor is now
-  `>=1.2.7`**, so the stated rationale no longer holds and they are paying
-  whole-table scans for a fixed bug. Removing them is a behaviour change to
-  working code and is not done here.
+  work on SDKs that still carried the defect. That floor is now `>=1.2.7`,
+  so the *original* rationale has expired.
+
+  **Do not remove them.** A 2026-09-21 review recommended exactly that, and
+  it was wrong. They are what keeps this collection clear of
+  pyvergeos#96: `client.vms.list(name=X)` silently discards the name and
+  returns every non-snapshot VM. An "optimisation" from a client-side match
+  to `vms.list(name=...)` would turn a correct lookup into one that matches
+  everything — and the modules that do that lookup go on to update and
+  delete. Revisit only once #96 is fixed and the floor is raised past it.
+  See B18.
 - `modules/catalog.py` did not work around B1 — it **reimplemented** it,
   hand-building `filter="name eq '%s'"` after SQL-doubling. Fixed
   2026-09-21; see `TestLookupDelegatesEscapingToTheSDK` and the apostrophe
@@ -469,3 +476,42 @@ currently supported version such as: >=2.15.0, ...
 It is the only lint failure left in the repository. Not changed here, because
 raising the floor drops a declared supported platform, and that is a call for
 the collection owners rather than a lint fix.
+
+---
+
+## B18 — pyvergeos `list()` returns every row when it cannot apply a filter
+**Status:** OPEN (upstream pyvergeos **#96**) · **Severity:** high ·
+**Measured on 1.2.7, 2026-09-21**
+
+`client.vms.list(name='does-not-exist')` returns **every non-snapshot VM**.
+`VMManager.list()` always supplies its own `is_snapshot eq false` filter,
+and `ResourceManager.list()` chooses `filter` *or* `filter_kwargs` with an
+`elif`, so the name never reaches the query.
+
+Found the way these things usually are — the ordinary cleanup idiom
+
+```python
+for v in c.vms.list(name='zz-jw-tier-probe'):   # a name that did not exist
+    c.vms.delete(dict(v)['$key'])
+```
+
+returned `dr-test` and attempted to delete it. It survived only because it
+was running.
+
+Two further paths in the same area: 33 managers declare a filter `**kwargs`
+they never read (`vm.drives.list(name=X)` ignores the name), and a filter
+kwarg of `None` empties the filter entirely (`networks.list(name=None)`
+returns all 11).
+
+**This collection is not affected**, verified call by call: every use of an
+impacted manager is an unfiltered `.list()` with client-side matching, and
+all eight filtered calls pass named parameters that *are* honoured —
+`media`, `cidr`, `ip`, `identity_key`, `recipe_ref`, and `name` on
+`catalogs`. That is luck, not design: the client-side matching exists as a
+workaround for B1. See the note under B1 before "tidying" it away.
+
+**Related, and not ours:** a filter naming a field the table does not have,
+whose value contains balanced braces, makes VergeOS 26.1.8 itself discard
+the filter and return the whole table — `nmae eq '{a: 1}'` returns all rows
+on `vnets`, `vms` and `users`, while `nmae eq 'plain'` correctly returns
+none. Filed as verge-io/engineering#20.
