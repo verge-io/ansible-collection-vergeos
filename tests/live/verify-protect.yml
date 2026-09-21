@@ -5,6 +5,14 @@
 # whole lifecycle -- untagged, tagged, enrolled, converged, untagged
 # again -- and tears everything down. The class name is zz-* so it can
 # never collide with a real protection class.
+#
+# NOT VERIFIED: the branch at rung 3d that removes the 'protect' tag
+# category when this run created it. On conundrum-lab the category has
+# existed since 2026-08-26, four weeks before this ladder, so every run
+# here takes the "leave it alone" path. Proving the other branch means
+# deleting shared lab state to test a teardown, which is a worse trade
+# than leaving one branch unproven. Run this on a system with no
+# 'protect' category to close it.
 - name: protect live ladder
   hosts: localhost
   gather_facts: false
@@ -20,7 +28,35 @@
             retention: 604800
             hour: 2
   tasks:
-    - name: "0. Clean leftovers"
+    # The role creates the 'protect' tag category if it is missing. That
+    # category is shared infrastructure, not scratch: on this lab it
+    # predates the ladder by four weeks. So record whether it was already
+    # there, and only remove it below if THIS run brought it into being.
+    # A ladder that deletes a category it found is a ladder that quietly
+    # unpicks someone else's setup.
+    - name: "0. Did the 'protect' tag category already exist?"
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}",
+               "{{ playbook_dir }}/../../docs/repro/d1-d6/readback.py",
+               "tag_categories?fields=name"]
+      register: cat_before
+      changed_when: false
+
+    - name: "0a. Record it"
+      ansible.builtin.set_fact:
+        category_preexisted: >-
+          {{ 'protect' in (cat_before.stdout | from_json
+                           | map(attribute='name') | list) }}
+
+    - name: "0b. Say which it is, so a failed run is still readable"
+      ansible.builtin.debug:
+        msg: >-
+          'protect' tag category
+          {{ 'already existed -- it will be left alone'
+             if category_preexisted | bool
+             else 'does not exist -- this run creates it and will remove it' }}
+
+    - name: "0c. Clean leftovers"
       vergeio.vergeos.vm:
         insecure: true
         name: "{{ vm_n }}"
@@ -199,17 +235,55 @@
             name: "{{ prof }}"
             state: absent
 
-        - name: "3d. Confirm zero leftovers"
+        # Only if this run created it. See rung 0.
+        - name: "3d. Teardown the tag category, if we made it"
+          vergeio.vergeos.tag_category:
+            insecure: true
+            name: protect
+            state: absent
+          when: not (category_preexisted | bool)
+
+        - name: "3e. Re-read everything the ladder touched"
+          ansible.builtin.command:
+            argv: ["{{ ansible_playbook_python }}",
+                   "{{ playbook_dir }}/../../docs/repro/d1-d6/readback.py",
+                   "{{ item.q }}"]
+          register: leftover_rows
+          changed_when: false
+          loop:
+            - {name: tag, q: "tags?fields=name"}
+            - {name: profile, q: "snapshot_profiles?fields=name"}
+            - {name: category, q: "tag_categories?fields=name"}
+          loop_control:
+            label: "{{ item.name }}"
+
+        - name: "3f. Confirm the scratch VM is gone"
           vergeio.vergeos.vm_info:
             insecure: true
             name: "{{ vm_n }}"
           register: leftover
           changed_when: false
 
-        - name: "3e. Assert clean"
+        # Asserts on the tag and the profile too. The previous version
+        # checked only the VM, so a ladder that leaked a tag or a profile
+        # still reported "zero leftovers".
+        - name: "3g. Assert clean"
+          vars:
+            names: >-
+              {{ leftover_rows.results
+                 | map(attribute='stdout') | map('from_json')
+                 | map('map', attribute='name') | map('list') | list }}
           ansible.builtin.assert:
-            that: leftover.vms | length == 0
-            fail_msg: "scratch VM left behind"
+            that:
+              - leftover.vms | length == 0
+              - cls not in names[0]
+              - prof not in names[1]
+              - category_preexisted | bool or 'protect' not in names[2]
+            fail_msg: >-
+              leftovers: vms={{ leftover.vms | map(attribute='name') | list }},
+              tags={{ names[0] }}, profiles={{ names[1] }},
+              categories={{ names[2] }}
+              (category pre-existed: {{ category_preexisted }})
 
     - name: PASSED
       ansible.builtin.debug:
@@ -219,3 +293,5 @@
           enforce enrols and the profile reads back -> converged
           enforce is a no-op -> untagging produces an orphan -> enforce
           does NOT strip an orphan's protection -> zero leftovers
+          (VM, tag and profile all asserted gone; the shared 'protect'
+          category removed only if this run created it)
