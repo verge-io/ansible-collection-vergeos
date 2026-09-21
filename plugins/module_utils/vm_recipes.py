@@ -26,13 +26,17 @@ def resolve_recipe(client, name, catalog=None):
     Returns (recipe_row, error_message). Exactly one of the two is falsy.
 
     The recipe is found by listing and matching in Python rather than with a
-    server-side ``name eq '...'`` filter. That is deliberate: embedding a name
-    in an OData string literal needs an escape whose correct form is not
-    settled here. pyvergeos escapes ``'`` SQL-style by doubling it
-    (resources/vm_recipes.py), while the VergeOS 26.1.8 measurements behind
-    the role this module replaces recorded backslash-escaping as the form the
-    platform accepts, with the doubled form returning
-    ``{"err": "Invalid argument"}``. Those two cannot both be right.
+    server-side ``name eq '...'`` filter. That began as a deliberate dodge of
+    an unsettled question: pyvergeos escaped ``'`` SQL-style by doubling it,
+    while the VergeOS 26.1.8 measurements recorded backslash-escaping as the
+    form the platform accepts. Both could not be right.
+
+    It is settled now. Backslash is correct, the doubled form returns
+    ``{"err": "Invalid argument"}``, and pyvergeos 1.2.5 switched to a shared
+    ``quote_value()`` that emits backslash. Re-verified on 1.2.7 against a
+    live 26.1.8 system on 2026-09-21. The client-side match is retained
+    because it is cheap here and changing it is a behaviour change, not
+    because the question is still open.
 
     Getting it wrong does not raise -- the query silently matches nothing, or
     returns an error document that a caller counts as a result row. Matching

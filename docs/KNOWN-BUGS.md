@@ -1,45 +1,76 @@
 # Known bugs — open, tracked, not yet fixed
 
-Live-verified against **VergeOS 26.1.8**, cloud `conundrum-lab`, pyvergeos
-1.2.3, collection branches as of 2026-09-09 (updated same day
-after B2, B3, B9 and B10 were fixed and B13-B15 found). Every entry records how it was
-measured, not how it was inferred.
+Live-verified against **VergeOS 26.1.8**, cloud `conundrum-lab`, collection
+branches as of 2026-09-09 (updated same day after B2, B3, B9 and B10 were
+fixed and B13-B15 found). Every entry records how it was measured, not how
+it was inferred.
+
+> **Re-verified 2026-09-21 against pyvergeos 1.2.7.** The original pass was
+> taken on **1.2.3**, and `requirements.txt` now declares `>=1.2.7`, so the
+> three entries that blamed the SDK were re-measured:
+>
+> | entry | on 1.2.3 | on **1.2.7** |
+> |---|---|---|
+> | **B1** escaping | OPEN | **FIXED** — `networks.get(name="zz-o'brien")` now raises `NotFoundError`, not `ValidationError` |
+> | **B7** tag-scoped snapshot | OPEN | **still OPEN** — `CloudSnapshotManager.create()` still takes no `include_tags`/`exclude_tags` |
+> | **B15** `cluster_status` | OPEN | **still OPEN** — `VergeClient` still has no `cluster_status` attribute |
+>
+> Entries **not** listed above have not been re-measured on 1.2.7 and still
+> carry their original 1.2.3 dating.
 
 Status key: **OPEN** = present and unfixed. **FIXED** = corrected, with the
 commit. Fixed entries stay for the pattern they illustrate.
 
 ---
 
-## B1 — pyvergeos escapes OData string literals in a form the platform rejects
-**Status:** OPEN (upstream pyvergeos) · **Severity:** high · **Blocks:** any
-name-based lookup through the SDK, including stock collection modules
+## B1 — pyvergeos escaped OData string literals in a form the platform rejects
+**Status:** **FIXED** upstream in pyvergeos 1.2.5 (issue #72, PR #76
+`4338f3b`) · **Re-verified on 1.2.7, 2026-09-21** · **Severity was:** high
 
-pyvergeos doubles a single quote SQL-style (`'` → `''`) in
+pyvergeos doubled a single quote SQL-style (`'` → `''`) in
 `filters.py:_format_single` and `vm_recipes.py:53`. VergeOS 26.1.8 rejects
-that form.
+that form. 1.2.5 replaced 84 scattered copies with a shared `quote_value()`
+that emits the backslash form the platform accepts.
 
-Measured — `GET /api/v4/vnets?fields=name&filter=...`:
+The platform's behaviour has **not** changed, and was never the bug — the
+SQL form is simply the wrong escape. What changed is what the SDK emits.
+Re-measured on 1.2.7, `GET /api/v4/vnets?fields=name&filter=...`:
 
-| filter | result |
+| filter | result (unchanged) |
 |---|---|
 | `name eq 'DMZ'` (control, exists) | HTTP 200, `[{"name":"DMZ"}]` |
 | `name eq 'zz-nope'` (control, absent) | HTTP 200, `[]` |
-| `name eq 'zz-o''brien'` — pyvergeos form | **HTTP 422 `{"err":"Invalid argument"}`** |
-| `name eq 'zz-o\'brien'` — backslash form | HTTP 200, `[]` |
-| `name eq 'zz-o'brien'` (control, unescaped) | HTTP 422 `{"err":"Invalid argument"}` |
+| `name eq 'zz-o''brien'` — the **old** pyvergeos form | **HTTP 422 `{"err":"Invalid argument"}`** |
+| `name eq 'zz-o\'brien'` — backslash form, what 1.2.7 now emits | HTTP 200, `[]` |
 
-At SDK level: `client.networks.get(name="zz-o'brien")` raises
-`ValidationError: Invalid argument`, where an absent plain name raises
-`NotFoundError`. So it fails loudly rather than silently — the
-"error-document counted as a result row" failure mode belongs to hand-built
-filters, not the SDK path.
+At SDK level, the difference that matters:
 
-Affects stock modules: `vm_info`, `vm`, `network`, `network_info`, `drive`,
-`nic`, `user` all reach the API by name.
+| call | 1.2.3 | **1.2.7** |
+|---|---|---|
+| `client.networks.get(name="zz-o'brien")` | `ValidationError: Invalid argument` | **`NotFoundError`** |
+| `client.networks.get(name="zz-nope")` | `NotFoundError` | `NotFoundError` |
+| `client.networks.get(name="DMZ")` | found | found |
 
-Worked around in `module_utils/vm_recipes.py` and `site_sync.py` by matching
-client-side. Pinned by test so a later "optimisation" to a server-side filter
-has to face it.
+An awkward name is now indistinguishable from an ordinary absent one, which
+is the correct outcome.
+
+Affected stock modules while open: `vm_info`, `vm`, `network`,
+`network_info`, `drive`, `nic`, `user` — all reach the API by name.
+
+**Consequences still outstanding:**
+
+- The client-side-matching workarounds in `module_utils/nodes.py`
+  (`find_node`), `module_utils/site_sync.py` (`find_by_name`),
+  `module_utils/vm_recipes.py` and `modules/member.py` were kept because
+  `requirements.txt` declared `pyvergeos>=1.0.1` and the collection had to
+  work on SDKs that still carried the defect. **That floor is now
+  `>=1.2.7`**, so the stated rationale no longer holds and they are paying
+  whole-table scans for a fixed bug. Removing them is a behaviour change to
+  working code and is not done here.
+- `modules/catalog.py` did not work around B1 — it **reimplemented** it,
+  hand-building `filter="name eq '%s'"` after SQL-doubling. Fixed
+  2026-09-21; see `TestLookupDelegatesEscapingToTheSDK` and the apostrophe
+  rung in `tests/live/verify-catalog.yml`.
 
 ---
 
@@ -136,7 +167,8 @@ the fallback could never fire.
 ---
 
 ## B7 — pyvergeos cannot express a partial (tag-scoped) snapshot
-**Status:** OPEN (upstream pyvergeos) · **Severity:** medium
+**Status:** OPEN (upstream pyvergeos) · **Re-verified still open on 1.2.7,
+2026-09-21** · **Severity:** medium
 **Blocks:** partial-snapshot-as-code (deferred feature #2)
 
 `cloud_snapshots.create()` accepts `name`, `retention_seconds`, `retention`,
@@ -144,6 +176,11 @@ the fallback could never fire.
 `wait_timeout`. There is no `include_tags` / `exclude_tags` /
 `quiesce_tags` parameter, and `grep -ri` for `quiesce`, `ovirt` and
 tag-scoped snapshot terms across the pyvergeos tree returns nothing.
+
+Re-checked on 1.2.7: the signature is unchanged. (`quiesce` does appear
+elsewhere in the SDK tree — `snapshot_profiles`, `nas_volumes`,
+`volume_vm_exports` — but not on the cloud-snapshot path this entry is
+about, so the original grep conclusion holds for the feature in question.)
 
 Tag-based partial snapshots are a headline VergeOS 26.1 feature, so the SDK
 lags the platform here.
@@ -325,7 +362,9 @@ in messages, or to accept it. Recorded rather than guessed at.
 ---
 
 ## B15 — the collection ships no `cluster_status` coverage but two modules need it
-**Status:** OPEN (upstream pyvergeos) · **Severity:** medium
+**Status:** OPEN (upstream pyvergeos) · **Re-verified still open on 1.2.7,
+2026-09-21** — `VergeClient` exposes `clusters` but no `cluster_status`
+· **Severity:** medium
 **Worked around:** `module_utils/clusters.py` via `client._request()`
 
 Detail in `docs/PYVERGEOS-GAPS.md` under P0. Recorded here too because it is

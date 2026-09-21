@@ -40,10 +40,12 @@ extends_documentation_fragment:
 notes:
   - Supports C(check_mode).
   - Group and user are matched by name in Python rather than with a
-    server-side OData filter. Embedding a name in an OData string literal
-    needs an escape whose form pyvergeos currently gets wrong - a name
-    containing an apostrophe returns HTTP 422 rather than no match - so
-    matching client-side sidesteps it.
+    server-side OData filter. This began as a workaround - pyvergeos used to
+    escape an apostrophe SQL-style, which VergeOS rejects with HTTP 422
+    rather than returning no match. That was fixed upstream in pyvergeos
+    1.2.5, and this collection now requires 1.2.7, so the workaround is no
+    longer needed. It is kept for now because these lists are small and
+    switching to a server-side filter is a behaviour change to working code.
 author:
   - VergeIO (@vergeio)
 '''
@@ -101,9 +103,17 @@ def find_by_name(client, manager, name):
     """One row by name from a manager, or None. Matched client-side.
 
     Not ``manager.get(name=...)``: that builds an OData filter, and pyvergeos
-    escapes a literal apostrophe SQL-style, which VergeOS 26.1.8 rejects with
-    HTTP 422 rather than returning no match. Group and user names are user
-    supplied, so that is reachable. These lists are small.
+    used to escape a literal apostrophe SQL-style, which VergeOS 26.1.8
+    rejects with HTTP 422 rather than returning no match. Group and user
+    names are user supplied, so that was reachable.
+
+    Fixed upstream in pyvergeos 1.2.5 and re-verified on 1.2.7 (2026-09-21):
+    ``networks.get(name="zz-o'brien")`` now raises ``NotFoundError``, the
+    same as any other absent name. ``requirements.txt`` declares ``>=1.2.7``,
+    so the original reason is gone. Kept anyway, for now: these lists are
+    small, the cost is a full listing, and moving to a server-side filter is
+    a behaviour change that deserves its own decision rather than being
+    slipped in with a documentation correction.
     """
     for row in getattr(client, manager).list():
         if dict(row).get('name') == name:
