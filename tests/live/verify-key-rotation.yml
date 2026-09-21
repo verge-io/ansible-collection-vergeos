@@ -1,0 +1,225 @@
+---
+# Live ladder for the api_key_rotation role.
+#
+# Rotates a scratch key twice against the current user, proving the
+# verify-before-revoke ordering and that exactly one generation
+# survives. All keys are zz-* and removed in the always: block.
+- name: api_key_rotation live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    key_owner: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+    logical: zz-rotate
+    secret_file: /tmp/zz-rotate.secret
+  tasks:
+    - name: "0. Clean any leftovers from a previous run"
+      block:
+        - name: "0a. List this user's keys"
+          vergeio.vergeos.api_key_info:
+            insecure: true
+            user: "{{ key_owner }}"
+          register: pre
+          changed_when: false
+
+        - name: "0b. Remove any zz-rotate generations"
+          vergeio.vergeos.api_key:
+            insecure: true
+            user: "{{ key_owner }}"
+            name: "{{ item }}"
+            state: absent
+          loop: >-
+            {{ pre.api_keys | map(attribute='name')
+               | select('match', '^zz-rotate') | list }}
+
+    - name: "1. Refuse a rotation with no key name"
+      block:
+        - name: "1a. Call with an empty key name"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.api_key_rotation
+          vars:
+            api_key_rotation_user: "{{ key_owner }}"
+            api_key_rotation_key_name: ""
+        - name: "1b. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "an empty key name was accepted"
+      rescue:
+        - name: "1c. Refused, as it should be"
+          ansible.builtin.debug:
+            msg: "empty key name refused"
+
+    - name: "2. Two rotations"
+      block:
+        - name: "2a. First rotation -- bootstraps generation one"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.api_key_rotation
+          vars:
+            api_key_rotation_user: "{{ key_owner }}"
+            api_key_rotation_key_name: "{{ logical }}"
+            api_key_rotation_secret_dest: "{{ secret_file }}"
+
+        - name: "2b. Remember generation one"
+          ansible.builtin.set_fact:
+            gen1: "{{ api_key_rotation_new_name }}"
+
+        - name: "2c. Nothing was rotated out, because nothing existed"
+          ansible.builtin.assert:
+            that: api_key_rotation_rotated_out | length == 0
+            fail_msg: >-
+              first rotation claimed to remove
+              {{ api_key_rotation_rotated_out }}
+
+        - name: "2d. The secret file exists at 0600"
+          ansible.builtin.stat:
+            path: "{{ secret_file }}"
+          register: sf
+
+        - name: "2e. Assert mode and content"
+          ansible.builtin.assert:
+            that:
+              - sf.stat.exists
+              - sf.stat.mode == '0600'
+              - sf.stat.size > 0
+            fail_msg: "secret file wrong: {{ sf.stat }}"
+
+        - name: "2f. Exactly one generation exists"
+          vergeio.vergeos.api_key_info:
+            insecure: true
+            user: "{{ key_owner }}"
+          register: after1
+          changed_when: false
+
+        - name: "2g. Assert one"
+          ansible.builtin.assert:
+            that: >-
+              after1.api_keys | map(attribute='name')
+              | select('match', '^' ~ logical) | list | length == 1
+            fail_msg: >-
+              expected one generation, got
+              {{ after1.api_keys | map(attribute='name')
+                 | select('match', '^' ~ logical) | list }}
+
+        - name: "2h. Wait so the second rotation gets a distinct suffix"
+          ansible.builtin.pause:
+            seconds: 2
+
+        - name: "2i. Second rotation -- replaces generation one"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.api_key_rotation
+          vars:
+            api_key_rotation_user: "{{ key_owner }}"
+            api_key_rotation_key_name: "{{ logical }}"
+            api_key_rotation_secret_dest: "{{ secret_file }}"
+
+        - name: "2j. Generation one was the thing rotated out"
+          ansible.builtin.assert:
+            that:
+              - gen1 in api_key_rotation_rotated_out
+              - api_key_rotation_new_name != gen1
+            fail_msg: >-
+              expected {{ gen1 }} to be rotated out, got
+              {{ api_key_rotation_rotated_out }}
+
+        - name: "2k. Still exactly one generation"
+          vergeio.vergeos.api_key_info:
+            insecure: true
+            user: "{{ key_owner }}"
+          register: after2
+          changed_when: false
+
+        - name: "2l. Assert one, and that it is the new one"
+          ansible.builtin.assert:
+            that:
+              - >-
+                after2.api_keys | map(attribute='name')
+                | select('match', '^' ~ logical) | list | length == 1
+              - >-
+                api_key_rotation_new_name in
+                (after2.api_keys | map(attribute='name') | list)
+            fail_msg: >-
+              generations after second rotation:
+              {{ after2.api_keys | map(attribute='name')
+                 | select('match', '^' ~ logical) | list }}
+
+        - name: "3. A suffix collision is refused"
+          block:
+            - name: "3a. Rotate again with the SAME suffix"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.api_key_rotation
+              vars:
+                api_key_rotation_user: "{{ key_owner }}"
+                api_key_rotation_key_name: "{{ logical }}"
+                api_key_rotation_suffix: >-
+                  {{ api_key_rotation_new_name
+                     | regex_replace('^' ~ logical ~ '-', '') }}
+            - name: "3b. Reaching here means it was accepted"
+              ansible.builtin.fail:
+                msg: "a colliding suffix was accepted"
+          rescue:
+            - name: "3c. Refused, as it should be"
+              ansible.builtin.debug:
+                msg: "suffix collision refused"
+
+        - name: "3d. The collision did not destroy the live generation"
+          vergeio.vergeos.api_key_info:
+            insecure: true
+            user: "{{ key_owner }}"
+          register: after3
+          changed_when: false
+
+        - name: "3e. Still exactly one, still usable"
+          ansible.builtin.assert:
+            that: >-
+              after3.api_keys | map(attribute='name')
+              | select('match', '^' ~ logical) | list | length == 1
+            fail_msg: >-
+              a refused rotation changed the generation set:
+              {{ after3.api_keys | map(attribute='name')
+                 | select('match', '^' ~ logical) | list }}
+
+      always:
+        - name: "4. Remove every zz-rotate generation"
+          block:
+            - name: "4a. List them"
+              vergeio.vergeos.api_key_info:
+                insecure: true
+                user: "{{ key_owner }}"
+              register: final
+              changed_when: false
+
+            - name: "4b. Delete them"
+              vergeio.vergeos.api_key:
+                insecure: true
+                user: "{{ key_owner }}"
+                name: "{{ item }}"
+                state: absent
+              loop: >-
+                {{ final.api_keys | map(attribute='name')
+                   | select('match', '^zz-rotate') | list }}
+
+            - name: "4c. Remove the secret file"
+              ansible.builtin.file:
+                path: "{{ secret_file }}"
+                state: absent
+
+            - name: "4d. Confirm zero leftovers"
+              vergeio.vergeos.api_key_info:
+                insecure: true
+                user: "{{ key_owner }}"
+              register: cleaned
+              changed_when: false
+
+            - name: "4e. Assert clean"
+              ansible.builtin.assert:
+                that: >-
+                  cleaned.api_keys | map(attribute='name')
+                  | select('match', '^zz-rotate') | list | length == 0
+                fail_msg: "keys left behind"
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          api_key_rotation ladder PASSED: empty key name refused ->
+          first rotation bootstraps one generation and writes an 0600
+          secret -> second rotation replaces it, leaving exactly one ->
+          a colliding suffix is refused without destroying the live
+          generation -> zero leftovers
