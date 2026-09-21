@@ -1,0 +1,221 @@
+---
+# Live ladder for the protect role.
+#
+# Creates a scratch class (tag + profile) and a scratch VM, walks the
+# whole lifecycle -- untagged, tagged, enrolled, converged, untagged
+# again -- and tears everything down. The class name is zz-* so it can
+# never collide with a real protection class.
+- name: protect live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vm_n: zz-protect-vm
+    cls: zz-gold
+    prof: protect-zz-gold
+    protect_classes:
+      zz-gold:
+        periods:
+          - name: Daily
+            frequency: daily
+            retention: 604800
+            hour: 2
+  tasks:
+    - name: "0. Clean leftovers"
+      vergeio.vergeos.vm:
+        insecure: true
+        name: "{{ vm_n }}"
+        state: absent
+
+    - name: "1. Refuse an empty class set"
+      block:
+        - name: "1a. Run with no classes"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.protect
+          vars:
+            protect_classes: {}
+        - name: "1b. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "an empty protect_classes was accepted"
+      rescue:
+        - name: "1c. Refused, as it should be"
+          ansible.builtin.debug:
+            msg: "empty class set refused"
+
+    - name: "2. Full lifecycle"
+      block:
+        - name: "2a. Create the scratch VM, untagged"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ vm_n }}"
+            cpu_cores: 1
+            ram: 512
+            state: present
+
+        - name: "2b. Reconcile -- an untagged VM is not our business"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.protect
+
+        - name: "2c. No drift, no orphans"
+          ansible.builtin.assert:
+            that:
+              - protect_to_enroll | selectattr('name', 'equalto', vm_n)
+                | list | length == 0
+              - protect_orphans | selectattr('name', 'equalto', vm_n)
+                | list | length == 0
+            fail_msg: "an untagged VM should be invisible to the reconciler"
+
+        - name: "2d. Tag the VM into the class"
+          vergeio.vergeos.tag:
+            insecure: true
+            name: "{{ cls }}"
+            category: protect
+            vm_name: "{{ vm_n }}"
+            state: present
+
+        - name: "2e. Report mode sees drift and changes nothing"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.protect
+
+        - name: "2f. It is pending, not enrolled"
+          ansible.builtin.assert:
+            that:
+              - protect_to_enroll | selectattr('name', 'equalto', vm_n)
+                | list | length == 1
+              - protect_result.enrolled | length == 0
+              - protect_result.pending | length >= 1
+            fail_msg: >-
+              report mode got it wrong:
+              pending={{ protect_result.pending }}
+              enrolled={{ protect_result.enrolled }}
+
+        - name: "2g. The CI gate fires on drift"
+          block:
+            - name: "2g-i. Report with the gate armed"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.protect
+              vars:
+                protect_fail_on_drift: true
+            - name: "2g-ii. Reaching here means the gate did not fire"
+              ansible.builtin.fail:
+                msg: "drift gate did NOT fire"
+          rescue:
+            - name: "2g-iii. Gate fired, as it should"
+              ansible.builtin.debug:
+                msg: "drift gate fired"
+
+        - name: "2h. Enforce"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.protect
+          vars:
+            protect_mode: enforce
+
+        - name: "2i. Read the enrolment back independently"
+          ansible.builtin.command:
+            argv: ["{{ ansible_playbook_python }}",
+                   "{{ playbook_dir }}/../../docs/repro/d1-d6/readback.py",
+                   "vms?fields=name,snapshot_profile&filter=name eq '{{ vm_n }}'"]
+          register: enrolled_row
+          changed_when: false
+
+        - name: "2j. The VM really carries a profile now"
+          ansible.builtin.assert:
+            that: >-
+              (enrolled_row.stdout | from_json | first).snapshot_profile
+              | string | length > 0
+            fail_msg: >-
+              enforce reported success but the VM carries no profile:
+              {{ enrolled_row.stdout }}
+
+        - name: "2k. Re-run enforce -- a converged class is a no-op"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.protect
+          vars:
+            protect_mode: enforce
+
+        - name: "2l. Nothing left to enrol"
+          ansible.builtin.assert:
+            that: >-
+              protect_to_enroll | selectattr('name', 'equalto', vm_n)
+              | list | length == 0
+            fail_msg: "converged enforce still wants to enrol something"
+
+        - name: "2m. Untag the VM"
+          vergeio.vergeos.tag:
+            insecure: true
+            name: "{{ cls }}"
+            category: protect
+            vm_name: "{{ vm_n }}"
+            state: absent
+
+        - name: "2n. Reconcile -- it is now an orphan"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.protect
+          vars:
+            protect_mode: enforce
+
+        - name: "2o. Reported as an orphan, and NOT unenrolled"
+          ansible.builtin.assert:
+            that:
+              - protect_orphans | selectattr('name', 'equalto', vm_n)
+                | list | length == 1
+            fail_msg: >-
+              untagging should produce an orphan report:
+              {{ protect_orphans }}
+
+        - name: "2p. Even under enforce, the profile was left in place"
+          ansible.builtin.command:
+            argv: ["{{ ansible_playbook_python }}",
+                   "{{ playbook_dir }}/../../docs/repro/d1-d6/readback.py",
+                   "vms?fields=name,snapshot_profile&filter=name eq '{{ vm_n }}'"]
+          register: orphan_row
+          changed_when: false
+
+        - name: "2q. Removing protection is a human decision"
+          ansible.builtin.assert:
+            that: >-
+              (orphan_row.stdout | from_json | first).snapshot_profile
+              | string | length > 0
+            fail_msg: >-
+              enforce stripped protection from an orphan; that must stay
+              a human decision. Got {{ orphan_row.stdout }}
+
+      always:
+        - name: "3. Teardown the VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ vm_n }}"
+            state: absent
+
+        - name: "3b. Teardown the class tag"
+          vergeio.vergeos.tag:
+            insecure: true
+            name: "{{ cls }}"
+            category: protect
+            state: absent
+
+        - name: "3c. Teardown the class profile"
+          vergeio.vergeos.snapshot_profile:
+            insecure: true
+            name: "{{ prof }}"
+            state: absent
+
+        - name: "3d. Confirm zero leftovers"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ vm_n }}"
+          register: leftover
+          changed_when: false
+
+        - name: "3e. Assert clean"
+          ansible.builtin.assert:
+            that: leftover.vms | length == 0
+            fail_msg: "scratch VM left behind"
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          protect ladder PASSED: empty class set refused -> untagged VM
+          invisible -> tagging produces drift -> CI gate fires ->
+          enforce enrols and the profile reads back -> converged
+          enforce is a no-op -> untagging produces an orphan -> enforce
+          does NOT strip an orphan's protection -> zero leftovers
