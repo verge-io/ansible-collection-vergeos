@@ -198,10 +198,17 @@ def update_drive(module, client, drive):
             update_data['interface'] = target_interface
             changed = True
 
-    # Check tier
+    # Check tier. The API field is preferred_tier and is returned as a
+    # string (e.g. '4'); the module previously read/wrote a nonexistent
+    # 'tier' field, so tier updates never converged.
     if module.params.get('tier') is not None:
-        if drive_dict.get('tier') != module.params['tier']:
-            update_data['tier'] = module.params['tier']
+        current_tier = drive_dict.get('preferred_tier')
+        try:
+            current_tier = int(current_tier)
+        except (TypeError, ValueError):
+            current_tier = None
+        if current_tier != module.params['tier']:
+            update_data['preferred_tier'] = str(module.params['tier'])
             changed = True
 
     # Check read_only
