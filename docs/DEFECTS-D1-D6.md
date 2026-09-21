@@ -34,6 +34,25 @@ fix is described, it was applied temporarily, verified, and reverted —
 > the defect table. D1-D4 and D6 are unaffected. Marked
 > **[reclassified in rev 4]**.
 
+## Status after pyvergeos 1.2.7 (2026-09-21)
+
+| | State | Fixed by |
+|---|---|---|
+| D1 | **CLOSED** | pyvergeos 1.2.7 (`save()` sends dirty fields). No collection change needed. All five modules converge and persist. |
+| D2 | **CLOSED** | collection `e8356cf` — 1.2.7 added the `tier`→`preferred_tier` translation, but only on the typed `update()`; the diff now goes as `save(**kwargs)` to reach it |
+| D3 | **CLOSED** | collection `e8356cf` — 1.2.7 normalises the empty datasource on the model path; `cloud_init` used raw `_request` and now goes through the model, sending `'none'` outright |
+| D4 | **CLOSED** | collection `e8356cf` — **the 1.2.7 upgrade activated this one.** On 1.2.5 the re-enable was swallowed; on 1.2.7 it lands. Dropping the default is what stops an SDK bump from powering VMs back on. |
+| D5 | open (enhancement) | — token auth for the modules; nothing is broken without it |
+| D6 | open (owner call) | — `requires_ansible` floor |
+| `refresh()` | open | 1.2.7 did not change it; `state: running`/`stopped` still burn 60s each |
+
+`requirements.txt` now pins **`pyvergeos>=1.2.7`**. That floor is load-bearing
+for D1 and for the `save(**kwargs)` shape D2 depends on, not merely
+aspirational.
+
+The detail below is kept as written, because how these were found and what
+they looked like in the wild is the part worth keeping.
+
 Reproductions live in [`docs/repro/d1-d6/`](repro/d1-d6/). Run them with:
 
 ```bash
