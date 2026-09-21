@@ -235,3 +235,74 @@ def test_d4_explicit_enabled_false_is_still_honoured():
 
     changed, _ = vm_mod.update_vm(module, MagicMock(), mock_vm)
     assert changed is True
+
+
+# ── vm.snapshot_profile ──────────────────────────────────────────────────────
+# Added with the `protect` role, which enrols VMs by tag and needs this
+# parameter. Same family as D1/D2: a field whose live shape is not what the
+# obvious code assumes.
+#
+# client.vms.get() does NOT include snapshot_profile in its default field
+# selection, so dict(vm) reports None no matter what the VM is enrolled in.
+# Measured on 26.1.8:
+#     default get()               -> None
+#     get(fields=[...])           -> 2
+#     raw GET ?fields=most        -> 2
+# Comparing against the default read made enrolment report changed on every
+# run, and made clearing a silent no-op: None or '' == '', so the diff was
+# always empty and the VM stayed enrolled.
+
+def _vm_update_with_profile(param, current_profile, profile_key=7):
+    """Drive update_vm() with a VM whose real enrolment is current_profile."""
+    row = {'$key': 1, 'name': 'v', 'description': 'd'}
+    mock_vm = as_row(MagicMock(), dict(row))
+    mock_vm.save.return_value = as_row(MagicMock(), dict(row))
+
+    client = MagicMock()
+    # The explicit-fields read is the ONLY one that surfaces the field.
+    client.vms.get.return_value = as_row(
+        MagicMock(), {'name': 'v', 'snapshot_profile': current_profile})
+    client.snapshot_profiles.get.return_value = as_row(
+        MagicMock(), {'$key': profile_key, 'name': 'nightly'})
+
+    module = MagicMock()
+    module.params = {k: None for k in
+                     ('description', 'enabled', 'os_family', 'cpu_cores',
+                      'ram', 'machine_type', 'machine_subtype', 'bios_type',
+                      'network', 'boot_order')}
+    module.params['snapshot_profile'] = param
+    module.check_mode = False
+
+    changed, _ = vm_mod.update_vm(module, client, mock_vm)
+    return changed, client
+
+
+def test_vm_snapshot_profile_reads_the_field_with_an_explicit_field_list():
+    """The guard. Without fields=[...] the read comes back None and every
+    comparison below is meaningless."""
+    _, client = _vm_update_with_profile('nightly', '7')
+    assert client.vms.get.called, "current enrolment was never read"
+    _, kwargs = client.vms.get.call_args
+    assert 'fields' in kwargs, (
+        "the current profile must be read with an explicit fields list; "
+        "the default selection omits snapshot_profile and returns None")
+    assert 'snapshot_profile' in kwargs['fields']
+
+
+def test_vm_snapshot_profile_is_idempotent_when_already_enrolled():
+    """Row holds '7' as a string, the profile $key is int 7."""
+    changed, _ = _vm_update_with_profile('nightly', '7', profile_key=7)
+    assert changed is False, "re-enrolling in the same profile is not a change"
+
+
+def test_vm_snapshot_profile_enrols_when_not_yet_enrolled():
+    changed, _ = _vm_update_with_profile('nightly', '', profile_key=7)
+    assert changed is True
+
+
+def test_vm_empty_snapshot_profile_clears_an_existing_enrolment():
+    """The case the default read silently broke."""
+    changed, _ = _vm_update_with_profile('', '7')
+    assert changed is True, (
+        "passing '' must clear the enrolment; comparing against the default "
+        "read makes this a no-op")

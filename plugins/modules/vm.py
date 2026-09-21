@@ -79,6 +79,14 @@ options:
       - Boot order for the VM devices.
     type: list
     elements: str
+  snapshot_profile:
+    description:
+      - Name of the snapshot profile the VM is enrolled in.
+      - Pass an empty string to remove the VM from its profile.
+      - The profile must already exist - see
+        M(vergeio.vergeos.snapshot_profile).
+    type: str
+    version_added: "2.1.0"
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
@@ -202,9 +210,27 @@ def build_vm_data(module):
     return vm_data
 
 
+def resolve_snapshot_profile(module, client):
+    """Profile NAME (what the operator writes) -> the raw field value.
+
+    The vm row stores the profile's $key, not its name. '' clears the
+    enrolment.
+    """
+    name = module.params['snapshot_profile']
+    if name == '':
+        return ''
+    try:
+        profile = client.snapshot_profiles.get(name=name)
+    except NotFoundError:
+        module.fail_json(msg="Snapshot profile '%s' not found" % name)
+    return dict(profile)['$key']
+
+
 def create_vm(module, client):
     """Create a new VM using SDK"""
     vm_data = build_vm_data(module)
+    if module.params.get('snapshot_profile'):
+        vm_data['snapshot_profile'] = resolve_snapshot_profile(module, client)
 
     if module.check_mode:
         return True, vm_data
@@ -231,6 +257,26 @@ def update_vm(module, client, vm):
             if vm_dict.get(field) != module.params[field]:
                 update_data[field] = module.params[field]
                 changed = True
+
+    # snapshot_profile: the param is a profile NAME, the raw field holds
+    # the profile's $key. '' removes the VM from its profile.
+    #
+    # The current value has to be read with an EXPLICIT field list.
+    # client.vms.get() does not include snapshot_profile in its default
+    # selection, so dict(vm) reports None whatever the VM is actually
+    # enrolled in. Comparing against that made enrolment report changed
+    # on every run and made clearing a silent no-op (None or '' == '',
+    # so the diff was always empty). Measured on 26.1.8:
+    #   default get()      -> None
+    #   get(fields=[...])  -> 2
+    if module.params.get('snapshot_profile') is not None:
+        desired = resolve_snapshot_profile(module, client)
+        current = dict(client.vms.get(
+            vm_dict['$key'], fields=['name', 'snapshot_profile']
+        )).get('snapshot_profile')
+        if str(current or '') != str(desired):
+            update_data['snapshot_profile'] = desired
+            changed = True
 
     if not changed:
         return False, vm_dict
@@ -315,6 +361,7 @@ def main():
         bios_type=dict(type='str', choices=['seabios', 'uefi']),
         network=dict(type='str'),
         boot_order=dict(type='list', elements='str'),
+        snapshot_profile=dict(type='str'),
     )
 
     module = AnsibleModule(
