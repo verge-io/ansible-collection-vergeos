@@ -1,0 +1,92 @@
+---
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that: vm_backup_host | length > 0
+    fail_msg: "vm_backup needs vm_backup_host (or VERGEOS_HOST)."
+    quiet: true
+
+- name: Preflight -- a NAS service and a volume are named
+  ansible.builtin.assert:
+    that:
+      - vm_backup_nas_service | length > 0
+      - vm_backup_volume | length > 0
+    fail_msg: >-
+      vm_backup needs vm_backup_nas_service and vm_backup_volume. The
+      export volume is the one layer that is not optional -- there is
+      nowhere to put an export without it.
+    quiet: true
+
+- name: Ensure the snapshot schedule
+  vergeio.vergeos.snapshot_profile:
+    host: "{{ vm_backup_host }}"
+    username: "{{ vm_backup_username }}"
+    password: "{{ vm_backup_password }}"
+    insecure: "{{ vm_backup_insecure }}"
+    name: "{{ vm_backup_snapshot_profile.name }}"
+    periods: "{{ vm_backup_snapshot_profile.periods }}"
+    state: present
+  when: vm_backup_snapshot_profile is not none
+  register: vm_backup_profile_result
+
+- name: Ensure the export volume on the NAS service
+  vergeio.vergeos.nas_volume:
+    host: "{{ vm_backup_host }}"
+    username: "{{ vm_backup_username }}"
+    password: "{{ vm_backup_password }}"
+    insecure: "{{ vm_backup_insecure }}"
+    name: "{{ vm_backup_volume }}"
+    service: "{{ vm_backup_nas_service }}"
+    size_gb: "{{ vm_backup_volume_size_gb }}"
+    tier: "{{ vm_backup_volume_tier | default(omit) }}"
+    description: "VM export target (managed by the vm_backup role)"
+    state: present
+  register: vm_backup_volume_result
+
+# No share unless somebody is named. An export volume exposed to
+# everything on the network is not a backup target.
+- name: Ensure NFS exposure for the backup tooling
+  vergeio.vergeos.nas_nfs_share:
+    host: "{{ vm_backup_host }}"
+    username: "{{ vm_backup_username }}"
+    password: "{{ vm_backup_password }}"
+    insecure: "{{ vm_backup_insecure }}"
+    name: "{{ vm_backup_nfs_share.name }}"
+    volume: "{{ vm_backup_volume }}"
+    allowed_hosts: "{{ vm_backup_nfs_share.allowed_hosts }}"
+    data_access: "{{ vm_backup_nfs_share.data_access | default('ro') }}"
+    state: present
+  when:
+    - vm_backup_nfs_share is not none
+    - vm_backup_nfs_share.allowed_hosts | length > 0
+  register: vm_backup_share_result
+
+- name: Ensure the export configuration
+  vergeio.vergeos.vm_export:
+    host: "{{ vm_backup_host }}"
+    username: "{{ vm_backup_username }}"
+    password: "{{ vm_backup_password }}"
+    insecure: "{{ vm_backup_insecure }}"
+    volume: "{{ vm_backup_volume }}"
+    max_exports: "{{ vm_backup_export.max_exports | default(3) }}"
+    quiesced: "{{ vm_backup_export.quiesced | default(true) }}"
+    start: "{{ vm_backup_export.run_now | default(false) }}"
+    vms: >-
+      {{ vm_backup_export.vms
+         if (vm_backup_export.vms | default([]) | length > 0)
+         else omit }}
+    state: present
+  register: vm_backup_export_result
+
+- name: Backup policy summary
+  ansible.builtin.debug:
+    msg: >-
+      volume '{{ vm_backup_volume }}' on '{{ vm_backup_nas_service }}',
+      keeping {{ vm_backup_export.max_exports | default(3) }} generation(s);
+      snapshots
+      {{ vm_backup_snapshot_profile.name
+         if vm_backup_snapshot_profile is not none else '(unmanaged)' }};
+      NFS
+      {{ 'exposed to ' ~ (vm_backup_nfs_share.allowed_hosts | join(', '))
+         if (vm_backup_nfs_share is not none
+             and vm_backup_nfs_share.allowed_hosts | length > 0)
+         else '(no share)' }}

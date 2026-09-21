@@ -1,0 +1,155 @@
+---
+# Live ladder for the vm_backup role.
+#
+# Creates a scratch snapshot profile, export volume, NFS share and
+# export configuration on the NAS service given by -e nas_service=.
+# Everything is zz-* and is torn down in the always: block.
+#
+#   ansible-playbook verify-vm-backup.yml -e nas_service=nas1
+- name: vm_backup live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    profile: zz-backup-profile
+    volume: zz-backup-vol
+    share: zz-backup-share
+    # Play-level so every include_role below inherits them; the blocks
+    # then override only the one field under test.
+    vm_backup_nas_service: "{{ nas_service | default('') }}"
+    vm_backup_volume: zz-backup-vol
+    vm_backup_volume_size_gb: 10
+    vm_backup_volume_tier: 1
+    vm_backup_snapshot_profile:
+      name: zz-backup-profile
+      periods:
+        - name: Daily
+          frequency: daily
+          retention: 604800
+          hour: 2
+          quiesce: true
+    vm_backup_nfs_share:
+      name: zz-backup-share
+      allowed_hosts: ["192.0.2.10"]
+      data_access: ro
+    vm_backup_export:
+      max_exports: 2
+      quiesced: true
+      run_now: false
+      vms: []
+  tasks:
+    - name: "0. Preflight: a NAS service must be named"
+      ansible.builtin.assert:
+        that: nas_service is defined
+        fail_msg: "Pass -e nas_service=<name of a NAS service>"
+
+    - name: "1. Enforce the whole policy"
+      block:
+        - name: "1a. Apply it"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_backup
+
+        - name: "1b. All four layers reported a change on first run"
+          ansible.builtin.assert:
+            that:
+              - vm_backup_profile_result.changed
+              - vm_backup_volume_result.changed
+              - vm_backup_share_result.changed
+              - vm_backup_export_result.changed
+            fail_msg: "first run did not create all four layers"
+
+        - name: "2. Re-run unchanged -- must be idempotent"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_backup
+
+        - name: "2b. Nothing changed the second time"
+          ansible.builtin.assert:
+            that:
+              - not vm_backup_profile_result.changed
+              - not vm_backup_volume_result.changed
+              - not vm_backup_share_result.changed
+              - not vm_backup_export_result.changed
+            fail_msg: >-
+              vm_backup is not idempotent:
+              profile={{ vm_backup_profile_result.changed }}
+              volume={{ vm_backup_volume_result.changed }}
+              share={{ vm_backup_share_result.changed }}
+              export={{ vm_backup_export_result.changed }}
+
+        - name: "3. Drift the retention, and watch it get corrected"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_backup
+          vars:
+            vm_backup_export:
+              max_exports: 4
+              quiesced: true
+              run_now: false
+              vms: []
+
+        - name: "3b. Only the export layer moved"
+          ansible.builtin.assert:
+            that:
+              - vm_backup_export_result.changed
+              - not vm_backup_volume_result.changed
+            fail_msg: "drift correction touched more than the export config"
+
+        - name: "4. An empty allowed_hosts list creates no share"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_backup
+          vars:
+            vm_backup_nfs_share:
+              name: zz-backup-share
+              allowed_hosts: []
+              data_access: ro
+
+        - name: "4b. The share task was skipped, not silently widened"
+          ansible.builtin.assert:
+            that: vm_backup_share_result is skipped
+            fail_msg: >-
+              an empty allowed_hosts must not create a share;
+              got {{ vm_backup_share_result }}
+
+      always:
+        - name: "5. Remove the export configuration"
+          vergeio.vergeos.vm_export:
+            insecure: true
+            volume: "{{ volume }}"
+            state: absent
+
+        - name: "5b. Remove the NFS share"
+          vergeio.vergeos.nas_nfs_share:
+            insecure: true
+            name: "{{ share }}"
+            volume: "{{ volume }}"
+            state: absent
+
+        - name: "5c. Remove the volume"
+          vergeio.vergeos.nas_volume:
+            insecure: true
+            name: "{{ volume }}"
+            state: absent
+
+        - name: "5d. Remove the snapshot profile"
+          vergeio.vergeos.snapshot_profile:
+            insecure: true
+            name: "{{ profile }}"
+            state: absent
+
+        - name: "5e. Deleting the volume again must be a no-op"
+          vergeio.vergeos.nas_volume:
+            insecure: true
+            name: "{{ volume }}"
+            state: absent
+          register: vol_gone
+
+        - name: "5f. Assert absent is idempotent"
+          ansible.builtin.assert:
+            that: not vol_gone.changed
+            fail_msg: "volume was still present after teardown"
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          vm_backup ladder PASSED: four layers created -> idempotent
+          re-run -> retention drift corrected without touching the
+          volume -> an empty allowed_hosts creates no share -> full
+          teardown, zero leftovers
