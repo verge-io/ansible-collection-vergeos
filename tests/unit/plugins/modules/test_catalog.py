@@ -201,56 +201,78 @@ class TestAbsent:
         assert module.exit_json.call_args.kwargs['changed'] is False
 
 
-class TestLookupDelegatesEscapingToTheSDK:
-    """The filter must be built by pyvergeos, never by hand here.
+class TestLookupIsClientSideAndNeverFiltersByName:
+    """The name must never reach a server-side OData filter.
 
-    This module used to assemble ``filter="name eq '%s'"`` after escaping
-    the name SQL-style (``'`` -> ``''``). VergeOS 26.1.8 rejects that form:
-    measured against a live system, ``name eq 'o''brien'`` returns
-    ValidationError "Invalid argument", while the SDK's own ``quote_value``
-    (backslash) form returns HTTP 200 with no match. The practical cost was
-    that a catalog whose name contained an apostrophe made every lookup
-    FAIL rather than report "not found" -- including the ``state: absent``
-    path, which should be a no-op.
+    Two separate defects make a ``name eq '...'`` lookup unsafe here, and
+    this module has now been bitten by both:
 
-    These assertions pin the call shape rather than the resulting string,
-    because the correct escape is the SDK's business and has already
-    changed once upstream.
+    1. Hand-rolled SQL-style escaping (``'`` -> ``''``) is rejected by
+       VergeOS 26.1.8 with ValidationError "Invalid argument", so a
+       catalog whose name contained an apostrophe could not be looked up,
+       created, converged or DELETED -- including ``state: absent`` on a
+       catalog that did not exist, which should be a no-op.
+    2. Letting pyvergeos build the filter fixes (1) but inherits a
+       platform defect: VergeOS 26.1.8 strips ``{...}`` from filter string
+       literals, so the query silently matches a DIFFERENT catalog.
+       Measured live through this module -- ``state: absent`` on
+       ``zz-jw-c{x}at`` deleted ``zz-jw-cat`` and reported changed=true.
+       See verge-io/engineering#20.
+
+    So these assertions pin the *absence* of server-side name filtering,
+    not a particular escape. Client-side matching is immune to both and is
+    the house style everywhere else in this collection.
     """
 
-    def test_lookup_passes_the_name_as_a_filter_kwarg(self):
+    def test_lookup_lists_without_any_filter(self):
         client = make_client(catalogs=[make_catalog()])
         module = make_module(base_params())
 
         run(module, client)
 
-        assert client.catalogs.list.call_args.kwargs.get('name') == \
-            'Golden Images'
-
-    def test_lookup_does_not_hand_build_a_filter_string(self):
-        client = make_client(catalogs=[make_catalog()])
-        module = make_module(base_params())
-
-        run(module, client)
-
-        assert 'filter' not in client.catalogs.list.call_args.kwargs
         assert client.catalogs.list.call_args.args == ()
+        assert client.catalogs.list.call_args.kwargs == {}
+
+    def test_lookup_never_passes_the_name_to_the_sdk(self):
+        client = make_client(catalogs=[make_catalog()])
+        module = make_module(base_params())
+
+        run(module, client)
+
+        kwargs = client.catalogs.list.call_args.kwargs
+        assert 'name' not in kwargs
+        assert 'filter' not in kwargs
 
     @pytest.mark.parametrize('name', [
-        "O'Brien's Images",   # the character that actually broke it
+        "O'Brien's Images",     # defect (1)
+        'braced{x}name',        # defect (2) -- must not match 'bracedname'
         'back\\slash',
         'quote"dbl',
         'semi;colon',
         'per%cent',
     ])
-    def test_awkward_names_are_passed_through_unmangled(self, name):
-        """No escaping, doubling or stripping happens on this side."""
-        client = make_client(catalogs=[])
+    def test_awkward_names_match_exactly_or_not_at_all(self, name):
+        """A near-miss neighbour must not be selected."""
+        neighbour = make_catalog(key='n' * 40, name='bracedname')
+        client = make_client(catalogs=[neighbour])
         module = make_module(base_params(name=name, state='absent'))
 
         run(module, client)
 
-        assert client.catalogs.list.call_args.kwargs.get('name') == name
-        # and a missing catalog is still a converged no-op, not a failure
+        # nothing matched, so absent is a converged no-op and, crucially,
+        # the neighbour is NOT deleted
+        client.catalogs.delete.assert_not_called()
         module.fail_json.assert_not_called()
         assert module.exit_json.call_args.kwargs['changed'] is False
+
+    def test_exact_match_is_still_found(self):
+        """Client-side matching must not become so cautious it finds nothing."""
+        client = make_client(catalogs=[make_catalog(name='bracedname'),
+                                       make_catalog(key='z' * 40,
+                                                    name='braced{x}name')])
+        module = make_module(base_params(name='braced{x}name', state='absent'))
+
+        run(module, client)
+
+        client.catalogs.delete.assert_called_once_with('z' * 40)
+        assert module.exit_json.call_args.kwargs['changed'] is True

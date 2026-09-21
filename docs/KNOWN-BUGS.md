@@ -515,3 +515,54 @@ whose value contains balanced braces, makes VergeOS 26.1.8 itself discard
 the filter and return the whole table — `nmae eq '{a: 1}'` returns all rows
 on `vnets`, `vms` and `users`, while `nmae eq 'plain'` correctly returns
 none. Filed as verge-io/engineering#20.
+
+---
+
+## B19 — PLATFORM: filter literals strip `{...}`, so a lookup by name can hit a different object
+**Status:** OPEN (VergeOS, **verge-io/engineering#20**) · **Severity:** high ·
+**Measured on 26.1.8, 2026-09-21**
+
+VergeOS stores a name containing braces correctly but cannot filter for it.
+The braces are stripped from the filter literal before comparison, so the
+query resolves to whatever the stripped string names:
+
+```
+key 41 -> 'zz-jw-br{x}ace'      (read back by key: correct)
+key 42 -> 'zz-jw-brace'         (read back by key: correct)
+
+GET vms?filter=name eq 'zz-jw-br{x}ace'  ->  [{"name":"zz-jw-brace"}]
+```
+
+Token content is irrelevant — `{x}`, `{}`, `{now}`, `{user}`, `{0}` all behave
+identically, so it is stripping rather than macro expansion. Only bare braces:
+`${x}`, `%{x}`, `#{x}`, `[x]`, `(x)` are all literal. Confirmed on `vnets`,
+`vms` and `users`, stable across three runs.
+
+A second, independent platform behaviour compounds it: a filter naming a
+field the table does not have is treated as an **empty column** rather than
+rejected, so `unknown eq ''` and `unknown ne 'x'` match every row.
+
+### Why this is in OUR bug list
+
+Because we shipped code that was exposed to it. Reproduced end-to-end through
+the `catalog` module on 2026-09-21:
+
+```
+create 'zz-jw-cat'      -> changed=true
+create 'zz-jw-c{x}at'   -> changed=false   (matched the OTHER catalog; created nothing)
+absent 'zz-jw-c{x}at'   -> changed=true    (DELETED 'zz-jw-cat')
+```
+
+A request to delete a catalog that never existed destroyed a different one and
+reported success.
+
+`catalog.py` was the only server-side name filter in the collection — briefly,
+and by my hand: it was introduced earlier the same day while fixing the B1
+escaping bug. It now matches client-side like every other name lookup here,
+which is immune to this and to B18. Pinned by `TestLookupIsClientSideAndNeverFiltersByName` and by rung 10 of `verify-catalog.yml`, which creates a
+neighbour differing only by a brace token and asserts it survives.
+
+**Do not reintroduce a server-side `name eq '...'` lookup anywhere** until this
+is fixed on the platform and `requirements.txt` floors past it. That is now the
+third distinct reason (B1 escaping, B18 SDK fail-open, B19 brace stripping) —
+the client-side matching that keeps getting flagged as redundant is load-bearing.

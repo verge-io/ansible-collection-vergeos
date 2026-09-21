@@ -132,13 +132,33 @@ def resolve_repository_key(module, client, name):
 
 
 def find_catalogs(client, name, repo_key=None):
-    # Let the SDK build the filter. Hand-rolling it here used the SQL-style
-    # doubling ("'" -> "''"), which VergeOS 26.1.8 rejects outright --
-    # measured: filter=name eq 'o''brien' returns ValidationError "Invalid
-    # argument", while the SDK's quote_value form returns HTTP 200 with no
-    # match. So any catalog whose name contained an apostrophe made this
-    # module fail rather than report "not found".
-    matches = client.catalogs.list(name=name)
+    """Catalogs of this name, matched client-side. There are tens at most.
+
+    Deliberately NOT a server-side ``name eq '...'`` filter, in either its
+    hand-rolled or its SDK-built form. Both have bitten us:
+
+    1. Hand-rolled with SQL-style doubling ("'" -> "''") is rejected by
+       VergeOS 26.1.8 outright -- ``name eq 'o''brien'`` returns
+       ValidationError "Invalid argument" -- so a catalog with an
+       apostrophe in its name could not be looked up, created, converged
+       or deleted.
+    2. Letting the SDK build it fixes the apostrophe but inherits a
+       platform defect: VergeOS 26.1.8 strips ``{...}`` from filter string
+       literals, so the query matches a DIFFERENT catalog. Measured
+       through this module: creating ``zz-jw-c{x}at`` alongside an
+       existing ``zz-jw-cat`` reported ``changed: false`` (it matched the
+       other one and created nothing), and ``state: absent`` on
+       ``zz-jw-c{x}at`` reported ``changed: true`` having deleted
+       ``zz-jw-cat``. See verge-io/engineering#20.
+
+    Matching in Python is immune to both, and is what every other
+    name lookup in this collection already does -- see
+    ``module_utils/nodes.py``, ``site_sync.py``, ``vm_recipes.py`` and
+    ``modules/member.py``. Restore a server-side filter only once the
+    platform defect is fixed and the floor requires a release past it.
+    """
+    matches = [c for c in client.catalogs.list()
+               if dict(c).get('name') == name]
     if repo_key is not None:
         matches = [c for c in matches
                    if dict(c).get('repository') == repo_key]

@@ -14,6 +14,10 @@
     cat: zz-golden-images
     # Apostrophe on purpose -- see rung 9.
     cat_quoted: "zz-o'brien images"
+    # Braces on purpose -- see rung 10. The neighbour is the name the
+    # platform's brace-stripping collapses this to.
+    cat_braced: "zz-br{x}ace-cat"
+    cat_neighbour: "zz-brace-cat"
 
   tasks:
     - name: Ladder body
@@ -196,13 +200,96 @@
             that: quoted_deleted is changed
             fail_msg: "the awkward-named catalog survived deletion"
 
-        - name: "10. Delete"
+        # VergeOS 26.1.8 strips {...} from filter string literals, so a
+        # server-side "name eq '...'" lookup for the braced name matches
+        # the NEIGHBOUR instead. Measured through this very module before
+        # the fix: creating the braced catalog reported changed=false
+        # (it matched the neighbour and created nothing), and deleting it
+        # reported changed=true having destroyed the neighbour.
+        # verge-io/engineering#20. The module now matches client-side,
+        # which is immune. This rung is the regression guard.
+        - name: "10. A neighbour whose name differs only by a brace token"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_neighbour }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            state: present
+          register: neighbour_made
+
+        - name: "10b. Creating the braced name must CREATE, not adopt"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_braced }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            state: present
+          register: braced_made
+
+        - name: "10c. Both exist and both were real creations"
+          ansible.builtin.assert:
+            that:
+              - neighbour_made is changed
+              - braced_made is changed
+              - braced_made.catalog.name == cat_braced
+            fail_msg: >-
+              the braced name was collapsed onto the neighbour:
+              {{ braced_made }}
+
+        - name: "10d. Read both back from the platform"
+          ansible.builtin.command:
+            argv: ["{{ ansible_playbook_python }}",
+                   "{{ playbook_dir }}/../../docs/repro/d1-d6/readback.py",
+                   "catalogs?fields=name"]
+          register: cat_rows
+          changed_when: false
+
+        - name: "10e. Assert they are two distinct rows"
+          vars:
+            names: "{{ cat_rows.stdout | from_json | map(attribute='name') | list }}"
+          ansible.builtin.assert:
+            that:
+              - cat_braced in names
+              - cat_neighbour in names
+            fail_msg: "expected both names to exist, got {{ names }}"
+
+        - name: "10f. Deleting the braced one must not touch the neighbour"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_braced }}"
+            state: absent
+          register: braced_gone
+
+        - name: "10g. Re-read"
+          ansible.builtin.command:
+            argv: ["{{ ansible_playbook_python }}",
+                   "{{ playbook_dir }}/../../docs/repro/d1-d6/readback.py",
+                   "catalogs?fields=name"]
+          register: cat_rows_after
+          changed_when: false
+
+        - name: "10h. The neighbour survived"
+          vars:
+            names: "{{ cat_rows_after.stdout | from_json
+                       | map(attribute='name') | list }}"
+          ansible.builtin.assert:
+            that:
+              - braced_gone is changed
+              - cat_braced not in names
+              - cat_neighbour in names
+            fail_msg: >-
+              deleting '{{ cat_braced }}' took the wrong catalog with it.
+              remaining: {{ names }}
+
+        - name: "10i. Remove the neighbour"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_neighbour }}"
+            state: absent
+
+        - name: "11. Delete"
           vergeio.vergeos.catalog:
             name: "{{ cat }}"
             state: absent
           register: deleted
 
-        - name: "11. Delete again — converged"
+        - name: "12. Delete again — converged"
           vergeio.vergeos.catalog:
             name: "{{ cat }}"
             state: absent
@@ -223,6 +310,8 @@
           loop:
             - "{{ cat }}"
             - "{{ cat_quoted }}"
+            - "{{ cat_braced }}"
+            - "{{ cat_neighbour }}"
           failed_when: false
 
         - name: Ladder failed
@@ -235,5 +324,7 @@
           catalog ladder PASSED: create -> converge -> check-mode ->
           tenant grant -> converge -> enabled preserved -> no-repo
           refusal -> a name containing an apostrophe round-trips
-          (absent no-op, create, converge, delete) -> delete x2,
+          (absent no-op, create, converge, delete) -> a name differing
+          from its neighbour only by a {brace} token creates, reads back
+          and deletes WITHOUT touching the neighbour -> delete x2,
           zero leftovers
