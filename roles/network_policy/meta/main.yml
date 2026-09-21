@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  author: VergeIO
+  description: >-
+    Per-network firewall rules as code for VergeOS. Stages every rule,
+    then refreshes each network once and only when something is pending,
+    so a converged policy is a zero-change run. Optional exact mode
+    purges unmanaged non-system rules.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.16"
+  galaxy_tags:
+    - vergeos
+    - networking
+    - firewall
+    - security
+dependencies: []

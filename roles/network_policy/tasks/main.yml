@@ -1,0 +1,27 @@
+---
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that: network_policy_host | length > 0
+    fail_msg: "network_policy needs network_policy_host (or VERGEOS_HOST)."
+    quiet: true
+
+- name: Preflight -- every policy entry names a network and some rules
+  ansible.builtin.assert:
+    that:
+      - item.network is defined
+      - item.network | length > 0
+      - item.rules is defined
+    fail_msg: >-
+      each entry in network_policy_networks needs 'network' and 'rules';
+      got {{ item }}.
+    quiet: true
+  loop: "{{ network_policy_networks }}"
+  loop_control:
+    label: "{{ item.network | default('<unnamed>') }}"
+
+- name: Enforce policy per network
+  ansible.builtin.include_tasks: per_network.yml
+  loop: "{{ network_policy_networks }}"
+  loop_control:
+    loop_var: policy
+    label: "{{ policy.network }}"
