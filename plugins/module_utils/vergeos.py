@@ -13,6 +13,8 @@ Requires the pyvergeos SDK: pip install pyvergeos
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
+import sys
+
 from ansible.module_utils.basic import env_fallback
 
 # SDK Integration
@@ -51,8 +53,18 @@ def get_vergeos_client(module):
     """
     if not HAS_PYVERGEOS:
         module.fail_json(
-            msg="The pyvergeos SDK is required for this module. "
-                "Install it with: pip install pyvergeos"
+            msg="The pyvergeos SDK is required for this module, and it is "
+                "not importable from the interpreter this module ran under: "
+                "%s.\n"
+                "If pyvergeos IS installed (e.g. in a virtualenv), Ansible is "
+                "simply running the module under a different interpreter. "
+                "That happens when a play targets a named inventory host, "
+                "because Ansible then discovers an interpreter instead of "
+                "reusing the one running ansible-playbook. Either add "
+                "`delegate_to: localhost` to the task, or pin "
+                "`ansible_python_interpreter` for the host.\n"
+                "Otherwise install it with: pip install pyvergeos"
+                % sys.executable
         )
 
     # Strip protocol prefix if present (SDK expects hostname only)
