@@ -111,15 +111,18 @@ def main():
         pending = bool(data.get('need_fw_apply', False))
         running = bool(data.get('running', False))
 
+        # Order matters. A stopped network never sets need_fw_apply -- there is
+        # no running router to apply rules to -- so testing `pending` first
+        # made this branch unreachable and reported "no pending rule changes"
+        # at an operator who had just staged a policy. See issue #19.
+        if not running:
+            module.exit_json(changed=False, pending=pending, applied=False,
+                             msg="Network '%s' is not running; any staged "
+                                 'rules take effect when it starts' % name)
+
         if not pending:
             module.exit_json(changed=False, pending=False, applied=False,
                              msg="No pending rule changes on '%s'" % name)
-
-        if not running:
-            module.exit_json(changed=False, pending=True, applied=False,
-                             msg="Rules pending on '%s' but the network is "
-                                 'not running; they take effect on start'
-                                 % name)
 
         if not module.check_mode:
             network.apply_rules()
