@@ -1,0 +1,421 @@
+---
+# Deploy a FLEET -- several VMs of the same OS from one recipe, in one play.
+#
+#   ansible-playbook verify-recipe-bulk.yml
+#   ansible-playbook verify-recipe-bulk.yml -e bulk_count=8
+#
+# CREATES AND DESTROYS bulk_count VMs named zz-bulk-NN on DMZ.
+#
+# Every other ladder in this suite deploys ONE VM per play. That is not how
+# anyone uses a recipe: the reason to have one is to stamp out many identical
+# machines. Three things only appear at fleet scale, and none of them had a
+# test:
+#
+#   fact bleed      include_role leaves its facts set, and a loop over it runs
+#                   in one play with one variable scope. An iteration that
+#                   fails early or skips a gated task inherits the previous
+#                   one's drives, NICs and boot evidence and reports them as
+#                   its own. recipe_bulk_one.yml resets them; the distinctness
+#                   assertions below are what would notice if it stopped.
+#
+#   stats aliasing  drive IO counters are addressed by a FILTER on
+#                   parent_drive, not by path key, because
+#                   machine_drive_stats/<n> resolves to the row whose own $key
+#                   is n -- which belongs to a different drive. That defect
+#                   once surfaced as 809 MB of writes on a VM that had never
+#                   been powered on. With one VM per play it is invisible;
+#                   with a fleet, two VMs reporting the same drive is exactly
+#                   what it looks like.
+#
+#   bulk converge   re-running a fleet must report every member unchanged and
+#                   must not build a second copy of any of them.
+#
+#   all at once     the serial half hides everything that only happens under
+#                   simultaneous load. Rung 5 rebuilds the same fleet from N
+#                   concurrent ansible-playbook PROCESSES instead.
+#
+# Names are zz-bulk-01.. rather than key-derived, so a half-finished run is
+# obvious in the UI.
+- name: Recipe bulk live ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    bulk_count: 4
+    bulk_recipe: "Debian 12 (Bookworm)"
+    bulk_power_on: true
+    bulk_net: DMZ
+    bulk_answers:
+      USER: ladder
+      PASSWORD: BulkLadderScratch1!
+      YB_CPU_CORES: 1
+      YB_RAM: 2048
+      YB_DRIVE_OS_SIZE: 10737418240
+      SELECT_OS_TIER: 1
+      YB_IP_ADDR_TYPE: dhcp
+      YB_NIC_ETH0: DMZ
+
+  tasks:
+    - name: "0. Name the fleet"
+      ansible.builtin.set_fact:
+        bulk_names: >-
+          {{ range(1, bulk_count | int + 1)
+             | map('regex_replace', '^(.*)$', 'zz-bulk-\1')
+             | map('regex_replace', '^zz-bulk-([0-9])$', 'zz-bulk-0\1')
+             | list }}
+        bulk_results: []
+
+    - name: "0b. Announce"
+      ansible.builtin.debug:
+        msg: >-
+          deploying {{ bulk_count }} x '{{ bulk_recipe }}' as
+          {{ bulk_names }} on {{ bulk_net }}
+
+    # Teardown first: a half-finished previous fleet would be converged onto
+    # and reported as a successful deploy.
+    - name: "0c. Remove any fleet left from a previous run"
+      ansible.builtin.include_tasks: recipe_real_teardown.yml
+      vars:
+        td_vm: "{{ item }}"
+      loop: "{{ bulk_names }}"
+
+    - name: Ladder body
+      block:
+        # ── 1. Build the fleet ───────────────────────────────────────────────
+        - name: "1. Deploy each member"
+          ansible.builtin.include_tasks: recipe_bulk_one.yml
+          loop: "{{ bulk_names }}"
+          loop_control:
+            loop_var: bulk_vm
+            label: "{{ bulk_vm }}"
+
+        - name: "2. The fleet"
+          ansible.builtin.debug:
+            msg: >-
+              {{ '%-14s key=%-4s drives=%-10s vnets=%-8s wrote=%s'
+                 | format(r.vm, r.vm_key, r.drive_keys | join(','),
+                          r.vnets | join(','), r.written) }}
+          loop: "{{ bulk_results }}"
+          loop_control:
+            loop_var: r
+            label: "{{ r.vm }}"
+
+        - name: "2b. Every member was built, and built fresh"
+          ansible.builtin.assert:
+            that:
+              - bulk_results | length == bulk_count | int
+              - bulk_results | selectattr('changed') | list | length == bulk_count | int
+              - bulk_results | rejectattr('already_existed') | list | length == bulk_count | int
+            fail_msg: >-
+              expected {{ bulk_count }} fresh deploys, got
+              {{ bulk_results | selectattr('changed') | list | length }} changed
+              and {{ bulk_results | selectattr('already_existed') | list | length }}
+              already-existing
+            quiet: true
+
+        # The fact-bleed check. Two members reporting the same VM key, or the
+        # same drive, means an iteration was judged on another's evidence.
+        - name: "2c. No member reported another member's identity"
+          vars:
+            keys: "{{ bulk_results | map(attribute='vm_key') | list }}"
+            drives: "{{ bulk_results | map(attribute='drive_keys') | flatten | list }}"
+          ansible.builtin.assert:
+            that:
+              - keys | unique | length == keys | length
+              - keys | select('equalto', '') | list | length == 0
+              - drives | unique | length == drives | length
+              - drives | length >= bulk_count | int
+            fail_msg: >-
+              evidence is shared between members -- vm_keys={{ keys }}
+              drive_keys={{ drives }}
+            quiet: true
+
+        - name: "2d. Every member's NIC landed on the right network"
+          vars:
+            wrong: >-
+              {{ bulk_results
+                 | rejectattr('vnets', 'equalto', [bulk_net]) | list }}
+          ansible.builtin.assert:
+            that:
+              - wrong | length == 0
+              - bulk_results | selectattr('detached') | list | length == 0
+            fail_msg: >-
+              members on the wrong network or detached:
+              {{ wrong | map(attribute='vm') | list }}
+              vnets={{ bulk_results | map(attribute='vnets') | list }}
+            quiet: true
+
+        - name: "2e. Every member's guest actually booted"
+          vars:
+            silent: "{{ bulk_results | selectattr('written', 'le', 0) | list }}"
+          ansible.builtin.assert:
+            that: silent | length == 0
+            fail_msg: >-
+              these members are running but wrote nothing:
+              {{ silent | map(attribute='vm') | list }}
+            quiet: true
+
+        # ── 3. Read the fleet back independently ─────────────────────────────
+        #
+        # Not from the role's own facts. Everything above trusts what the role
+        # reported; this asks the platform.
+        - name: "3. Read every VM back"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: bulk_vms
+          changed_when: false
+
+        - name: "3b. Exactly the fleet exists, one of each"
+          vars:
+            found: >-
+              {{ bulk_vms.vms | map(attribute='name')
+                 | select('match', '(?i)^zz-bulk-') | list }}
+          ansible.builtin.assert:
+            that:
+              - found | sort == bulk_names | sort
+              - found | unique | length == found | length
+            fail_msg: >-
+              expected {{ bulk_names }}, found {{ found | sort }}
+            quiet: true
+
+        - name: "3c. Read each member's drives from the platform"
+          vergeio.vergeos.vm_drive_info:
+            insecure: true
+            vm: "{{ item }}"
+            media: disk
+            stats: true
+          register: bulk_drv
+          changed_when: false
+          loop: "{{ bulk_names }}"
+
+        # The stats-aliasing check. Every member should own its own drive
+        # rows; a drive key appearing under two VMs is the signature of
+        # counters being read by path key instead of by parent_drive filter.
+        - name: "3d. No drive is claimed by two members"
+          vars:
+            all_keys: >-
+              {{ bulk_drv.results | map(attribute='drives') | flatten
+                 | map(attribute='$key') | list }}
+          ansible.builtin.assert:
+            that:
+              - all_keys | unique | length == all_keys | length
+              - all_keys | length == bulk_count | int
+            fail_msg: >-
+              drive keys are shared across members: {{ all_keys }}
+            quiet: true
+
+        - name: "3e. And every member wrote something of its own"
+          vars:
+            written: >-
+              {{ bulk_drv.results
+                 | map(attribute='drives') | map('map', attribute='write_bytes')
+                 | map('sum') | list }}
+          ansible.builtin.assert:
+            that: written | select('le', 0) | list | length == 0
+            fail_msg: >-
+              a member reports no writes when read back independently:
+              {{ bulk_names | zip(written) | list }}
+            quiet: true
+
+        # ── 4. Bulk convergence ──────────────────────────────────────────────
+        - name: "4. Re-run the whole fleet"
+          ansible.builtin.set_fact:
+            bulk_results: []
+
+        - name: "4b. Deploy each member again"
+          ansible.builtin.include_tasks: recipe_bulk_one.yml
+          loop: "{{ bulk_names }}"
+          loop_control:
+            loop_var: bulk_vm
+            label: "{{ bulk_vm }}"
+          vars:
+            bulk_power_on: false
+
+        - name: "4c. Every member converged, none was rebuilt"
+          ansible.builtin.assert:
+            that:
+              - bulk_results | selectattr('changed') | list | length == 0
+              - bulk_results | selectattr('already_existed') | list | length == bulk_count | int
+            fail_msg: >-
+              a re-run was not idempotent:
+              changed={{ bulk_results | selectattr('changed')
+                         | map(attribute='vm') | list }}
+            quiet: true
+
+        - name: "4d. And still exactly the fleet"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: bulk_after
+          changed_when: false
+
+        - name: "4e. No duplicates appeared"
+          vars:
+            found: >-
+              {{ bulk_after.vms | map(attribute='name')
+                 | select('match', '(?i)^zz-bulk-') | list }}
+          ansible.builtin.assert:
+            that: found | sort == bulk_names | sort
+            fail_msg: "the re-run changed the fleet to {{ found | sort }}"
+            quiet: true
+
+        # ── 5. The same fleet, deployed ALL AT ONCE ──────────────────────────
+        #
+        # Everything above is serial: one VM finishes before the next starts.
+        # That is not how a fleet gets built in practice, and it hides
+        # everything that only happens under simultaneous load -- contention
+        # for the same cached image, key allocation, and whatever the platform
+        # serialises internally.
+        #
+        # Genuinely concurrent: N separate ansible-playbook PROCESSES via
+        # async/poll:0. A loop inside one play would serialise and prove
+        # nothing. Distinct names, unlike verify-recipe-concurrency.yml, which
+        # races two deploys for ONE name.
+        - name: "5. Remove the serial fleet first"
+          ansible.builtin.include_tasks: recipe_real_teardown.yml
+          vars:
+            td_vm: "{{ item }}"
+          loop: "{{ bulk_names }}"
+
+        - name: "5b. Launch every member simultaneously"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/recipe_concurrency_worker.yml"
+              - -i
+              - "{{ playbook_dir }}/localhost.ini"
+              # JSON, not -e key=value. `-e` splits its value on whitespace,
+              # so -e worker_recipe='Debian 12 (Bookworm)' reaches the worker
+              # as "Debian" -- which fails with "no recipe named 'Debian'"
+              # and looks like a missing recipe rather than a quoting bug.
+              - -e
+              - "{{ {'worker_vm': item,
+                     'worker_recipe': bulk_recipe,
+                     'worker_network': bulk_net} | to_json }}"
+            chdir: "{{ playbook_dir }}"
+          async: 2400
+          poll: 0
+          changed_when: false
+          check_mode: false
+          register: bulk_jobs
+          loop: "{{ bulk_names }}"
+
+        - name: "5c. Wait for all of them"
+          ansible.builtin.async_status:
+            jid: "{{ item.ansible_job_id }}"
+          register: bulk_done
+          until: bulk_done.finished
+          retries: 240
+          delay: 10
+          failed_when: false
+          loop: "{{ bulk_jobs.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: "5d. Report what each one did"
+          ansible.builtin.debug:
+            msg: >-
+              {{ item.item.item }}: rc={{ item.rc | default('?') }}
+              {{ (item.stdout | default('') | regex_search('WORKER-RESULT.*'))
+                 | default('(no worker result line)', true) }}
+          loop: "{{ bulk_done.results }}"
+          loop_control:
+            label: "{{ item.item.item }}"
+
+        - name: "5e. Every simultaneous deploy must have succeeded"
+          vars:
+            failed_jobs: >-
+              {{ bulk_done.results | rejectattr('rc', 'defined') | list
+                 + bulk_done.results | selectattr('rc', 'defined')
+                   | rejectattr('rc', 'equalto', 0) | list }}
+          ansible.builtin.assert:
+            that: failed_jobs | length == 0
+            fail_msg: >-
+              {{ failed_jobs | length }} of {{ bulk_count }} simultaneous
+              deploys failed:
+              {{ failed_jobs | map(attribute='item.item') | list }} --
+              return codes {{ bulk_done.results
+                              | map(attribute='rc') | list }}
+            quiet: true
+
+        - name: "5f. Read the fleet back"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: bulk_par
+          changed_when: false
+
+        - name: "5g. One of each, no duplicates, none missing"
+          vars:
+            found: >-
+              {{ bulk_par.vms | map(attribute='name')
+                 | select('match', '(?i)^zz-bulk-') | list }}
+          ansible.builtin.assert:
+            that:
+              - found | sort == bulk_names | sort
+              - found | unique | length == found | length
+            fail_msg: >-
+              building the fleet concurrently gave {{ found | sort }},
+              expected {{ bulk_names | sort }}
+            quiet: true
+
+        - name: "5h. And each got its own drive and a NIC on {{ bulk_net }}"
+          vergeio.vergeos.vm_nic_info:
+            insecure: true
+            vm: "{{ item }}"
+          register: bulk_par_nics
+          changed_when: false
+          loop: "{{ bulk_names }}"
+
+        - name: "5i. Assert no member came up detached"
+          vars:
+            detached: >-
+              {{ bulk_par_nics.results
+                 | selectattr('detached', 'defined')
+                 | selectattr('detached') | map(attribute='item') | list }}
+            wrong_net: >-
+              {{ bulk_par_nics.results
+                 | rejectattr('nics', 'equalto', [])
+                 | selectattr('nics', 'defined')
+                 | rejectattr('nics.0.vnet_name', 'equalto', bulk_net)
+                 | map(attribute='item') | list }}
+          ansible.builtin.assert:
+            that:
+              - detached | length == 0
+              - wrong_net | length == 0
+            fail_msg: >-
+              concurrent deploys produced detached NICs {{ detached }}
+              or wrong networks {{ wrong_net }}
+            quiet: true
+
+      always:
+        - name: "5. Tear the fleet down"
+          ansible.builtin.include_tasks: recipe_real_teardown.yml
+          vars:
+            td_vm: "{{ item }}"
+          loop: "{{ bulk_names }}"
+
+        - name: "5b. Confirm nothing is left"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: bulk_left
+          changed_when: false
+
+        - name: "5c. Assert clean"
+          vars:
+            left: >-
+              {{ bulk_left.vms | map(attribute='name')
+                 | select('match', '(?i)^zz-bulk-') | list }}
+          ansible.builtin.assert:
+            that: left | length == 0
+            fail_msg: "teardown left {{ left }}"
+            quiet: true
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          recipe bulk PASSED: {{ bulk_count }} VMs of one OS deployed from one
+          recipe in a single play, each with its own VM key, its own drive and
+          its own boot evidence -> every NIC on {{ bulk_net }} -> the platform
+          agrees the fleet is exactly {{ bulk_count }} VMs with no shared
+          drives -> a full re-run converges without rebuilding any of them ->
+          the same fleet rebuilt by {{ bulk_count }} SIMULTANEOUS deploys
+          comes up complete, distinct and attached -> zero leftovers

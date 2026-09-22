@@ -70,6 +70,7 @@ attacked on purpose.
 | `verify-recipe-real.yml` | all 30 deployable recipes DEPLOYED, powered on, boot-proved | PASS 30/30 |
 | `verify-recipe-custom.yml` | a recipe authored from scratch, then deployed from | PASS `ok=190 changed=16 failed=0` |
 | `verify-recipe-edges.yml` | the parameters and branches the other seven never reach | PASS `ok=106 changed=20 failed=0` |
+| `verify-recipe-bulk.yml` | a fleet of one OS, serially and then all at once | PASS `ok=299 changed=21 failed=0` |
 
 Only `verify-recipe-deploy.yml`, `-concurrency`, `-fuzz` and `-real` create
 anything. The fuzz ladder builds its own catalog, source VM and recipe
@@ -110,6 +111,38 @@ working recipes went untested for as long as the entry stood.
 Write volumes at first observation ranged from 11 MB (AlmaLinux 9) to 466 MB
 (Ubuntu 22.04). That is a floor caught the moment the guest started writing,
 not a total.
+
+## Fleets — the thing a recipe is actually for
+
+Every other ladder deploys ONE VM per play. Nobody keeps a recipe to build one
+machine. `verify-recipe-bulk.yml` builds `bulk_count` (default 4) VMs of the
+same OS from one recipe, twice: serially through `vm_from_recipe` in a loop,
+then — after tearing the first fleet down — the same names again from
+`bulk_count` **concurrent `ansible-playbook` processes**. Both passed, with
+distinct VM keys, distinct drives, every NIC on DMZ, and a full re-run
+converging without rebuilding anything.
+
+Two things it checks that only exist at fleet scale:
+
+- **Shared evidence.** Two members reporting the same VM key or the same
+  drive would mean one was judged on another's results. The drive check is
+  aimed at a defect that was real once: IO counters are addressed by a filter
+  on `parent_drive` rather than by path key, because
+  `machine_drive_stats/<n>` resolves to the row whose *own* `$key` is `n` —
+  which belongs to a different drive. With one VM per play that is invisible.
+- **Simultaneous load.** Four deploys of the same cached image at once,
+  competing for the same recipe and the same tier.
+
+### Two notes on the fact-reset in `recipe_bulk_one.yml`
+
+It is there because `include_role` leaves its facts set and a loop runs in one
+variable scope. Measured by deleting it, the risk is narrower than that
+sounds: **a skipped task still registers**, so Ansible writes
+`{'skipped': true}` over the variable and a gated task that does not run does
+*not* leave the previous value behind. Only a task never *reached* leaves
+stale data, and in this ladder an abort ends the loop anyway. The reset stays
+as belt and braces, and the seeded run confirmed rung 2c fires — on missing
+evidence rather than shared evidence.
 
 ## The edges — parameters and branches nothing else reached
 

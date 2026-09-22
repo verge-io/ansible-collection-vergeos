@@ -1,0 +1,67 @@
+---
+# Bulk helper: deploy ONE of the fleet through vm_from_recipe and record what
+# the role reported about IT.
+#
+# The recording is the point: include_role leaves its facts set, and a loop
+# over it runs in one play with one variable scope, so an iteration can end up
+# reporting the PREVIOUS iteration's drives, NICs and boot evidence as its own.
+# Nothing in this suite deployed more than one VM per play before, so that had
+# never been near a test.
+#
+# The reset is narrower than it looks, and it is worth being accurate about
+# what it does and does not protect against. Measured by deleting it and
+# making the second member skip its drive verification:
+#
+#   a SKIPPED task still registers -- Ansible writes {'skipped': true} over
+#   the variable, so a gated task that does not run does NOT leave the
+#   previous value behind. That half of the risk does not exist.
+#
+#   a task never REACHED does not register, so an iteration that aborts part
+#   way through leaves whatever the last one set. That half is real, and it is
+#   what this guards.
+#
+# In this ladder an abort ends the loop anyway, so the reset is belt and
+# braces rather than load-bearing. It stays because it costs nothing and
+# because a future rescue: around the deploy would make it matter.
+#
+# The seeded run above did fail rung 2c -- on "drive_keys=[36]" for a
+# two-member fleet, i.e. missing evidence rather than shared evidence. The
+# assertion is wired to something either way.
+
+- name: "Reset the role's facts before {{ bulk_vm }}"
+  ansible.builtin.set_fact:
+    vm_from_recipe_deploy: {}
+    vm_from_recipe_built_drives: {}
+    vm_from_recipe_built_nics: {}
+    vm_from_recipe_boot: {}
+
+- name: "Deploy one of the fleet -- {{ bulk_vm }}"
+  ansible.builtin.include_role:
+    name: vergeio.vergeos.vm_from_recipe
+  vars:
+    vm_from_recipe_recipe: "{{ bulk_recipe }}"
+    vm_from_recipe_name: "{{ bulk_vm }}"
+    vm_from_recipe_insecure: true
+    vm_from_recipe_power_on: "{{ bulk_power_on | bool }}"
+    vm_from_recipe_verify_boot: "{{ bulk_power_on | bool }}"
+    vm_from_recipe_boot_timeout: 420
+    vm_from_recipe_wait_timeout: 1800
+    vm_from_recipe_answers: >-
+      {{ bulk_answers | combine({'HOSTNAME': bulk_vm}) }}
+
+- name: "Record what the role said about {{ bulk_vm }}"
+  ansible.builtin.set_fact:
+    bulk_results: >-
+      {{ bulk_results | default([]) + [{
+           'vm': bulk_vm,
+           'vm_key': vm_from_recipe_deploy.vm_key | default(''),
+           'changed': vm_from_recipe_deploy.changed | default(false),
+           'already_existed': vm_from_recipe_deploy.already_existed | default(false),
+           'drive_keys': vm_from_recipe_built_drives.drives | default([])
+                         | map(attribute='$key') | list,
+           'vnets': vm_from_recipe_built_nics.nics | default([])
+                    | map(attribute='vnet_name') | list,
+           'detached': vm_from_recipe_built_nics.detached | default([]) | length,
+           'written': vm_from_recipe_boot.drives | default([])
+                      | map(attribute='write_bytes') | sum
+         }] }}
