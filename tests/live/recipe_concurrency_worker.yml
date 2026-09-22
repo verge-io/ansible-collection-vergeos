@@ -1,0 +1,56 @@
+---
+# Worker for verify-recipe-concurrency.yml. Deploys ONE VM from a recipe.
+#
+# Not a ladder. It exists so the concurrency ladder can fire two genuinely
+# separate ansible-playbook PROCESSES at the same instant. Running both
+# deploys inside one play would prove nothing: the window this exercises --
+# between the module's "does this VM already exist?" check and its deploy
+# POST -- is per-process, and a single play serialises its own tasks.
+#
+#   ansible-playbook recipe_concurrency_worker.yml \
+#     -e worker_vm=zz-conc-a -e worker_recipe='Ubuntu Server 22.04 (Jammy Jellyfish)'
+#
+# Exits non-zero if the deploy is refused. That is an EXPECTED outcome when
+# two workers race for one name, and the ladder is what interprets it.
+- name: Recipe concurrency worker
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    worker_vm: ""
+    worker_recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+    worker_network: DMZ
+
+  tasks:
+    - name: Preflight -- a VM name is required
+      ansible.builtin.assert:
+        that: worker_vm | length > 0
+        fail_msg: "pass -e worker_vm=<name>"
+        quiet: true
+
+    - name: Deploy
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "{{ worker_vm }}"
+        recipe: "{{ worker_recipe }}"
+        answers:
+          HOSTNAME: "{{ worker_vm }}"
+          USER: ladder
+          PASSWORD: LadderScratchValue1
+          YB_CPU_CORES: 1
+          YB_RAM: 1024
+          YB_DRIVE_OS_SIZE: 10737418240
+          SELECT_OS_TIER: 1
+          YB_IP_ADDR_TYPE: dhcp
+          YB_NIC_ETH0: "{{ worker_network }}"
+      register: worker_result
+
+    # Printed on a single line so the ladder can grep the subprocess output
+    # rather than parse it.
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          WORKER-RESULT vm={{ worker_vm }}
+          changed={{ worker_result.changed }}
+          already_existed={{ worker_result.already_existed | default('?') }}
+          vm_key={{ worker_result.vm_key | default('') }}

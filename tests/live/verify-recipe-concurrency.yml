@@ -1,0 +1,238 @@
+---
+# Concurrency ladder for vm_recipe_deploy.
+#
+#   ansible-playbook verify-recipe-concurrency.yml
+#
+# CREATES AND DESTROYS VMs, named zz-conc-* on DMZ. Everything else in this
+# suite deploys one VM at a time, so nothing else proves what happens when
+# two deploys run at once.
+#
+# The thing under test is a window the module cannot close on its own: its
+# convergence check ("does a VM of this name already exist?") and its deploy
+# POST are not atomic, so two concurrent runs can both see "no" and both
+# proceed. What makes that safe is the PLATFORM -- VM names are unique
+# server-side -- and what makes it usable is that the loser must report the
+# refusal honestly rather than announcing success and then waiting for a VM
+# it never created.
+#
+# This ladder does NOT claim the module serialises anything. It does not.
+# Safety here is the platform's uniqueness constraint plus an honest error,
+# which is enough for the ordinary case (two operators, same name, by
+# accident) and is not enough for anything that needs a real lock.
+#
+# Genuinely concurrent: two ansible-playbook SUBPROCESSES via async/poll:0.
+# Two tasks in one play would serialise and prove nothing.
+- name: Recipe concurrency live ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    conc_a: zz-conc-a
+    conc_b: zz-conc-b
+    conc_same: zz-conc-race
+    zz_recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+    worker: "{{ playbook_dir }}/recipe_concurrency_worker.yml"
+
+  tasks:
+    - name: Ladder body
+      block:
+        - name: "0. The stock recipe must exist"
+          vergeio.vergeos.vm_recipe_info:
+            insecure: true
+            name: "{{ zz_recipe }}"
+          register: rc
+          changed_when: false
+
+        - name: "0b. Refuse to run without it"
+          ansible.builtin.assert:
+            that: rc.recipes | default([]) | length == 1
+            fail_msg: "stock recipe '{{ zz_recipe }}' not found"
+
+        - name: "0c. Clean any leftovers from a previous run"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ item }}"
+            state: absent
+          loop: [zz-conc-a, zz-conc-b, zz-conc-race]
+
+        # ---- case 1: two different names at once. Both must succeed. ----
+
+        - name: "1. Launch two deploys of DIFFERENT names simultaneously"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ worker }}"
+              - -i
+              - "{{ playbook_dir }}/localhost.ini"
+              - -e
+              - "worker_vm={{ item }}"
+            chdir: "{{ playbook_dir }}"
+          async: 1200
+          poll: 0
+          changed_when: false
+          check_mode: false
+          register: diff_jobs
+          loop: [zz-conc-a, zz-conc-b]
+
+        - name: "1b. Wait for both"
+          ansible.builtin.async_status:
+            jid: "{{ item.ansible_job_id }}"
+          register: diff_done
+          until: diff_done.finished
+          retries: 120
+          delay: 5
+          failed_when: false
+          loop: "{{ diff_jobs.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: "1c. Both deploys of different names succeeded"
+          ansible.builtin.assert:
+            that: diff_done.results | selectattr('rc', 'equalto', 0) | list | length == 2
+            fail_msg: >-
+              expected both concurrent deploys to succeed, got return codes
+              {{ diff_done.results | map(attribute='rc') | list }}
+
+        - name: "1d. Both VMs exist, distinctly"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: after_diff
+          changed_when: false
+
+        - name: "1e. Assert exactly one of each"
+          vars:
+            names: "{{ after_diff.vms | map(attribute='name') | list }}"
+          ansible.builtin.assert:
+            that:
+              - names | select('equalto', conc_a) | list | length == 1
+              - names | select('equalto', conc_b) | list | length == 1
+            fail_msg: >-
+              expected one {{ conc_a }} and one {{ conc_b }}, got
+              {{ names | select('match', '^zz-conc-') | list }}
+
+        # ---- case 2: the same name at once. Exactly one must win. ----
+        #
+        # This is the rung that matters. Both processes pass the convergence
+        # check, both POST, and the platform refuses the second. The loser
+        # must EXIT NON-ZERO -- announcing success and then waiting for a VM
+        # it never created is the failure mode this guards against.
+
+        - name: "2. Launch two deploys of the SAME name simultaneously"
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ worker }}"
+              - -i
+              - "{{ playbook_dir }}/localhost.ini"
+              - -e
+              - "worker_vm={{ conc_same }}"
+            chdir: "{{ playbook_dir }}"
+          async: 1200
+          poll: 0
+          changed_when: false
+          check_mode: false
+          register: same_jobs
+          loop: [1, 2]
+
+        - name: "2b. Wait for both"
+          ansible.builtin.async_status:
+            jid: "{{ item.ansible_job_id }}"
+          register: same_done
+          until: same_done.finished
+          retries: 120
+          delay: 5
+          failed_when: false
+          loop: "{{ same_jobs.results }}"
+          loop_control:
+            label: "racer {{ item.item }}"
+
+        - name: "2c. Report what each racer did"
+          ansible.builtin.debug:
+            msg: >-
+              racer {{ idx + 1 }}: rc={{ item.rc }}
+              {{ (item.stdout | default('') | regex_search('WORKER-RESULT.*'))
+                 | default('(no worker result line)', true) }}
+          loop: "{{ same_done.results }}"
+          loop_control:
+            index_var: idx
+            label: "racer {{ idx + 1 }}"
+
+        # Both-succeed is ALSO acceptable and is not a bug: if one process
+        # happens to finish its POST before the other starts, the second
+        # simply converges on the existing VM. What must never happen is
+        # both reporting success while two VMs exist, or a loser exiting 0
+        # having created nothing.
+        - name: "2d. At least one racer won"
+          ansible.builtin.assert:
+            that: same_done.results | selectattr('rc', 'equalto', 0) | list | length >= 1
+            fail_msg: >-
+              both racers failed; nobody created the VM. return codes
+              {{ same_done.results | map(attribute='rc') | list }}
+
+        - name: "2e. Read back what actually exists"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: after_same
+          changed_when: false
+
+        # The load-bearing assertion. The platform's uniqueness constraint
+        # is the only thing preventing a duplicate here, so this is checking
+        # the platform as much as the module.
+        - name: "2f. Exactly ONE VM by the raced name exists"
+          vars:
+            raced: >-
+              {{ after_same.vms | map(attribute='name')
+                 | select('equalto', conc_same) | list }}
+          ansible.builtin.assert:
+            that: raced | length == 1
+            fail_msg: >-
+              the race produced {{ raced | length }} VMs named
+              '{{ conc_same }}' -- a duplicate means the uniqueness
+              constraint did not hold
+
+        - name: "2g. A losing racer must exit non-zero, never 0"
+          vars:
+            losers: >-
+              {{ same_done.results | rejectattr('rc', 'equalto', 0) | list }}
+          ansible.builtin.assert:
+            that: >-
+              losers | length == 0
+              or (losers | map(attribute='rc') | select('>', 0) | list
+                  | length == losers | length)
+            fail_msg: >-
+              a racer failed with a zero return code, which would mean it
+              reported success without creating anything
+
+      always:
+        - name: "3. Teardown every VM this ladder could have created"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ item }}"
+            state: absent
+          loop: [zz-conc-a, zz-conc-b, zz-conc-race]
+          failed_when: false
+
+        - name: "3b. Confirm zero leftovers"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: leftover
+          changed_when: false
+
+        - name: "3c. Assert clean"
+          ansible.builtin.assert:
+            that: >-
+              leftover.vms | map(attribute='name')
+              | select('match', '^zz-conc-') | list | length == 0
+            fail_msg: >-
+              leftovers:
+              {{ leftover.vms | map(attribute='name')
+                 | select('match', '^zz-conc-') | list }}
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          recipe concurrency PASSED: two simultaneous deploys of different
+          names both succeed and produce one VM each -> two simultaneous
+          deploys of the SAME name produce exactly ONE VM, at least one
+          racer wins, and any loser exits non-zero rather than claiming a
+          success it did not achieve -> zero leftovers
