@@ -624,23 +624,23 @@
               sent={{ pruned_case.answers_sent | default([]) }}
             quiet: true
 
-        # ── 5. A measured artefact, pinned ───────────────────────────────────
+        # ── 5. no_log narrowing (B20) ────────────────────────────────────────
         #
-        # `answers` is no_log, which is correct -- recipe answers routinely
-        # carry passwords. ansible-core masks a no_log value by replacing it
-        # ANYWHERE in the module's output, as a plain substring. So a
-        # one-character answer such as YB_CPU_CORES: 1 masks every "1" in every
-        # message the module emits, including digits in the recipe's own
-        # constraints.
+        # `answers` is no_log and must stay that way -- recipe answers
+        # routinely carry passwords, and ansible-core logs a module's
+        # invocation before any of its code runs. But ansible-core masks a
+        # no_log value by replacing it as a plain SUBSTRING everywhere in the
+        # module's return data, and it treats integers as values, so the
+        # ordinary answer YB_CPU_CORES: 1 used to mask every "1" the module
+        # printed -- including the digits in the recipe's own constraints:
         #
-        # Nothing acts on the mangled text -- the refusal is still correct --
-        # but the operator reads "requires at least 5********2" at exactly the
-        # moment they need the number. Measured, not inferred: the two runs
-        # below differ by one answer and nothing else.
+        #     the recipe requires at least 5********2
         #
-        # If ansible-core stops substring-masking short values, THIS RUNG
-        # FAILS. Delete it then; do not loosen it.
-        - name: "5. Same refusal, with a one-character answer in the set"
+        # narrow_no_log() now stops masking the answers the recipe's question
+        # TYPES say are not credentials. Both halves are checked below,
+        # because a fix that only did the first half would be a credential
+        # leak rather than an improvement.
+        - name: "5. A non-secret short answer must not mask the recipe's digits"
           vergeio.vergeos.vm_recipe_deploy:
             insecure: true
             name: "{{ fz_vm }}"
@@ -652,39 +652,73 @@
           failed_when: false
           register: fz_masked
 
-        - name: "5b. ...and without it"
+        - name: "5b. The minimum survived, digits and all"
+          ansible.builtin.assert:
+            that:
+              - fz_masked.failed_when_suppressed_exception is defined
+              - "'requires at least 512' in (fz_masked.msg | default(''))"
+            fail_msg: >-
+              a one-character non-secret answer is masking the recipe's own
+              numbers again: {{ fz_masked.msg | default('(none)') }}
+            quiet: true
+
+        # The decisive half. 'fuzz' is a substring of the recipe name the
+        # module quotes back, so whether it survives says exactly how the
+        # answer was classified -- the same marker is used as an ordinary
+        # answer in rung 5e.
+        - name: "5c. The same marker, as a password-typed answer"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ fz_vm }}"
+            recipe: "{{ fz_recipe }}"
+            catalog: "{{ fz_cat }}"
+            answers: {ZZ_HOSTNAME: zz-fuzz-host, ZZ_SECRET: fuzz,
+                      ZZ_RAM_MB: 256, YB_CPU_CORES: 1}
+          check_mode: true
+          failed_when: false
+          register: fz_secret
+
+        - name: "5d. It is masked in the message and absent from the result"
+          ansible.builtin.assert:
+            that:
+              - "'fuzz' not in (fz_secret.msg | default(''))"
+              - "'********' in (fz_secret.msg | default(''))"
+              - "'fuzz' not in (fz_secret | to_json | replace(fz_recipe, ''))"
+            fail_msg: >-
+              a password-typed answer stopped being masked:
+              {{ fz_secret.msg | default('(none)') }}
+            quiet: true
+
+        - name: "5e. The same marker as an ORDINARY answer is not masked"
           vergeio.vergeos.vm_recipe_deploy:
             insecure: true
             name: "{{ fz_vm }}"
             recipe: "{{ fz_recipe }}"
             catalog: "{{ fz_cat }}"
             answers: {ZZ_HOSTNAME: zz-fuzz-host, ZZ_SECRET: Zz-Fuzz-Scratch-1!,
-                      ZZ_RAM_MB: 256}
+                      ZZ_NOTE: fuzz, ZZ_RAM_MB: 256, YB_CPU_CORES: 1}
           check_mode: true
           failed_when: false
-          register: fz_clean
+          register: fz_plain
 
-        - name: "5c. Both refused; only the second says which minimum"
+        - name: "5f. Assert the classification, not merely the masking"
           ansible.builtin.assert:
-            that:
-              - fz_masked.failed_when_suppressed_exception is defined
-              - fz_clean.failed_when_suppressed_exception is defined
-              - "'requires at least' in (fz_masked.msg | default(''))"
-              - "'512' in (fz_clean.msg | default(''))"
-              - "'512' not in (fz_masked.msg | default(''))"
+            that: fz_recipe in (fz_plain.msg | default(''))
             fail_msg: >-
-              expected the one-character answer to mask the digits and the
-              clean set to keep them.
-              masked={{ fz_masked.msg | default('') }}
-              clean={{ fz_clean.msg | default('') }}
+              an ordinary answer is still being masked, so the narrowing is
+              not classifying by question type:
+              {{ fz_plain.msg | default('(none)') }}
             quiet: true
 
-        - name: "5d. Report it, since a passing assert prints nothing"
+        - name: "5g. Report it, since a passing assert prints nothing"
           ansible.builtin.debug:
             msg: >-
-              no_log masking -- with YB_CPU_CORES:1 in the set the module says
+              no_log narrowing -- ordinary answer:
               "{{ fz_masked.msg | default('') | regex_search('requires at least [^;]*') }}";
-              without it, "{{ fz_clean.msg | default('') | regex_search('requires at least [^;]*') }}"
+              the marker 'fuzz' as a password shows as
+              "{{ fz_secret.msg | default('') | regex_search("recipe '[^']*'") }}",
+              as a note as
+              "{{ fz_plain.msg | default('') | regex_search("recipe '[^']*'") }}"
 
         # ── 6. Names that have to survive a filter ───────────────────────────
         #

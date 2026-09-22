@@ -589,8 +589,8 @@ the client-side matching that keeps getting flagged as redundant is load-bearing
 ---
 
 ## B20 — a one-character answer masks the digits in every `vm_recipe_deploy` message
-**Status:** OPEN (ansible-core behaviour; our exposure is a design trade-off)
-**Severity:** low — cosmetic, but it removes the diagnostic at the moment it is needed
+**Status:** FIXED — `narrow_no_log()` in `vm_recipe_deploy.py`
+**Severity:** low — cosmetic, but it removed the diagnostic at the moment it was needed
 **Found:** 2026-09-21, building `tests/live/verify-recipe-fuzz.yml`
 
 B14 recorded that a `no_log` answer whose value equals the VM name masks the
@@ -647,18 +647,57 @@ need, and the same masking applies to any digit, key fragment or word that
 happens to match a short answer value. It is the reason every `matching`
 string in `verify-recipe-fuzz.yml`'s case table is digit-free.
 
-### Options, none of them free
+### The fix
 
-1. **Accept and document.** Zero risk, no fix.
-2. **Split the parameter** — `answers` not `no_log`, plus a `secret_answers`
-   that is. Removes the masking for ordinary numeric answers and keeps
-   credentials protected, at the cost of a breaking change to a module
-   already on `main`.
-3. **Upstream.** The substring masking is ansible-core's, and short `no_log`
-   values mangling unrelated output is a general problem — not ours to fix
-   in this repo.
+None of the three options first written here were taken. Accepting it left a
+real diagnostic broken; splitting `answers` into `answers` + `secret_answers`
+would have been a breaking change to a module already on `main`; and upstream
+is the right long-term home but does not help anyone on ansible-core 2.20.
 
-Not acted on unilaterally: option 2 changes a shipped module's interface.
-Pinned by rung 5 of `verify-recipe-fuzz.yml`, which asserts the masking
-happens — **if ansible-core stops substring-masking short values that rung
-fails, and the right response is to delete it, not to loosen it.**
+There is a fourth option, and it is neither breaking nor a guess:
+**keep `answers` `no_log`, and narrow `module.no_log_values` afterwards.**
+
+`AnsibleModule.__init__` logs the invocation — the path that actually matters
+for credential leakage — before any module code runs, and it does so with
+everything masked. `remove_values()` is applied to the RETURN data separately,
+at `exit_json`/`fail_json` time, reading `self.no_log_values` as it stands
+then. So by the time the module has called the API it knows the recipe's
+question TYPES, and can stop masking the answers the platform itself says are
+not credentials, without ever having exposed them to the logging path.
+
+`narrow_no_log()` does exactly that, and fails closed three ways:
+
+- a recipe that publishes no questions cannot be classified, so **nothing** is
+  unmasked;
+- a value any secret answer also contributes stays masked, so a password that
+  happens to equal a core count is not unmasked by the core count;
+- a value any other `no_log` parameter contributes — `password`, `api_key` —
+  stays masked, and those are read from `module.argument_spec` rather than
+  named in the function, so a `no_log` parameter added later is covered
+  without anyone remembering to come back here.
+
+Everything earlier in `main()` still runs fully masked, including the
+"already exists" path from B14.
+
+### Verified
+
+Same marker string, classified two ways by the recipe's own question types.
+`fuzz` is a substring of the recipe name the module quotes back, so whether it
+survives says precisely how the answer was classified:
+
+```
+ZZ_SECRET: fuzz   (type password)  -> recipe 'zz-********-recipe'
+ZZ_NOTE:   fuzz   (type string)    -> recipe 'zz-fuzz-recipe'
+```
+
+and the digits came back:
+
+```
+before: the recipe requires at least 5********2
+after:  the recipe requires at least 512
+```
+
+Pinned by rungs 5–5g of `verify-recipe-fuzz.yml`, which assert **both**
+directions — a fix that only restored the digits would be a credential leak,
+not an improvement — plus eight unit tests on the pure helpers, including the
+collision case where a password and a core count share a value.

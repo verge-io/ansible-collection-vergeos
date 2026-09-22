@@ -81,17 +81,19 @@ with one valid case declared `expect: refuse`, rung 3c fails.
 
 ## Measured platform behaviours worth knowing
 
-- **A one-character answer masks digits in the module's own error
-  messages.** `vm_recipe_deploy`'s `answers` is `no_log`, which is right —
+- **A one-character answer used to mask digits in the module's own error
+  messages** (B20, now fixed). `answers` is `no_log`, which is right —
   recipe answers routinely carry passwords — and ansible-core masks a
   `no_log` value by replacing it *anywhere* in the module's output as a
-  plain substring. So `YB_CPU_CORES: 1` in the answer set turns
-  *"the recipe requires at least 512"* into
-  *"the recipe requires at least 5\*\*\*\*\*\*\*\*2"*. Nothing acts on the
-  mangled text and the refusal itself is correct, but the operator loses
-  the number at the moment they need it. Measured with two runs differing
-  by exactly one answer; pinned by rung 5 of `verify-recipe-fuzz.yml`, and
-  the reason every `matching` string in that table is digit-free.
+  plain substring, integers included. `YB_CPU_CORES: 1` turned
+  *"requires at least 512"* into *"requires at least 5\*\*\*\*\*\*\*\*2"*.
+  `narrow_no_log()` now stops masking the answers the recipe's question
+  types say are not credentials, once those types are known — the
+  invocation log, which is the path that matters for leakage, has already
+  happened fully masked by then. Rungs 5–5g pin **both** directions: the
+  same marker string is masked as a `password`-typed answer and survives
+  as a `string`-typed one. The `matching` strings in the case table stay
+  digit-free anyway, so the table does not depend on the fix holding.
 
 - **`file`: `filesize` settles asynchronously.** Immediately after an
   upload of a 1048576-byte file the row reads `filesize: 786432`, reaching

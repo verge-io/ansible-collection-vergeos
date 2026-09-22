@@ -247,8 +247,10 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     HAS_PYVERGEOS,
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    maskable_strings,
     resolve_answers,
     scan_simulate,
+    unmaskable_answer_strings,
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vm_recipes import (
     deployed_vm_key,
@@ -292,6 +294,51 @@ def resolve(client, recipe_key, answers, prune_unknown):
     return resolve_answers(questions, answers, vnets=networks,
                            options=options,
                            prune_unknown=prune_unknown), questions
+
+
+def narrow_no_log(module, resolved):
+    """Stop masking the answers that are not credentials, in OUR output only.
+
+    ``answers`` is ``no_log`` and must stay that way -- recipe answers
+    routinely carry passwords, and ansible-core logs a module's invocation
+    before any of its code runs. But ansible-core masks a ``no_log`` value by
+    replacing it as a plain SUBSTRING everywhere in the module's return data,
+    and it treats integers as values, so the ordinary answer
+    ``YB_CPU_CORES: 1`` masked every "1" this module printed:
+
+        the recipe requires at least 5********2
+
+    The refusal was right and unreadable, which is the worst combination --
+    the operator loses the number at the moment they need it.
+
+    Called only once the recipe's question TYPES have said which answers are
+    credentials, so the decision is made on the platform's own classification
+    rather than on a guess. Three things keep it conservative:
+
+      * a recipe that publishes no questions cannot be classified, so nothing
+        is unmasked at all;
+      * a value that any secret answer also contributes stays masked, even if
+        a non-secret answer happens to share it;
+      * a value any OTHER no_log parameter contributes -- ``password``,
+        ``api_key`` -- stays masked, read from the argument spec rather than
+        named here so a future no_log parameter is covered automatically.
+
+    Everything before this point in main() still runs fully masked. That is
+    deliberate: it fails closed.
+    """
+    if not resolved.get('introspectable'):
+        return
+
+    unmaskable = unmaskable_answer_strings(module.params.get('answers'),
+                                           resolved.get('secret_vars'))
+    if not unmaskable:
+        return
+
+    for name, spec in (module.argument_spec or {}).items():
+        if name != 'answers' and spec.get('no_log'):
+            unmaskable -= maskable_strings(module.params.get(name))
+
+    module.no_log_values -= unmaskable
 
 
 def main():
@@ -354,6 +401,11 @@ def main():
         resolved, _questions = resolve(client, recipe['$key'],
                                        params['answers'],
                                        params['prune_unknown'])
+
+        # Before the first message that quotes the recipe's own numbers back
+        # at the operator, and after the question types that classify the
+        # credentials. See narrow_no_log().
+        narrow_no_log(module, resolved)
 
         result['answers_sent'] = sorted(resolved['answers'])
         result['hints'] = resolved['hints']

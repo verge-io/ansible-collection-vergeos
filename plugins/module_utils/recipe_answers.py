@@ -172,6 +172,62 @@ def check_constraints(name, question, value):
     return errors
 
 
+def maskable_strings(value):
+    """Every string ansible-core would add to ``no_log_values`` for ``value``.
+
+    Mirrors ansible-core's ``_return_datastructure_name``: strings if
+    non-empty, numbers stringified, booleans and None skipped, containers
+    walked. Kept in step with it deliberately -- this is the set we reason
+    about when deciding what may safely stop being masked.
+    """
+    out = set()
+    if isinstance(value, (bool, type(None))):
+        return out
+    if isinstance(value, (bytes, str)):
+        if value:
+            out.add(value.decode() if isinstance(value, bytes) else value)
+        return out
+    if isinstance(value, dict):
+        for item in value.values():
+            out |= maskable_strings(item)
+        return out
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            out |= maskable_strings(item)
+        return out
+    if isinstance(value, (int, float)):
+        out.add(str(value))
+    return out
+
+
+def unmaskable_answer_strings(answers, secret_vars):
+    """Strings contributed ONLY by answers that are not credentials.
+
+    Ansible masks a ``no_log`` value by replacing it as a plain SUBSTRING
+    anywhere in a module's output, and it treats integers as values too. So a
+    perfectly ordinary answer like ``YB_CPU_CORES: 1`` masks every "1" the
+    module ever prints -- including the digits inside the recipe's own
+    constraints, which is how "requires at least 512" came out as
+    "requires at least 5********2".
+
+    ``answers`` has to stay ``no_log`` in the argument spec: it routinely
+    carries passwords, and ansible-core logs the invocation before any module
+    code runs, so redacting later is too late for that path. What CAN be done
+    is to stop masking the non-credential answers in the module's own RETURN
+    values, once the recipe's question types have said which answers are
+    credentials.
+
+    A value that any secret answer also contributes is never returned here,
+    so a password that happens to equal a core count stays masked.
+    """
+    secret = set(secret_vars or [])
+    secret_strings, plain_strings = set(), set()
+    for name, value in (answers or {}).items():
+        target = secret_strings if name in secret else plain_strings
+        target |= maskable_strings(value)
+    return plain_strings - secret_strings
+
+
 def resolve_answers(questions, answers, vnets=None, options=None,
                     prune_unknown=False):
     """Validate and shape user answers against a recipe's question set.

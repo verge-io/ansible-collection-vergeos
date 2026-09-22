@@ -3,8 +3,10 @@
 import pytest
 
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    maskable_strings,
     resolve_answers,
     scan_simulate,
+    unmaskable_answer_strings,
 )
 
 
@@ -266,3 +268,62 @@ def test_pruning_is_off_by_default_so_typos_still_fail():
     out = resolve_answers([q("HOSTNAME")], {"HOTSNAME": "typo"})
     assert any("unknown answer" in e for e in out["errors"])
     assert out["pruned"] == []
+
+
+# ── no_log narrowing (B20) ───────────────────────────────────────────────────
+#
+# ansible-core masks a no_log value by replacing it as a plain SUBSTRING
+# everywhere in a module's return data, and it treats integers as values. So
+# YB_CPU_CORES: 1 masked every "1" the deploy module printed, including the
+# digits inside the recipe's own constraints. These cover the pure half of the
+# fix; narrow_no_log() in the module wires them to module.no_log_values.
+
+def test_maskable_strings_matches_what_ansible_would_collect():
+    assert maskable_strings("secret") == {"secret"}
+    assert maskable_strings(1) == {"1"}
+    assert maskable_strings(2.5) == {"2.5"}
+    # Booleans and None are skipped by ansible-core, and bool must be checked
+    # before int because bool IS an int.
+    assert maskable_strings(True) == set()
+    assert maskable_strings(None) == set()
+    # An empty string is not masked -- masking it would replace the gap
+    # between every pair of characters.
+    assert maskable_strings("") == set()
+
+
+def test_maskable_strings_walks_containers():
+    assert maskable_strings({"a": 1, "b": ["x", {"c": 2}]}) == {"1", "x", "2"}
+
+
+def test_ordinary_numeric_answers_become_unmaskable():
+    out = unmaskable_answer_strings(
+        {"YB_CPU_CORES": 1, "YB_RAM": 2048, "PASSWORD": "hunter2"},
+        ["PASSWORD"])
+    assert out == {"1", "2048"}
+
+
+def test_a_credential_answer_is_never_unmasked():
+    out = unmaskable_answer_strings({"PASSWORD": "hunter2"}, ["PASSWORD"])
+    assert out == set()
+
+
+def test_a_value_shared_with_a_credential_stays_masked():
+    """The whole point: masking must win on a collision, not last-write."""
+    out = unmaskable_answer_strings(
+        {"YB_CPU_CORES": 1, "PASSWORD": "1"}, ["PASSWORD"])
+    assert out == set()
+
+
+def test_no_secret_vars_means_every_answer_is_unmaskable():
+    out = unmaskable_answer_strings({"YB_RAM": 2048}, [])
+    assert out == {"2048"}
+
+
+def test_secret_vars_naming_an_absent_answer_is_harmless():
+    out = unmaskable_answer_strings({"YB_RAM": 2048}, ["PASSWORD"])
+    assert out == {"2048"}
+
+
+def test_empty_inputs_do_not_explode():
+    assert unmaskable_answer_strings(None, None) == set()
+    assert unmaskable_answer_strings({}, []) == set()
