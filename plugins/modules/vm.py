@@ -69,8 +69,16 @@ options:
   machine_type:
     description:
       - The machine type for the VM.
+      - >-
+        Accepts either a family alias (C(pc), C(q35), C(virt)), which the
+        platform expands to its newest version, or an exact machine type such
+        as C(pc-q35-10.0). Pin the exact name when a specific version matters,
+        for example when remediating a deprecated machine type.
+      - >-
+        An alias is considered converged against any version of that family,
+        so C(q35) will not silently move a VM between machine versions. The
+        platform rejects unknown machine types.
     type: str
-    choices: [ pc, q35, virt ]
   machine_subtype:
     description:
       - The machine subtype/version.
@@ -221,6 +229,24 @@ def build_vm_data(module):
     return vm_data
 
 
+# A machine-type alias is stored expanded: 'q35' becomes 'pc-q35-10.0'.
+# Comparing the alias against the stored value literally never matched, so a
+# converged VM reported 'changed' on every run and re-sent the field.
+MACHINE_TYPE_ALIASES = {
+    'pc': 'pc-i440fx-',
+    'q35': 'pc-q35-',
+    'virt': 'virt-',
+}
+
+
+def machine_type_matches(desired, current):
+    """True if the stored machine type already satisfies the request."""
+    if desired == current:
+        return True
+    prefix = MACHINE_TYPE_ALIASES.get(desired)
+    return bool(prefix and current and str(current).startswith(prefix))
+
+
 def resolve_snapshot_profile(module, client):
     """Profile NAME (what the operator writes) -> the raw field value.
 
@@ -264,10 +290,17 @@ def update_vm(module, client, vm):
 
     vm_dict = dict(vm)
     for field in fields_to_check:
-        if module.params.get(field) is not None:
-            if vm_dict.get(field) != module.params[field]:
-                update_data[field] = module.params[field]
-                changed = True
+        if module.params.get(field) is None:
+            continue
+        desired = module.params[field]
+        current = vm_dict.get(field)
+        if field == 'machine_type':
+            if machine_type_matches(desired, current):
+                continue
+        elif current == desired:
+            continue
+        update_data[field] = desired
+        changed = True
 
     # snapshot_profile: the param is a profile NAME, the raw field holds
     # the profile's $key. '' removes the VM from its profile.
@@ -364,7 +397,7 @@ def main():
         os_family=dict(type='str', choices=['linux', 'windows', 'other']),
         cpu_cores=dict(type='int'),
         ram=dict(type='int'),
-        machine_type=dict(type='str', choices=['pc', 'q35', 'virt']),
+        machine_type=dict(type='str'),
         machine_subtype=dict(type='str'),
         bios_type=dict(type='str', choices=['seabios', 'uefi']),
         network=dict(type='str'),
