@@ -11,21 +11,36 @@
   hosts: localhost
   gather_facts: false
 
+  vars:
+    # The reconcile example below needs a second VergeOS system and the
+    # registration code issued by its INCOMING sync. Supply that and it
+    # reconciles; omit it and the play runs in the watchdog mode described
+    # above -- converge nothing, report on whatever replication already
+    # exists. It used to reference vault_dr_registration_code unconditionally
+    # and die with "'vault_dr_registration_code' is undefined" on any system
+    # that had not defined it.
+    #
+    #   ansible-playbook examples/dr_replication.yml \
+    #     -e vault_dr_registration_code=... \
+    #     -e dr_site_url=https://dr.example.com
+    example_syncs:
+      - name: "to-dr-site"
+        site: 1
+        # Issued by the matching INCOMING sync on the remote system.
+        # Create-time only; it is never reconciled or echoed back.
+        registration_code: "{{ vault_dr_registration_code | default('') }}"
+        url: "{{ dr_site_url | default('https://dr.example.com') }}"
+        enabled: true
+        encryption: true
+        compression: true
+        destination_tier: "4"
+        threads: 4
+
   roles:
     - role: vergeio.vergeos.dr_replication
       vars:
-        dr_replication_syncs:
-          - name: "to-dr-site"
-            site: 1
-            # Issued by the matching INCOMING sync on the remote system.
-            # Create-time only; it is never reconciled or echoed back.
-            registration_code: "{{ vault_dr_registration_code }}"
-            url: "https://dr.example.com"
-            enabled: true
-            encryption: true
-            compression: true
-            destination_tier: "4"
-            threads: 4
+        dr_replication_syncs: >-
+          {{ example_syncs if vault_dr_registration_code is defined else [] }}
 
         # Adopt an existing estate with this false first. Confirm the report
         # lists what you expect, then flip it -- deleting a sync tears down a

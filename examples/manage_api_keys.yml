@@ -11,6 +11,20 @@
 
   vars:
     vergeos_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+    # Overridable so the example does not assume it is running as root.
+    api_key_secret_path: "{{ lookup('env', 'HOME') }}/.vergeos_token"
+
+  # An API key belongs to a user, so the user has to exist. Without this the
+  # example failed on the very first task on any system that had not been
+  # prepared by hand. Demo account -- point `user:` at a real service account
+  # and delete this block.
+  pre_tasks:
+    - name: Create the service account the keys belong to
+      vergeio.vergeos.user:
+        name: automation
+        user_password: "{{ lookup('password', '/dev/null length=24') }}"
+        full_name: "Automation service account"
+        state: present
 
   tasks:
     - name: Automation key with an IP allow list
@@ -27,7 +41,7 @@
     - name: Persist the secret (only present on creation)
       ansible.builtin.copy:
         content: "{{ runner_key.secret }}"
-        dest: /root/.vergeos_token
+        dest: "{{ api_key_secret_path }}"
         mode: "0600"
       when: runner_key.secret is defined
       no_log: true

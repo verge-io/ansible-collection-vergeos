@@ -8,6 +8,21 @@
   hosts: localhost
   gather_facts: false
 
+  # The rbac role assigns membership; it does not invent people. Without these
+  # the example died with "cannot add user 'alice' to group 'operators': no
+  # such user." on any system that had not been prepared by hand.
+  #
+  # These are demo accounts. Remove them with state=absent, or point
+  # rbac_groups at users you already have and delete this block.
+  pre_tasks:
+    - name: Create the demo users this example assigns
+      vergeio.vergeos.user:
+        name: "{{ item }}"
+        user_password: "{{ lookup('password', '/dev/null length=24') }}"
+        full_name: "Demo user {{ item }}"
+        state: present
+      loop: [alice, bob, carol, dave]
+
   roles:
     - role: vergeio.vergeos.rbac
       vars:
