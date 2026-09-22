@@ -1,0 +1,42 @@
+---
+# Deploy an HAProxy (plus optional keepalived) load-balancer VM from a
+# golden template.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/lb_stack.yml
+#
+# Build the template first with examples/image_pipeline.yml.
+#
+# Honest label: this is a VM YOU OPERATE, not a VergeOS fabric service.
+# VergeOS does not provide load balancing as a platform feature; this role
+# deploys and configures a guest that does it. You own its patching, its
+# availability and its capacity.
+#
+# The haproxy install happens in-guest via cloud-init and needs internet
+# access from the VM. The role returns once the VM is booted and configured,
+# not once haproxy is serving traffic.
+- name: Load balancer stack
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    lb_stack_name: lb1
+    lb_stack_template: debian13-golden
+    lb_stack_network: External
+    lb_stack_spec:
+      hostname: lb1
+      frontends:
+        - {name: web, bind_port: 80, default_backend: app}
+      backends:
+        - name: app
+          httpchk: true
+          servers:
+            - {name: a, host: 192.0.2.10, port: 8081}
+            - {name: b, host: 192.0.2.11, port: 8081}
+      # For an active/backup pair, run the role twice with different
+      # lb_stack_name and ha.state MASTER / BACKUP at distinct priorities.
+      # ha: {vip: 192.0.2.100/24, state: MASTER, priority: 200}
+
+  roles:
+    - role: vergeio.vergeos.lb_stack

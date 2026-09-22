@@ -69,6 +69,41 @@ Configure and Run Playbook
 ansible-playbook examples/snapshot_workflow.yml
 ```
 
+## Roles
+
+Eighteen roles, each with a runnable example in `examples/`. Every role takes
+its connection details from the same `VERGEOS_*` environment variables as the
+modules.
+
+| Role | What it does | Example |
+|---|---|---|
+| `health_report` | Five read-only checks rolled into one digest; optional webhook and CI gate | `examples/health_report.yml` |
+| `drive_health` | SMART and vSAN health; which drives to replace, and which are unsafe to pull right now | `examples/drive_health.yml` |
+| `rebalance_advisor` | Proposes live-migration moves to relieve hotspots. Never applies them | `examples/rebalance_advisor.yml` |
+| `billing_export` | Per-tenant usage history to CSV for billing or showback | `examples/billing_export.yml` |
+| `tier_policy` | Audits storage-tier placement against a glob policy; enforces on request | `examples/tier_policy.yml` |
+| `protect` | Tag a VM, get the right snapshot profile attached | `examples/protect.yml` |
+| `vm_backup` | Snapshot schedule, NAS export volume, optional NFS share, export config | `examples/vm_backup.yml` |
+| `restore_drill` | Proves a backup restores: clone, boot isolated, verify, destroy | `examples/restore_drill.yml` |
+| `dr_replication` | Reconciles site-to-site replication, then checks it is keeping up | `examples/dr_replication.yml` |
+| `node_drain` | Evacuates a node into maintenance, with the capacity gate the platform lacks | `examples/node_drain.yml` |
+| `rolling_update` | Platform update across the cluster, gated on N-1 capacity and post-verified | `examples/rolling_update.yml` |
+| `network_policy` | Firewall rules per network: stage all, apply once | `examples/network_policy.yml` |
+| `rbac` | Groups, membership and permissions from one document | `examples/rbac.yml` |
+| `api_key_rotation` | Zero-downtime key rotation: prove the new key before revoking the old | `examples/api_key_rotation.yml` |
+| `image_pipeline` | qcow2 to golden template: pack, upload, import, snapshot | `examples/image_pipeline.yml` |
+| `vm_from_recipe` | Deploys a bootable VM from a VergeOS recipe | `examples/vm_from_recipe_role.yml` |
+| `lb_stack` | An HAProxy load-balancer VM **you operate** -- not a fabric service | `examples/lb_stack.yml` |
+| `k3s_node` | One k3s node as a VM. **DIY Kubernetes**, not a managed service | `examples/k3s_node.yml` |
+
+The last two are labelled that way on purpose. VergeOS has no load-balancer
+service and no Tanzu/NKE equivalent; these roles deploy guests that do those
+jobs, and you own their patching, availability and capacity.
+
+Roles that can change things default to reporting. `tier_policy` and `protect`
+need `mode=enforce`, `node_drain` needs `confirm=yes`, and `rolling_update`
+needs `confirm=yes` before anything is touched.
+
 ## Dynamic Inventory
 
 The collection includes a dynamic inventory plugin (`vergeos_vms`) that queries one or more VergeOS sites for VMs.

@@ -1,0 +1,34 @@
+---
+# Audit -- and optionally enforce -- storage-tier placement policy.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/tier_policy.yml                          # report
+#   ansible-playbook examples/tier_policy.yml -e tier_policy_mode=enforce
+#
+# report mode is the default and changes nothing. Add
+# -e tier_policy_fail_on_drift=true to use the report run as a CI gate.
+- name: Storage tier policy
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # Rules are {match, drive?, tier}. 'match' globs the VM name and 'drive'
+    # globs the drive name -- fnmatch globs, not regular expressions.
+    #
+    # FIRST MATCH WINS, so order matters: the specific rules go above the
+    # general ones. The third rule below would swallow the second if they
+    # were swapped.
+    tier_policy_rules:
+      - {match: "db-*", tier: 1}                  # every drive of db-*
+      - {match: "app-*", drive: "data*", tier: 1} # just app-* data drives
+      - {match: "app-*", tier: 4}                 # everything else on app-*
+      - {match: "build-*", tier: 4}               # build artefacts are cheap
+
+    # Left unset on purpose. Setting it puts EVERY unmatched drive on the
+    # system under policy, and with enforce that retiers VMs you never named.
+    # null reports unmatched drives as 'unclassified' -- visible, untouched.
+    # tier_policy_default_tier: 2
+
+  roles:
+    - role: vergeio.vergeos.tier_policy

@@ -1,0 +1,31 @@
+---
+# Build a golden template VM from a local qcow2: pack an OVA, upload it,
+# import it, enforce the specs, take the 'golden' snapshot.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/image_pipeline.yml \
+#     -e image_pipeline_src=/path/to/debian-13-genericcloud-amd64.qcow2 \
+#     -e image_pipeline_template_name=debian13-golden-v1
+#
+# Needs qemu-img and tar on the controller.
+#
+# An existing template is NEVER rebuilt -- somebody's VMs were cloned from
+# it, and silently replacing it underneath them would be the worst kind of
+# helpful. Version by name instead (-v2, -v3) and a re-run is a zero-change
+# no-op.
+#
+# The template deliberately carries NO NICs: a golden image with a network
+# binding drags it into every clone. Consumers clone from the 'golden'
+# snapshot and attach their own NICs and cloud-init.
+- name: Golden image pipeline
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    image_pipeline_cores: 2
+    image_pipeline_ram_mb: 2048
+    image_pipeline_os_family: linux
+
+  roles:
+    - role: vergeio.vergeos.image_pipeline

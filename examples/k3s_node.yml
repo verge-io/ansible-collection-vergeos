@@ -1,0 +1,59 @@
+---
+# Deploy Kubernetes (k3s) nodes as VMs -- one server and two agents.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/k3s_node.yml -e k3s_token="$(openssl rand -hex 32)"
+#
+# Build the template first with examples/image_pipeline.yml.
+#
+# Honest label: this is DIY Kubernetes THAT YOU OPERATE. VergeOS has no
+# Tanzu or NKE equivalent, and running k3s under Ansible does not make it a
+# managed service -- upgrades, etcd health and certificate rotation all stay
+# yours. The role deploys ONE node per invocation; a cluster is this
+# playbook, running it once per node against a shared token.
+#
+# The k3s install happens in-guest and needs internet access to get.k3s.io.
+# The role returns once each VM is booted and configured, not once the
+# cluster has converged.
+- name: K3s cluster
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # Pass this in; do not commit it. -e k3s_token=... or a vault lookup.
+    k3s_token: "{{ undef('set k3s_token -- the shared cluster token') }}"
+    k3s_template: debian13-golden
+    k3s_server_url: https://192.0.2.20:6443
+
+  tasks:
+    - name: Deploy the server node
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.k3s_node
+      vars:
+        k3s_node_name: k3s-server-1
+        k3s_node_template: "{{ k3s_template }}"
+        k3s_node_cpu_cores: 2
+        k3s_node_ram_mb: 4096
+        k3s_node_spec:
+          role: server
+          hostname: k3s-server-1
+          token: "{{ k3s_token }}"
+          disable: [traefik]
+
+    - name: Deploy the agent nodes
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.k3s_node
+      vars:
+        k3s_node_name: "k3s-agent-{{ item }}"
+        k3s_node_template: "{{ k3s_template }}"
+        k3s_node_cpu_cores: 2
+        k3s_node_ram_mb: 4096
+        k3s_node_spec:
+          role: agent
+          hostname: "k3s-agent-{{ item }}"
+          token: "{{ k3s_token }}"
+          # An agent with nowhere to join boots, installs k3s and joins
+          # nothing, so the role refuses without this.
+          server_url: "{{ k3s_server_url }}"
+      loop: [1, 2]

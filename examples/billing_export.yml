@@ -1,0 +1,18 @@
+---
+# Export per-tenant resource-usage history to CSV for billing or showback.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/billing_export.yml
+#
+# Writes to ~/vergeos-billing by default. It touches the controller's
+# filesystem and nothing on the platform -- the run is read-only against
+# VergeOS.
+#
+#   -e billing_export_dest=/srv/billing      where to write
+#   -e billing_export_periods=24             how many periods to pull
+- name: Export tenant billing data
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: vergeio.vergeos.billing_export
