@@ -1,0 +1,501 @@
+---
+# The recipe paths the other seven ladders never reach.
+#
+#   ansible-playbook verify-recipe-edges.yml
+#
+# CREATES AND DESTROYS a catalog, a source VM and a recipe (zz-edge-*) plus
+# the VMs deployed from them (zz-from-edge-*). The recipe is built from a
+# blank 1 GB VM rather than a cloud image, so the whole ladder runs in about a
+# minute -- none of these rungs care what the guest is, only what the module
+# and the role do around it.
+#
+# Written by going through vm_recipe_deploy's parameters and module_utils
+# branches and asking which had never been executed against a real system.
+# Four had:
+#
+#   simulate: false   never set by any ladder. It removes the only preflight
+#                     a deploy has, and rung 1 shows exactly what that costs.
+#   auto_update       never set by any ladder.
+#   is_snapshot skip  find_vm_by_name() deliberately ignores snapshot rows.
+#                     Nothing had ever put a snapshot in its way.
+#   power_on on a     the role's defaults warned that this re-enables a VM
+#   disabled VM       someone deliberately disabled. It does not -- the
+#                     platform refuses. The warning had never been tested,
+#                     and was wrong; rung 7 pins what actually happens.
+#
+# Also here because they are cheap and nothing pinned them: VM names are
+# matched case-sensitively, and the module never re-deploys over an existing
+# VM even when the answers have changed.
+#
+# NOT here, and worth saying why: resolve_answers() refuses an ambiguous
+# NETWORK name ("N networks share it"). That branch cannot be reached on this
+# platform -- POST /v4/vnets answers {"err": "This name is already in use"},
+# so two vnets cannot share a name in the first place. Its only possible
+# coverage is the unit suite.
+- name: Recipe edge-case live ladder
+  hosts: localhost
+  gather_facts: false
+
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+      body_format: json
+      status_code: [200, 201, 202]
+
+  vars:
+    api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    eg_cat: zz-edge-cat
+    eg_recipe: zz-edge-recipe
+    eg_src: zz-edge-src
+    eg_vm: zz-from-edge
+    eg_upper: ZZ-FROM-EDGE
+    eg_snapname: zz-from-edge-snapshadow
+    eg_snapsrc: zz-edge-snapsrc
+    eg_answers:
+      YB_CPU_CORES: 1
+      YB_RAM: 1024
+      YB_DRIVE_1_SIZE: 1073741824
+
+  tasks:
+    - name: "0. Teardown first -- nothing may pre-exist"
+      ansible.builtin.include_tasks: recipe_scratch_teardown.yml
+      vars:
+        td_prefix: edge
+
+    - name: "0b. Nothing was left over to start with"
+      ansible.builtin.assert:
+        that:
+          - fz_left_vms | length == 0
+          - fz_left_recipes | length == 0
+          - fz_left_cats | length == 0
+        fail_msg: >-
+          step 0 could not clear: vms={{ fz_left_vms }}
+          recipes={{ fz_left_recipes }} catalogs={{ fz_left_cats }}
+        quiet: true
+
+    - name: Ladder body
+      block:
+        # ── 1. What `simulate: false` actually costs ─────────────────────────
+        #
+        # The stock "New VM" recipe attaches a CD-ROM with no media unless
+        # SELECT_CREATE_CDROM says otherwise, and that step fails. It is the
+        # one configuration on this system known to pass local validation and
+        # fail the server-side simulation, which makes it the honest way to
+        # show what the flag removes. Both rungs are check mode; nothing is
+        # created either way.
+        - name: "1. A broken config, with the simulate ON (the default)"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: zz-from-edge-newvm
+            recipe: "New VM"
+            prune_unknown: true
+            answers: &newvm_answers
+              YB_CPU_CORES: 1
+              YB_RAM: 1024
+              YB_DRIVE_1_SIZE: 1073741824
+              YB_NIC_main_nic: DMZ
+          check_mode: true
+          failed_when: false
+          register: eg_sim_on
+
+        - name: "1b. The same config, with the simulate OFF"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: zz-from-edge-newvm
+            recipe: "New VM"
+            prune_unknown: true
+            simulate: false
+            answers: *newvm_answers
+          check_mode: true
+          failed_when: false
+          register: eg_sim_off
+
+        # This rung is not a complaint about the flag. It is the evidence for
+        # the sentence in its documentation: turning the simulate off removes
+        # the only preflight a deploy has, and a configuration the platform
+        # itself would fail then sails through.
+        - name: "1c. Only the simulated run catches it"
+          ansible.builtin.assert:
+            that:
+              - eg_sim_on.failed_when_suppressed_exception is defined
+              - "'would build a broken VM' in (eg_sim_on.msg | default(''))"
+              - eg_sim_off.failed_when_suppressed_exception is not defined
+              - eg_sim_off.simulate_result is not defined
+            fail_msg: >-
+              expected simulate=true to refuse and simulate=false to pass.
+              on={{ eg_sim_on.msg | default('(clean)') }}
+              off={{ eg_sim_off.msg | default('(clean)') }}
+            quiet: true
+
+        # ...but it does not remove the LOCAL validation, which is the half
+        # that costs nothing and runs without the API's help.
+        - name: "2. simulate: false still validates answers locally"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: zz-from-edge-newvm
+            recipe: "New VM"
+            prune_unknown: true
+            simulate: false
+            answers: "{{ dict(newvm | combine({'YB_RAM': 'not-a-number'})) }}"
+          check_mode: true
+          failed_when: false
+          register: eg_sim_off_bad
+          vars:
+            newvm:
+              YB_CPU_CORES: 1
+              YB_RAM: 1024
+              YB_DRIVE_1_SIZE: 1073741824
+              YB_NIC_main_nic: DMZ
+
+        - name: "2b. Assert it still refused, on the local check"
+          ansible.builtin.assert:
+            that:
+              - eg_sim_off_bad.failed_when_suppressed_exception is defined
+              - "'whole number' in (eg_sim_off_bad.msg | default(''))"
+            fail_msg: >-
+              simulate: false also skipped the local validation:
+              {{ eg_sim_off_bad.msg | default('(clean)') }}
+            quiet: true
+
+        # ── Scaffolding for the rungs that need real objects ─────────────────
+
+        - name: "3. Build a scratch recipe from a blank VM"
+          vergeio.vergeos.catalog:
+            insecure: true
+            name: "{{ eg_cat }}"
+            repository: Local
+            description: edge ladder scratch (zz- disposable)
+            publishing_scope: private
+            enabled: true
+
+        - name: "3b. Source VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ eg_src }}"
+            state: present
+            enabled: true
+            os_family: linux
+            cpu_cores: 1
+            ram: 1024
+            description: edge ladder source (zz- disposable)
+
+        - name: "3c. With a drive"
+          vergeio.vergeos.drive:
+            insecure: true
+            vm_name: "{{ eg_src }}"
+            name: OS
+            state: present
+            size: 1
+            media_type: disk
+            tier: 1
+
+        - name: "3d. Read the keys"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/{{ item }}?fields=name%2C%24key"
+          register: eg_keys
+          loop: [catalogs, vms]
+
+        - name: "3e. Publish the recipe"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/vm_recipes"
+            method: POST
+            body:
+              name: "{{ eg_recipe }}"
+              catalog: >-
+                {{ (eg_keys.results[0].json
+                    | selectattr('name', 'equalto', eg_cat) | first)['$key'] }}
+              vm: >-
+                {{ (eg_keys.results[1].json
+                    | selectattr('name', 'equalto', eg_src) | first)['$key'] }}
+              description: edge ladder recipe
+              version: "1.0"
+              icon: box
+
+        # ── 4. A snapshot must not be mistaken for a VM ──────────────────────
+        #
+        # find_vm_by_name() skips rows whose is_snapshot is set, and the
+        # comment above it says why: a refused filter returns {"err": ...},
+        # which reads as one result row. Nothing had ever put an actual
+        # snapshot in its way, so the skip was verified by reading it.
+        - name: "4. A second VM, to take a snapshot of"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ eg_snapsrc }}"
+            state: present
+            enabled: true
+            os_family: linux
+            cpu_cores: 1
+            ram: 1024
+
+        - name: "4b. Snapshot it under the name we are about to deploy"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ eg_snapsrc }}"
+            snapshot_name: "{{ eg_snapname }}"
+            operation: create
+          register: eg_snap
+
+        - name: "4c. Deploying that same name must ignore the snapshot"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ eg_snapname }}"
+            recipe: "{{ eg_recipe }}"
+            catalog: "{{ eg_cat }}"
+            answers: "{{ eg_answers }}"
+          register: eg_snap_deploy
+
+        - name: "4d. It deployed rather than converging onto the snapshot"
+          ansible.builtin.assert:
+            that:
+              - eg_snap_deploy.changed
+              - not (eg_snap_deploy.already_existed | bool)
+              - eg_snap_deploy.vm_key | string | length > 0
+            fail_msg: >-
+              a snapshot named '{{ eg_snapname }}' was mistaken for a VM:
+              already_existed={{ eg_snap_deploy.already_existed | default('?') }}
+              msg={{ eg_snap_deploy.msg | default('') }}
+            quiet: true
+
+        # ── 5. Names are matched case-sensitively ────────────────────────────
+        - name: "5. Deploy the same name in upper case"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ eg_upper }}"
+            recipe: "{{ eg_recipe }}"
+            catalog: "{{ eg_cat }}"
+            answers: "{{ eg_answers }}"
+          register: eg_case_a
+
+        - name: "5b. And again in lower case"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ eg_vm }}"
+            recipe: "{{ eg_recipe }}"
+            catalog: "{{ eg_cat }}"
+            answers: "{{ eg_answers }}"
+          register: eg_case_b
+
+        # Both deploy. Neither converges onto the other, and the platform
+        # accepts both -- so a VM name differing only by case is a DIFFERENT
+        # VM here, which is worth knowing before someone relies on the
+        # opposite.
+        - name: "5c. Both are real, and they are two different VMs"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: eg_vms
+          changed_when: false
+
+        - name: "5d. Assert two distinct VMs exist"
+          vars:
+            names: "{{ eg_vms.vms | map(attribute='name') | list }}"
+          ansible.builtin.assert:
+            that:
+              - eg_case_a.changed and not (eg_case_a.already_existed | bool)
+              - eg_case_b.changed and not (eg_case_b.already_existed | bool)
+              - names | select('equalto', eg_upper) | list | length == 1
+              - names | select('equalto', eg_vm) | list | length == 1
+              - eg_case_a.vm_key != eg_case_b.vm_key
+            fail_msg: >-
+              case handling changed: upper={{ eg_case_a.vm_key | default('') }}
+              lower={{ eg_case_b.vm_key | default('') }}
+              present={{ names | select('match', '^(zz|ZZ)-from-edge$') | list }}
+            quiet: true
+
+        # ── 6. The module never re-deploys over an existing VM ───────────────
+        #
+        # Documented, and load-bearing: the identity key is the VM name, and
+        # a re-run with DIFFERENT answers must neither rebuild the VM nor
+        # quietly rewrite it. Mutating the VM by hand first is what makes this
+        # a real check rather than a restatement of rung 5b.
+        - name: "6. Change the deployed VM's RAM behind the module's back"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ eg_vm }}"
+            state: present
+            ram: 3072
+
+        - name: "6b. Re-run the deploy with different answers"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ eg_vm }}"
+            recipe: "{{ eg_recipe }}"
+            catalog: "{{ eg_cat }}"
+            answers: "{{ eg_answers | combine({'YB_RAM': 2048}) }}"
+          register: eg_converge
+
+        - name: "6c. Read the VM back"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ eg_vm }}"
+          register: eg_after
+
+        - name: "6d. It converged, and left the hand edit alone"
+          ansible.builtin.assert:
+            that:
+              - not eg_converge.changed
+              - eg_converge.already_existed | bool
+              - (eg_after.vms | first).ram | int == 3072
+            fail_msg: >-
+              expected convergence with no write. changed={{ eg_converge.changed }}
+              already_existed={{ eg_converge.already_existed | default('?') }}
+              ram={{ (eg_after.vms | first).ram | default('?') }}
+            quiet: true
+
+        # ── 7. power_on on a DISABLED VM ────────────────────────────────────
+        #
+        # vm_from_recipe's defaults used to warn that this re-enables a VM
+        # someone deliberately disabled, on the grounds that the vm module's
+        # `enabled` parameter defaults to true. Both halves were wrong:
+        # `enabled` has no default in the argument spec (it defaults to true
+        # only on the CREATE path), update_vm skips any field left unset, and
+        # the role never passes it. Measured directly:
+        #
+        #   state: running, enabled not passed -> "Error starting machine:
+        #                                         Machine is disabled"
+        #   state: running, enabled: true      -> re-enabled and started
+        #
+        # So the real behaviour is a loud refusal, which is the behaviour
+        # worth having. This rung pins THAT, and the role's comments now say
+        # it. If the module ever starts re-enabling on the convergence path,
+        # this rung fails.
+        - name: "7. Disable the VM deliberately"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ eg_vm }}"
+            state: present
+            enabled: false
+
+        - name: "7b. Confirm it is disabled"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ eg_vm }}"
+          register: eg_disabled
+          changed_when: false
+
+        - name: "7c. It really is disabled"
+          ansible.builtin.assert:
+            that: not ((eg_disabled.vms | first).enabled | bool)
+            fail_msg: "could not disable {{ eg_vm }} to set the rung up"
+            quiet: true
+
+        - name: "7d. Converging with power_on must refuse, not re-enable"
+          block:
+            - name: "7d-i. Converge through the role with power_on set"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.vm_from_recipe
+              vars:
+                vm_from_recipe_recipe: "{{ eg_recipe }}"
+                vm_from_recipe_catalog: "{{ eg_cat }}"
+                vm_from_recipe_name: "{{ eg_vm }}"
+                vm_from_recipe_insecure: true
+                vm_from_recipe_power_on: true
+                vm_from_recipe_verify_nics: false
+                vm_from_recipe_verify_boot: false
+                vm_from_recipe_answers: "{{ eg_answers }}"
+
+            - name: "7d-ii. Unreachable -- a disabled VM was started"
+              ansible.builtin.fail:
+                msg: >-
+                  power_on started a deliberately disabled VM. Either the
+                  module began sending `enabled`, or the platform stopped
+                  refusing.
+          rescue:
+            - name: "7e. It refused, and said why"
+              ansible.builtin.assert:
+                that: >-
+                  'Machine is disabled' in
+                  (ansible_failed_result.msg | default('') | string)
+                fail_msg: >-
+                  refused, but not for the documented reason:
+                  {{ ansible_failed_result.msg | default('(no message)') }}
+                quiet: true
+
+        - name: "7f. And it is STILL disabled -- nothing was rewritten"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ eg_vm }}"
+          register: eg_still
+          changed_when: false
+
+        - name: "7g. Assert the flag was left alone"
+          ansible.builtin.assert:
+            that: not ((eg_still.vms | first).enabled | bool)
+            fail_msg: >-
+              the VM was re-enabled as a side effect of a power-on attempt
+            quiet: true
+
+        # Re-enable it so the auto_update rung and the teardown are not
+        # working around a disabled machine.
+        - name: "7h. Re-enable it explicitly, which DOES work"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ eg_vm }}"
+            state: present
+            enabled: true
+
+        # ── 8. auto_update ───────────────────────────────────────────────────
+        - name: "8. Deploy with auto_update set"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: zz-from-edge-auto
+            recipe: "{{ eg_recipe }}"
+            catalog: "{{ eg_cat }}"
+            auto_update: true
+            answers: "{{ eg_answers }}"
+          register: eg_auto
+
+        - name: "8b. Read the instance rows back"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/vm_recipe_instances?fields=all"
+          register: eg_inst
+
+        # The flag has to reach the instance row; a parameter that is accepted
+        # and dropped is worse than one that is rejected.
+        - name: "8c. auto_update reached the instance"
+          vars:
+            mine: >-
+              {{ eg_inst.json | selectattr('name', 'defined')
+                 | selectattr('name', 'equalto', 'zz-from-edge-auto')
+                 | list }}
+          ansible.builtin.assert:
+            that:
+              - eg_auto.changed
+              - mine | length == 1
+              - (mine | first).auto_update | default(false) | bool
+            fail_msg: >-
+              auto_update did not reach the instance row:
+              {{ mine | map(attribute='auto_update') | list | default('absent') }}
+              (instance keys {{ mine | map(attribute='$key') | list }})
+            quiet: true
+
+      always:
+        - name: "9. Teardown"
+          ansible.builtin.include_tasks: recipe_scratch_teardown.yml
+          vars:
+            td_prefix: edge
+
+        - name: "9b. Teardown must have removed everything"
+          ansible.builtin.assert:
+            that:
+              - fz_left_vms | default([]) | length == 0
+              - fz_left_recipes | default([]) | length == 0
+              - fz_left_cats | default([]) | length == 0
+            fail_msg: >-
+              teardown left vms={{ fz_left_vms | default([]) }}
+              recipes={{ fz_left_recipes | default([]) }}
+              catalogs={{ fz_left_cats | default([]) }}
+            quiet: true
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          recipe edges PASSED: simulate:false skips the server-side preflight
+          but keeps local validation -> a snapshot sharing the target's name
+          is not mistaken for a VM -> names differ by case -> a re-run with
+          changed answers converges without rewriting a hand edit ->
+          power_on on a disabled VM is refused rather than silently
+          re-enabling it -> auto_update
+          reaches the instance row -> zero leftovers

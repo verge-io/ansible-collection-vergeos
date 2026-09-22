@@ -1,11 +1,11 @@
 ---
 # Power the VM on, then wait for it to actually be running.
 #
-# ⚠️ This goes through the vergeio.vergeos.vm module, whose `enabled` parameter
-# defaults to true. On the convergence path -- a VM this role found rather than
-# built -- that would re-enable a VM someone deliberately disabled. It is why
-# vm_from_recipe_power_on is opt-in. A VM this role just deployed is already
-# enabled and merely stopped, so there is nothing to clobber.
+# `enabled` is deliberately NOT passed below. The vm module only writes the
+# fields it is given, so a VM someone disabled on purpose is not re-enabled
+# here -- the platform refuses the power-on instead, with
+# "Error starting machine: Machine is disabled". That refusal is the wanted
+# behaviour and rung 7 of verify-recipe-edges.yml pins it.
 
 - name: Power on the VM
   vergeio.vergeos.vm:

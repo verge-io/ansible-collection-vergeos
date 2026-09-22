@@ -72,12 +72,21 @@ vm_from_recipe_verify_nics: true
 # ── Power ────────────────────────────────────────────────────────────────────
 # Recipes leave the VM stopped. Power it on once the drives are ready.
 #
-# ⚠️ Off by default for a reason beyond taste. Power-on goes through the
-# vergeio.vergeos.vm module, whose `enabled` parameter defaults to true, so on
-# the convergence path it would re-enable a VM someone had deliberately
-# disabled. Deploying leaves an enabled-but-stopped VM, so this is harmless for
-# a VM this role just built; it is opt-in because of what it means for one this
-# role merely found.
+# ⚠️ Off by default for a reason beyond taste -- but not the reason this
+# comment used to give. It claimed the vm module's `enabled` parameter defaults
+# to true and would therefore re-enable a VM someone had deliberately disabled.
+# That is wrong twice over: `enabled` has no default in the argument spec (it
+# defaults to true only on the CREATE path), and update_vm skips any field left
+# unset. This role never passes it. Measured on 26.1.8:
+#
+#   state: running, enabled not passed  -> API error: Error starting machine:
+#                                          Machine is disabled  (VM stays disabled)
+#   state: running, enabled: true       -> re-enabled and started
+#
+# So a disabled VM is refused loudly rather than quietly re-enabled. It stays
+# opt-in for the honest reason: on the CONVERGENCE path this starts a VM the
+# role merely FOUND, and a machine someone stopped on purpose should not be
+# started as a side effect of a deploy that had nothing to do.
 vm_from_recipe_power_on: false
 # How long to let an asynchronous power-on take before concluding the VM will
 # not start. Power-on returns before the machine is running -- reading the

@@ -218,7 +218,7 @@
              | map('regex_replace', '^-|-$', '')
              | map('regex_replace', '^', 'zz-real-') | list }}
         leftovers: >-
-          {{ pre_vms.vms | map(attribute='name') | select('match', '^zz-real-')
+          {{ pre_vms.vms | map(attribute='name') | select('match', '(?i)^zz-real-')
              | reject('in', keep_vms) | list }}
       ansible.builtin.assert:
         that: leftovers | length == 0

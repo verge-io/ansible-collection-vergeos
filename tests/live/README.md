@@ -69,6 +69,7 @@ attacked on purpose.
 | `verify-recipe-fuzz.yml` | 34 hostile answer sets against a hand-authored recipe | PASS `ok=64 changed=4 failed=0` |
 | `verify-recipe-real.yml` | all 30 deployable recipes DEPLOYED, powered on, boot-proved | PASS 30/30 |
 | `verify-recipe-custom.yml` | a recipe authored from scratch, then deployed from | PASS `ok=190 changed=16 failed=0` |
+| `verify-recipe-edges.yml` | the parameters and branches the other seven never reach | PASS `ok=101 changed=18 failed=0` |
 
 Only `verify-recipe-deploy.yml`, `-concurrency`, `-fuzz` and `-real` create
 anything. The fuzz ladder builds its own catalog, source VM and recipe
@@ -109,6 +110,59 @@ working recipes went untested for as long as the entry stood.
 Write volumes at first observation ranged from 11 MB (AlmaLinux 9) to 466 MB
 (Ubuntu 22.04). That is a floor caught the moment the guest started writing,
 not a total.
+
+## The edges — parameters and branches nothing else reached
+
+`verify-recipe-edges.yml` was written by walking `vm_recipe_deploy`'s
+parameters and `module_utils` branches and asking which had never executed
+against a real system. Four had not: `simulate: false`, `auto_update`, the
+`is_snapshot` skip in `find_vm_by_name()`, and `power_on` against a disabled
+VM. It runs in about a minute, because its recipe is built from a blank 1 GB
+VM — none of these rungs care what the guest is.
+
+What it established:
+
+- **`simulate: false` removes the only preflight a deploy has.** The stock
+  `New VM` recipe attaches a CD-ROM with no media unless told otherwise, and
+  that step fails. With the simulate on it is refused — *"the simulated
+  deploy reported failed steps, so a real deploy would build a broken VM"*.
+  With it off, the same configuration passes. Local answer validation still
+  runs either way.
+- **A snapshot sharing the target's name is not mistaken for a VM.** The skip
+  in `find_vm_by_name()` had only ever been verified by reading it.
+- **VM names are case-sensitive and case-preserving.** `ZZ-FOO` and `zz-foo`
+  are two different VMs and the platform will hold both.
+- **`auto_update` reaches the instance row.** A parameter that is accepted
+  and dropped is worse than one that is rejected.
+- **A re-run with changed answers converges without rewriting a hand edit.**
+  The VM's RAM was altered outside Ansible first, so this is a real check
+  rather than a restatement of idempotence.
+
+### A warning that was not true
+
+`vm_from_recipe`'s defaults warned that `power_on` would re-enable a VM
+someone had deliberately disabled, because *"the vm module's `enabled`
+parameter defaults to true"*. Both halves were wrong. `enabled` has no
+default in the argument spec — it defaults to true only on the **create**
+path — `update_vm` skips any field left unset, and the role never passes it.
+Measured:
+
+```
+state: running, enabled not passed  -> Error starting machine: Machine is disabled
+state: running, enabled: true       -> re-enabled and started
+```
+
+So a disabled VM is refused loudly rather than quietly re-enabled, which is
+the behaviour worth having. The role's comments now describe that, and
+`power_on` stays opt-in for the honest reason: on the convergence path it
+starts a VM the role merely *found*.
+
+### Not covered, and why
+
+`resolve_answers()` refuses an ambiguous **network** name. That branch cannot
+be reached here — `POST /v4/vnets` answers `{"err": "This name is already in
+use"}`, so two vnets cannot share a name in the first place. The unit suite
+is its only possible coverage.
 
 ## Recipe authoring — what the platform does for you, and what it does not
 

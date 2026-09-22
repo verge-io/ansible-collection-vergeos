@@ -34,13 +34,13 @@
         msg: "{{ doomed }}"
       vars:
         doomed: >-
-          {{ vms.vms | map(attribute='name') | select('match', '^zz-real-')
+          {{ vms.vms | map(attribute='name') | select('match', '(?i)^zz-real-')
              | reject('in', keep) | list }}
 
     - name: Remove each
       ansible.builtin.include_tasks: recipe_real_teardown.yml
       loop: >-
-        {{ vms.vms | map(attribute='name') | select('match', '^zz-real-')
+        {{ vms.vms | map(attribute='name') | select('match', '(?i)^zz-real-')
            | reject('in', keep) | list }}
       loop_control:
         loop_var: td_vm

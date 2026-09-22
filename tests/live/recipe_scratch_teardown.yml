@@ -34,6 +34,15 @@
 # standing 'nas1' service and a name-prefix match is one bad regex away from
 # it.
 #
+# Every name match is (?i). VM names on this platform are CASE-SENSITIVE and
+# case-preserving -- ZZ-FOO and zz-foo are two different VMs, both allowed to
+# exist at once -- so a case-sensitive cleanup silently leaves one of them
+# behind. verify-recipe-edges.yml deploys ZZ-FROM-EDGE precisely to prove
+# that, and the first version of this file leaked it: the teardown did not
+# match it, and neither did the leftover check that was supposed to notice,
+# because both used the same lowercase pattern. The next run then converged
+# onto the leak and failed for a reason that had nothing to do with the rung.
+#
 # Nothing here suppresses a failure. Everything above was found BECAUSE a
 # teardown failed loudly; an earlier version with failed_when: false printed
 # "ok", removed nothing, and leaked seventeen VMs.
@@ -61,7 +70,7 @@
        | selectattr('recipe', 'defined')
        | selectattr('recipe', 'in', fz_td_recipes.json | default([])
                     | selectattr('name', 'defined')
-                    | selectattr('name', 'match', '^zz-' ~ td_prefix)
+                    | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix)
                     | map(attribute='$key') | list) | list }}
   loop_control:
     label: "{{ item.name | default(item['$key']) }}"
@@ -83,7 +92,7 @@
        | selectattr('name', 'defined')
        | rejectattr('is_snapshot')
        | rejectattr('name', 'search', ' [0-9]+\.[0-9]+-[0-9]+$')
-       | selectattr('name', 'match', '^zz-from-' ~ td_prefix) | list }}
+       | selectattr('name', 'match', '(?i)^zz-from-' ~ td_prefix) | list }}
   loop_control:
     label: "{{ item.name }}"
 
@@ -95,7 +104,7 @@
   loop: >-
     {{ fz_td_recipes.json | default([])
        | selectattr('name', 'defined')
-       | selectattr('name', 'match', '^zz-' ~ td_prefix) | list }}
+       | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix) | list }}
   loop_control:
     label: "{{ item.name }} ({{ item['$key'] }})"
 
@@ -110,7 +119,7 @@
        | selectattr('name', 'defined')
        | rejectattr('is_snapshot')
        | rejectattr('name', 'search', ' [0-9]+\.[0-9]+-[0-9]+$')
-       | selectattr('name', 'match', '^zz-' ~ td_prefix) | list }}
+       | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix) | list }}
   loop_control:
     label: "{{ item.name }}"
 
@@ -127,7 +136,7 @@
   loop: >-
     {{ fz_td_cats.json | default([])
        | selectattr('name', 'defined')
-       | selectattr('name', 'match', '^zz-' ~ td_prefix) | list }}
+       | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix) | list }}
   loop_control:
     label: "{{ item.name }} ({{ item['$key'] }})"
 
@@ -152,13 +161,13 @@
   ansible.builtin.set_fact:
     fz_left_recipes: >-
       {{ fz_td_recipes2.json | default([]) | selectattr('name', 'defined')
-         | selectattr('name', 'match', '^zz-' ~ td_prefix)
+         | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix)
          | map(attribute='name') | list }}
     fz_left_vms: >-
       {{ fz_td_vms2.json | default([]) | selectattr('name', 'defined')
-         | selectattr('name', 'match', '^zz-(' ~ td_prefix ~ '|from-' ~ td_prefix ~ ')')
+         | selectattr('name', 'match', '(?i)^zz-(' ~ td_prefix ~ '|from-' ~ td_prefix ~ ')')
          | map(attribute='name') | list }}
     fz_left_cats: >-
       {{ fz_td_cats2.json | default([]) | selectattr('name', 'defined')
-         | selectattr('name', 'match', '^zz-' ~ td_prefix)
+         | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix)
          | map(attribute='name') | list }}
