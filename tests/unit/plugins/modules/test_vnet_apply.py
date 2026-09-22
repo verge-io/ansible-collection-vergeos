@@ -100,7 +100,33 @@ class TestVnetApply:
         result = module.exit_json.call_args[1]
         assert result['changed'] is False
         assert result['pending'] is True
-        assert 'take effect on start' in result['msg']
+        assert 'not running' in result['msg']
+
+    def test_stopped_network_does_not_claim_nothing_is_pending(self):
+        """A stopped network is the realistic case, and it must say so.
+
+        The platform never sets need_fw_apply on a stopped vnet -- there is no
+        running router to apply rules to -- so the real state after staging a
+        policy against a stopped network is pending=False, running=False
+        (verified live on 26.1.8).
+
+        The old code tested `pending` first, so this state reported "No pending
+        rule changes": indistinguishable from a converged network, and it hid
+        the fact that a freshly staged policy was not live. The dedicated
+        "not running" branch existed but was unreachable. See issue #19.
+        """
+        mock_client = MagicMock()
+        network = make_network(pending=False, running=False)
+        mock_client.networks.get.return_value = network
+
+        module = make_module(base_params())
+        run_main(module, mock_client)
+
+        network.apply_rules.assert_not_called()
+        result = module.exit_json.call_args[1]
+        assert result['changed'] is False
+        assert 'not running' in result['msg']
+        assert 'No pending rule changes' not in result['msg']
 
     def test_check_mode_reports_but_does_not_apply(self):
         mock_client = MagicMock()
