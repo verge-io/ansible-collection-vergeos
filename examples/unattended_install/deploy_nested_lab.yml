@@ -291,6 +291,14 @@
         state: present
       no_log: true    # user_data contains the admin password
 
+    - name: Attach scale-out seed to node-3 via cloud-init (nocloud/CIDATA)
+      vergeio.vergeos.cloud_init:
+        vm_name: "{{ vlab_name }}-node-3"
+        datasource: nocloud
+        user_data: "{{ lookup('template', 'user-data-node3.sh.j2') }}"
+        state: present
+      no_log: true    # user_data contains the admin password
+
     # ------------------------------------------------------------ power
     - name: Power on selected nodes
       vergeio.vergeos.vm:

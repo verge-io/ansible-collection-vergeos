@@ -138,6 +138,26 @@ Acceptance: the *nested* system's `/api/v4/nodes` reports two nodes with
 after power-on and was fully vSAN-connected at ~16 min, zero prompts; tier
 capacities doubled (both nodes' drives in the nested vSAN).
 
+
+### Scale-out nodes (node 3+)
+
+A scale-out seed (`templates/user-data-node3.sh.j2`) is the join seed with
+`YC_INSTALL_TYPE=scale-out` and the next static core address
+(`YC_NET_CORE_NODE_ADDR=100.96.0.4/24`, NIC addresses `172.16.x.3`). The
+External/hostname questions never fire for non-new installs (that whole
+section is controller+new only), so no hostname/domain answers are needed.
+Power on with `-e '{"vlab_power_on_nodes":[3]}'`.
+
+**Use static core addressing for every joining node in a nested lab.**
+Reference seeds from physical deployments let scale-out nodes take
+`YC_NET_CORE_NODE_ADDR` via DHCP from node 1's core network — measured here,
+that DHCP never serves a lease across the nested fabric (broadcast/DHCP over
+nested vxlan; unicast works fine, which is why static joins succeed). Two
+attempts with DHCP core addressing stalled without error; the static
+attempt registered in ~2 min and was fully vSAN-connected at ~5 min.
+Verified live 2026-09-21: three nodes, all `vsan_connected: true`, tier
+capacities tripled (tier 0: 147 GiB, tier 1: 447 GiB).
+
 > Operational note from the live run: on a 2-node cloud whose UI address is
 > owned by the External vnet, draining the controller node takes the
 > management plane offline until the vnet lands on the peer — budget for it
