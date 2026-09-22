@@ -1,0 +1,64 @@
+---
+# Post-install configuration for a freshly seeded VergeOS system.
+#
+# Point the auth at the NEW system (not the lab host):
+#   export VERGEOS_HOST=<new-system-ip>
+#   export VERGEOS_USERNAME=admin          # from the seed
+#   export VERGEOS_PASSWORD=<seed password>
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook playbooks/post-install.yml
+#
+# Uses vergeio.vergeos. Note: tag/tag_category use manager.update(key, ...)
+# and are NOT affected by the D1 bare-save() defect that breaks updates in
+# vm/nic/drive/network/user (creates still work there).
+
+- name: VergeOS post-install baseline
+  hosts: localhost
+  gather_facts: false
+  vars:
+    tag_categories:
+      - name: environment
+        description: Deployment environment
+        single_tag_selection: true
+      - name: role
+        description: Workload role
+        single_tag_selection: false
+      - name: backup-policy
+        description: Snapshot/backup profile selection
+        single_tag_selection: true
+    vergeos_tags:
+      - { name: prod,      category: environment }
+      - { name: staging,   category: environment }
+      - { name: dev,       category: environment }
+      - { name: web,       category: role }
+      - { name: db,        category: role }
+      - { name: infra,     category: role }
+      - { name: daily,     category: backup-policy }
+      - { name: hourly,    category: backup-policy }
+      - { name: none,      category: backup-policy }
+
+  tasks:
+    - name: Create tag categories
+      vergeio.vergeos.tag_category:
+        name: "{{ item.name }}"
+        description: "{{ item.description | default(omit) }}"
+        single_tag_selection: "{{ item.single_tag_selection | default(omit) }}"
+        state: present
+      loop: "{{ tag_categories }}"
+
+    - name: Create tags
+      vergeio.vergeos.tag:
+        name: "{{ item.name }}"
+        category: "{{ item.category }}"
+        state: present
+      loop: "{{ vergeos_tags }}"
+
+    # ------------------------------------------------------------------
+    # TODO (pending decisions):
+    #   - additional admin/service users (vergeio.vergeos.user — create-only
+    #     until D1 is fixed; updates are silent no-ops)
+    #   - internal networks + firewall rules (network module: same D1 caveat
+    #     on updates)
+    #   - NAS / snapshot profiles / auth sources — not in the upstream
+    #     collection; available on the platform-port branch or via raw API
+    # ------------------------------------------------------------------

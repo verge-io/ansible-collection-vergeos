@@ -1,0 +1,65 @@
+---
+# Discover a freshly installed (DHCP) VergeOS system on a subnet by its API
+# signature, then verify the seeded admin credentials.
+#
+#   ansible-playbook find_new_system.yml \
+#     -e discover_subnet=192.168.1 \
+#     -e exclude_ips='["192.168.1.106"]'      # the host cloud's own UI
+#
+# Auth for the *new* system comes from the seed values:
+#   export VLAB_ADMIN_USERNAME=admin VLAB_ADMIN_PASSWORD='...'
+#
+# Sets (and prints) `new_system_ip`; fails if nothing answers within
+# discover_tries * discover_wait seconds.
+
+- name: Find and verify a newly installed VergeOS system
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    discover_subnet: "192.168.1"
+    exclude_ips: []
+    discover_tries: 20
+    discover_wait: 60
+    new_admin_user: "{{ lookup('env', 'VLAB_ADMIN_USERNAME') | default('admin', true) }}"
+    new_admin_password: "{{ lookup('env', 'VLAB_ADMIN_PASSWORD') }}"
+
+  tasks:
+    - name: Scan for the VergeOS API signature (retries until it appears)
+      ansible.builtin.shell: |
+        set -o pipefail
+        for i in $(seq 1 254); do
+          ip="{{ discover_subnet }}.$i"
+          case " {{ exclude_ips | join(' ') }} " in *" $ip "*) continue;; esac
+          if curl -sk --max-time 4 "https://$ip/api/v4/version" 2>/dev/null \
+               | grep -q "Login required"; then
+            echo "$ip"; exit 0
+          fi
+        done
+        exit 1
+      register: scan
+      retries: "{{ discover_tries }}"
+      delay: "{{ discover_wait }}"
+      until: scan.rc == 0
+      changed_when: false
+
+    - name: Record the address
+      ansible.builtin.set_fact:
+        new_system_ip: "{{ scan.stdout_lines[-1] }}"
+
+    - name: Verify the seeded credentials work
+      ansible.builtin.uri:
+        url: "https://{{ new_system_ip }}/api/v4/clusters?fields=name"
+        url_username: "{{ new_admin_user }}"
+        url_password: "{{ new_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+      register: login
+      no_log: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          New VergeOS system at {{ new_system_ip }} — login OK, cluster(s):
+          {{ login.json | map(attribute='name') | join(', ') }}.
+          Next: VERGEOS_HOST={{ new_system_ip }} ansible-playbook post_install.yml
