@@ -49,7 +49,7 @@ Minimum for a silent single-node ("controller", new system) install:
 ```bash
 YC_INSTALL=basic
 YC_INSTALL_TYPE=controller        # controller|scale-out|compute|pxe|replace
-YC_VSAN_NEW=1                     # 1 = new system; 0 = join (needs YC_CONTROLLER_NODE)
+YC_VSAN_NEW=1                     # 1 = new system; 0 = join (see 'Joining additional nodes')
 YC_CLOUD_NAME=vlab
 YC_HOSTNAME=node1
 YC_USER_NAME=admin
@@ -111,6 +111,32 @@ requires a **rolling node reboot** (nodes flag
 `restart_reason: "Cluster configuration changes"`). Without it a
 nested-virt VM silently returns to `stopped`; the reason only appears in the
 machine's log, not the power-on API response.
+
+
+### Joining additional nodes (node 2+)
+
+A join seed (`templates/user-data-node2.sh.j2`) differs from the new-system
+seed in a handful of lines:
+
+- `YC_VSAN_NEW=0`, no `YC_CLOUD_NAME`/`YC_HOSTNAME` (the platform assigns
+  `nodeN`), `YC_CLUSTER=<key or name>` selects the target cluster.
+- `YC_USER_NAME`/`YC_USER_PASSWORD` are the **existing system's admin
+  credentials** — the installer uses them for `yb-api` calls against node 1.
+- `YC_CONTROLLER_NODE` is not needed in basic mode: it defaults to the
+  core-network DNS name `yb-api` (0050-network:874), which node 1 serves.
+  The joining node's `YC_NET_CORE_NODE_ADDR` (e.g. `100.96.0.3/24`) plus
+  `YC_NET_CORE_DNS='100.96.0.1'` make that resolvable.
+- Three proven join-specific tweaks ride in the seed: skip the
+  quick-install preflight (`truncate -s 0 .../0040-quick-install`), skip the
+  installer's ntpd sync (time comes from the cluster), and shorten the final
+  reboot pause.
+
+Deploy: the example playbook injects the join seed into node-2's cloud-init;
+power it on with `-e '{"vlab_power_on_nodes":[2]}'` once node 1 is up.
+Acceptance: the *nested* system's `/api/v4/nodes` reports two nodes with
+`vsan_connected: true`. Verified live 2026-09-21: node 2 registered ~13 min
+after power-on and was fully vSAN-connected at ~16 min, zero prompts; tier
+capacities doubled (both nodes' drives in the nested vSAN).
 
 > Operational note from the live run: on a 2-node cloud whose UI address is
 > owned by the External vnet, draining the controller node takes the
