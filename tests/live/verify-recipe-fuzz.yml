@@ -1,0 +1,867 @@
+---
+# Adversarial ladder for vm_recipe_deploy's answer validator.
+#
+#   ansible-playbook verify-recipe-fuzz.yml
+#
+# CREATES AND DESTROYS a scratch catalog, a source VM with one drive, and a
+# recipe published from it -- all named zz-fuzz-*. The deploy cases themselves
+# run in CHECK MODE and create nothing.
+#
+# Why a hand-authored recipe. Publishing a recipe from a VM makes the platform
+# derive its question set from that VM's shape, and those questions carry no
+# regex, no string bounds and no password type. So every other recipe ladder
+# in this directory -- deploy, matrix, scenarios -- validates answers against
+# questions that have almost nothing to validate. This ladder adds questions
+# BY HAND (see fz_questions) carrying regex / min / max / required / password,
+# then pushes a table of hostile answers at them.
+#
+# Each case starts from one known-good answer set and overrides exactly one
+# thing, so a failure names one variable rather than a configuration.
+#
+#   expect: pass     the module must accept the answers
+#   expect: refuse   the module must fail, AND `matching` must appear in its
+#                    message -- a refusal for the wrong reason is a failure,
+#                    because otherwise a typo in the case row makes the table
+#                    look green while testing nothing
+#
+# Do not run two copies of this ladder at once. The scratch names are fixed and
+# step 0 deletes them, so a second copy would tear down the first mid-run.
+- name: Recipe fuzz live ladder
+  hosts: localhost
+  gather_facts: false
+
+  module_defaults:
+    # Only used for the scaffolding the collection has no module for:
+    # vm_recipes, recipe_sections, recipe_questions.
+    ansible.builtin.uri:
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+      body_format: json
+      status_code: [200, 201, 202]
+
+  vars:
+    api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    fz_cat: zz-fuzz-cat
+    fz_cat2: zz-fuzz-cat-2
+    fz_recipe: zz-fuzz-recipe
+    fz_src: zz-fuzz-src
+    fz_vm: zz-from-fuzz
+
+    # Questions added by hand. Types and bounds chosen so every branch of
+    # check_constraints is reached by something.
+    fz_questions:
+      - name: ZZ_HOSTNAME
+        type: hostname
+        display: Fuzz hostname
+        required: true
+        default: ""
+        regex: "zz-[a-z0-9-]{1,20}"
+        max: 24
+        orderid: 100
+      - name: ZZ_RAM_MB
+        type: num
+        display: Fuzz RAM
+        required: true
+        default: ""
+        min: 512
+        max: 4096
+        orderid: 101
+      - name: ZZ_SECRET
+        type: password
+        display: Fuzz secret
+        required: true
+        default: ""
+        orderid: 102
+      # max 0 is the platform's "unbounded", not a limit of zero. Most stock
+      # recipes ship max=0 on their string questions, so reading it as a real
+      # bound refuses every answer including the correct one.
+      - name: ZZ_NOTE
+        type: string
+        display: Fuzz note
+        required: false
+        default: "n/a"
+        min: 0
+        max: 0
+        orderid: 103
+      - name: ZZ_NET
+        type: network
+        display: Fuzz network
+        required: false
+        default: ""
+        orderid: 104
+
+    # The known-good set every case starts from.
+    fz_base:
+      ZZ_HOSTNAME: zz-fuzz-host
+      ZZ_RAM_MB: 1024
+      ZZ_SECRET: Zz-Fuzz-Scratch-1!
+      ZZ_NOTE: a note comfortably longer than zero characters
+      YB_CPU_CORES: 1
+      YB_RAM: 1024
+      YB_DRIVE_1_SIZE: 1073741824
+
+    # ── The case table ──────────────────────────────────────────────────────
+    #
+    # Every `matching` string below is DIGIT-FREE, and that is not a style
+    # choice. `answers` is no_log, and ansible-core masks each no_log value by
+    # plain substring replacement anywhere in the module's output -- so the
+    # single-character answer YB_CPU_CORES: 1 turns "at least 512" into
+    # "at least 5********2". Rung 5 measures that directly; matching on
+    # "requires at least" rather than "at least 512" is what keeps this table
+    # from depending on it.
+    fz_cases:
+      # -- the control ------------------------------------------------------
+      - name: happy-path
+        answers: {}
+        expect: pass
+
+      # -- string constraints ------------------------------------------------
+      - name: hostname-violates-regex
+        answers: {ZZ_HOSTNAME: BAD_NAME}
+        expect: refuse
+        matching: does not match
+
+      - name: hostname-over-max-length
+        answers: {ZZ_HOSTNAME: "zz-aaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+        expect: refuse
+        matching: characters
+
+      # The regex allows 3 + 20 = 23 characters and max is 24, so a 23-char
+      # name must pass and a 24-char one must fail on the REGEX, not on the
+      # length bound. The pair is an off-by-one probe on both at once.
+      - name: hostname-at-regex-limit
+        answers: {ZZ_HOSTNAME: "zz-aaaaaaaaaaaaaaaaaaaa"}
+        expect: pass
+
+      - name: hostname-one-past-regex-still-inside-max
+        answers: {ZZ_HOSTNAME: "zz-aaaaaaaaaaaaaaaaaaaaa"}
+        expect: refuse
+        matching: does not match
+
+      - name: hostname-empty-but-required
+        answers: {ZZ_HOSTNAME: ""}
+        expect: refuse
+        matching: supplied empty
+
+      - name: note-may-be-long-because-max-is-zero
+        answers: {ZZ_NOTE: "x-------------------------------------------------"}
+        expect: pass
+
+      # -- numeric constraints -----------------------------------------------
+      - name: ram-below-min
+        answers: {ZZ_RAM_MB: 256}
+        expect: refuse
+        matching: requires at least
+
+      - name: ram-above-max
+        answers: {ZZ_RAM_MB: 8192}
+        expect: refuse
+        matching: allows at most
+
+      - name: ram-at-min-boundary
+        answers: {ZZ_RAM_MB: 512}
+        expect: pass
+
+      - name: ram-at-max-boundary
+        answers: {ZZ_RAM_MB: 4096}
+        expect: pass
+
+      - name: ram-numeric-string-is-coerced
+        answers: {ZZ_RAM_MB: "2048"}
+        expect: pass
+
+      # Surrounding whitespace is stripped before the coercion, so this is the
+      # same answer as above. Worth pinning: it is the shape a value read from
+      # a file or a CSV arrives in.
+      - name: ram-numeric-string-with-whitespace
+        answers: {ZZ_RAM_MB: "  2048  "}
+        expect: pass
+
+      - name: ram-junk-string
+        answers: {ZZ_RAM_MB: 2048MB}
+        expect: refuse
+        matching: whole number
+
+      - name: ram-float
+        answers: {ZZ_RAM_MB: 2048.5}
+        expect: refuse
+        matching: whole number
+
+      # int("+2048") is 2048 in Python, but the validator's own _is_int does
+      # not accept a leading plus, so this is refused rather than coerced.
+      # Pinned as observed behaviour: consistent, and a refusal is the safe
+      # direction.
+      - name: ram-leading-plus
+        answers: {ZZ_RAM_MB: "+2048"}
+        expect: refuse
+        matching: whole number
+
+      - name: ram-negative
+        answers: {ZZ_RAM_MB: -1}
+        expect: refuse
+        matching: requires at least
+
+      - name: ram-boolean
+        answers: {ZZ_RAM_MB: true}
+        expect: refuse
+        matching: whole number
+
+      - name: ram-list
+        answers: {ZZ_RAM_MB: [1024]}
+        expect: refuse
+        matching: single value
+
+      - name: ram-dict
+        answers: {ZZ_RAM_MB: {value: 1024}}
+        expect: refuse
+        matching: single value
+
+      # -- required and unknown answers --------------------------------------
+      - name: secret-omitted
+        drop: [ZZ_SECRET]
+        answers: {}
+        expect: refuse
+        matching: missing required
+
+      - name: secret-empty
+        answers: {ZZ_SECRET: ""}
+        expect: refuse
+        matching: supplied empty
+
+      # Observed behaviour, not an endorsement: the validator tests for an
+      # empty value, not a blank one, so a whitespace-only password is
+      # accepted. Pinned so a change to that is a deliberate one.
+      - name: secret-whitespace-only-is-accepted
+        answers: {ZZ_SECRET: "   "}
+        expect: pass
+
+      - name: unknown-answer-refused-by-default
+        answers: {ZZ_NOT_A_QUESTION: 1}
+        expect: refuse
+        matching: unknown answer
+
+      - name: unknown-answer-pruned-when-asked
+        answers: {ZZ_NOT_A_QUESTION: 1}
+        prune: true
+        expect: pass
+
+      # Question names are matched exactly. A case-slipped name is an unknown
+      # answer, and dropping the real one makes it a missing required answer
+      # too -- either message proves the name was not quietly folded.
+      - name: answer-name-case-slip
+        drop: [ZZ_HOSTNAME]
+        answers: {zz_hostname: zz-fuzz-host}
+        expect: refuse
+        matching: unknown answer
+
+      # -- network answers ---------------------------------------------------
+      - name: network-by-name
+        answers: {ZZ_NET: External}
+        expect: pass
+
+      - name: network-unknown-name
+        answers: {ZZ_NET: zz-no-such-network}
+        expect: refuse
+        matching: not found
+
+      - name: network-new-internal-sentinel
+        answers: {ZZ_NET: __new_internal__}
+        expect: pass
+
+      # -- values shaped like injection --------------------------------------
+      # These travel in a JSON request body, so a case that passes here proves
+      # the value was carried as data -- not that anything scrubbed it.
+      - name: note-with-shell-metacharacters
+        answers: {ZZ_NOTE: "$(id); `hostname` && echo pwned"}
+        expect: pass
+
+      - name: note-with-a-single-quote
+        answers: {ZZ_NOTE: "o'brien's note"}
+        expect: pass
+
+      # Braces are the one reserved character the SDK's quote_value() does not
+      # escape (pyVergeOS#100). An answer value never reaches a filter, so this
+      # must pass; rung 6 is where a brace is put somewhere that does.
+      - name: note-with-braces
+        # Single braces only: a doubled brace is Jinja, and Ansible renders
+        # play vars before the module ever sees them.
+        answers: {ZZ_NOTE: "a{brace}d, {nested{inner}}, and a lone }"}
+        expect: pass
+
+      - name: note-with-json-punctuation
+        answers: {ZZ_NOTE: '{"a": [1,2], "b": "\"quoted\""}'}
+        expect: pass
+
+      # -- hints -------------------------------------------------------------
+      # This recipe leaves several optional questions with empty defaults, so
+      # the pair is a real test rather than a vacuous one: rung 4b asserts the
+      # happy path carried at least one hint for this case to turn fatal.
+      - name: hints-are-fatal-when-asked
+        answers: {}
+        fail_on_hints: true
+        expect: refuse
+        matching: defaults are empty
+
+  tasks:
+    # Teardown FIRST. A crashed previous run leaves a catalog and a recipe
+    # behind, and authoring over them produces the ambiguity rung 6 tests --
+    # in the middle of rung 2, where it reads as a validator defect.
+    - name: "0. Teardown first -- nothing may pre-exist"
+      ansible.builtin.include_tasks: recipe_fuzz_teardown.yml
+
+    - name: "0b. Nothing was left over to start with"
+      ansible.builtin.assert:
+        that:
+          - fz_left_vms | length == 0
+          - fz_left_recipes | length == 0
+          - fz_left_cats | length == 0
+        fail_msg: >-
+          step 0 could not clear the scratch objects: vms={{ fz_left_vms }}
+          recipes={{ fz_left_recipes }} catalogs={{ fz_left_cats }}
+        quiet: true
+
+    - name: Ladder body
+      block:
+        # ── 1. Author the recipe ─────────────────────────────────────────────
+        - name: "1. Create the scratch catalog"
+          vergeio.vergeos.catalog:
+            insecure: true
+            name: "{{ fz_cat }}"
+            repository: Local
+            description: fuzz ladder scratch (zz- disposable)
+            publishing_scope: private
+            enabled: true
+          register: fz_cat_r
+
+        - name: "1b. Create the source VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ fz_src }}"
+            state: present
+            enabled: true
+            os_family: linux
+            cpu_cores: 1
+            ram: 1024
+            description: fuzz ladder source (zz- disposable)
+
+        # A recipe published from a VM with no drive publishes no YB_DRIVE_*
+        # questions, so the drive is what makes the question set realistic.
+        - name: "1c. Give it one drive"
+          vergeio.vergeos.drive:
+            insecure: true
+            vm_name: "{{ fz_src }}"
+            name: OS
+            # GB, not bytes -- the module converts to the SDK's size_gb.
+            state: present
+            size: 1
+            media_type: disk
+            tier: 1
+
+        - name: "1d. Read the catalog and VM keys back"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/{{ item.path }}?fields=name%2C%24key"
+          register: fz_keys
+          loop:
+            - {path: catalogs, want: "{{ fz_cat }}"}
+            - {path: vms, want: "{{ fz_src }}"}
+          loop_control:
+            label: "{{ item.path }}"
+
+        - name: "1e. Keep them"
+          ansible.builtin.set_fact:
+            fz_cat_key: >-
+              {{ (fz_keys.results[0].json | selectattr('name', 'equalto', fz_cat)
+                  | first)['$key'] }}
+            fz_src_key: >-
+              {{ (fz_keys.results[1].json | selectattr('name', 'equalto', fz_src)
+                  | first)['$key'] }}
+
+        - name: "1f. Publish the recipe from that VM"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/vm_recipes"
+            method: POST
+            body:
+              name: "{{ fz_recipe }}"
+              catalog: "{{ fz_cat_key }}"
+              vm: "{{ fz_src_key }}"
+              description: fuzz ladder recipe, hand-written questions
+              version: "1.0"
+              icon: box
+          register: fz_rec_r
+
+        - name: "1g. Keep the recipe key"
+          ansible.builtin.set_fact:
+            fz_rec_key: "{{ fz_rec_r.json['$key'] }}"
+
+        # Publishing auto-creates the recipe's sections. A question needs one:
+        # POST /v4/recipe_questions answers
+        #   {"err": "field 'recipe_questions.section' is required"}
+        # without it, and `recipe` must be the path form "vm_recipes/<key>"
+        # rather than a bare key, because that is how the column is stored.
+        - name: "1h. Find the section the recipe auto-created"
+          ansible.builtin.uri:
+            url: >-
+              {{ api_base }}/recipe_sections?fields=name%2C%24key&filter={{
+              ("recipe eq 'vm_recipes/" ~ fz_rec_key ~ "'") | urlencode
+              }}&sort=%2Borderid
+          register: fz_sect_r
+
+        - name: "1i. The recipe must have a section to hang questions on"
+          ansible.builtin.assert:
+            that: fz_sect_r.json | default([]) | length > 0
+            fail_msg: "recipe {{ fz_rec_key }} published no sections"
+            quiet: true
+
+        - name: "1j. Add the hand-written questions"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/recipe_questions"
+            method: POST
+            body: >-
+              {{ {'recipe': 'vm_recipes/' ~ fz_rec_key,
+                  'section': (fz_sect_r.json | first)['$key'] | int}
+                 | combine(item) }}
+          loop: "{{ fz_questions }}"
+          loop_control:
+            label: "{{ item.name }} ({{ item.type }})"
+
+        - name: "1k. Read the question set back through the collection"
+          vergeio.vergeos.vm_recipe_info:
+            insecure: true
+            name: "{{ fz_recipe }}"
+            catalog: "{{ fz_cat }}"
+            questions: true
+          register: fz_qs
+          changed_when: false
+
+        # If a constraint did not survive the round trip, every case below it
+        # would "pass" for the wrong reason and this ladder would look green
+        # while testing nothing. Check the CONSTRAINTS came back, not just the
+        # names.
+        - name: "1l. The authored constraints persisted"
+          vars:
+            byname: >-
+              {{ dict(fz_qs.questions | map(attribute='name') | zip(fz_qs.questions)) }}
+          ansible.builtin.assert:
+            that:
+              - fz_questions | map(attribute='name') | reject('in', byname) | list | length == 0
+              - byname.ZZ_HOSTNAME.regex | default('') | length > 0
+              - byname.ZZ_RAM_MB.min | int == 512
+              - byname.ZZ_RAM_MB.max | int == 4096
+              - byname.ZZ_SECRET.type == 'password'
+              - byname.ZZ_NOTE.max | int == 0
+              - byname.ZZ_NET.type == 'network'
+            fail_msg: >-
+              the recipe did not keep the authored constraints:
+              {{ fz_qs.questions | to_json }}
+            quiet: true
+
+        # recipe_questions.list() is filtered by recipe_ref. Several pyvergeos
+        # managers ignore their keyword filters and return every row instead
+        # (pyVergeOS#96); if this one did, the validator would be checking
+        # answers against every recipe's questions at once. These two names
+        # exist on stock recipes and on no rung of this ladder.
+        - name: "1m. The question set belongs to THIS recipe only"
+          vars:
+            names: "{{ fz_qs.questions | map(attribute='name') | list }}"
+          ansible.builtin.assert:
+            that:
+              - "'HOSTNAME' not in names"
+              - "'SELECT_OS_TIER' not in names"
+              - names | length < 30
+            fail_msg: >-
+              questions from other recipes leaked into this one's set
+              ({{ names | length }} questions): {{ names }}
+            quiet: true
+
+        - name: "1n. Authored"
+          ansible.builtin.debug:
+            msg: >-
+              recipe '{{ fz_recipe }}' key {{ fz_rec_key }} in catalog
+              {{ fz_cat_key }} -- {{ fz_qs.questions | length }} answerable
+              questions, {{ fz_questions | length }} of them hand-written
+
+        # ── 2. The case table ────────────────────────────────────────────────
+        #
+        # failed_when: false rather than a rescue per case, so one refusal does
+        # not stop the table. That makes `.failed` always false and useless as
+        # the signal; `failed_when_suppressed_exception` is what ansible-core
+        # attaches only when a real failure was suppressed.
+        - name: "2. Run every hostile configuration"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ fz_vm }}"
+            recipe: "{{ fz_recipe }}"
+            catalog: "{{ fz_cat }}"
+            answers: >-
+              {{ fz_base | dict2items
+                 | rejectattr('key', 'in', item.drop | default([]))
+                 | items2dict
+                 | combine(item.answers | default({})) }}
+            prune_unknown: "{{ item.prune | default(false) }}"
+            fail_on_hints: "{{ item.fail_on_hints | default(false) }}"
+          check_mode: true
+          failed_when: false
+          register: fz_runs
+          loop: "{{ fz_cases }}"
+          loop_control:
+            label: "{{ item.name }} (expect {{ item.expect }})"
+
+        - name: "3. Reduce the runs to a verdict per case"
+          ansible.builtin.set_fact:
+            fz_results: >-
+              {%- set out = [] -%}
+              {%- for r in fz_runs.results -%}
+                {%- set refused = r.failed_when_suppressed_exception is defined -%}
+                {%- set msg = r.msg | default('') | string -%}
+                {%- set want = r.item.matching | default('') -%}
+                {%- set ok = (not refused) if r.item.expect == 'pass'
+                             else (refused and want in msg) -%}
+                {%- set _ = out.append({
+                      'name': r.item.name,
+                      'expected': r.item.expect,
+                      'actual': 'refuse' if refused else 'pass',
+                      'ok': ok,
+                      'msg': msg | truncate(200)
+                    }) -%}
+              {%- endfor -%}
+              {{ out }}
+
+        - name: "3b. The table"
+          ansible.builtin.debug:
+            msg: >-
+              {{ '%-44s %-7s %-7s %s'
+                 | format(r.name, r.expected, r.actual,
+                          'OK' if r.ok else 'MISMATCH') }}
+          loop: "{{ fz_results }}"
+          loop_control:
+            loop_var: r
+            label: "{{ r.name }}"
+
+        # Reported on its own line rather than folded into one mismatch list:
+        # a refusal case that PASSED is the dangerous direction, because it
+        # means a hostile answer reached the platform.
+        - name: "3c. No hostile configuration may have been accepted"
+          vars:
+            leaked: >-
+              {{ fz_results | selectattr('expected', 'equalto', 'refuse')
+                            | selectattr('actual', 'equalto', 'pass') | list }}
+          ansible.builtin.assert:
+            that: leaked | length == 0
+            fail_msg: >-
+              these answers SHOULD have been refused and were not:
+              {{ leaked | map(attribute='name') | list }}
+            quiet: true
+
+        - name: "3d. Every valid configuration must still be accepted"
+          vars:
+            broken: >-
+              {{ fz_results | selectattr('expected', 'equalto', 'pass')
+                            | selectattr('actual', 'equalto', 'refuse') | list }}
+          ansible.builtin.assert:
+            that: broken | length == 0
+            fail_msg: >-
+              these answers are valid and were refused:
+              {{ broken | map(attribute='name') | list }} --
+              {{ broken | map(attribute='msg') | list }}
+            quiet: true
+
+        - name: "3e. Every refusal must have refused for the declared reason"
+          vars:
+            wrong: "{{ fz_results | rejectattr('ok') | list }}"
+          ansible.builtin.assert:
+            that: wrong | length == 0
+            fail_msg: >-
+              refused, but not for the reason the case declares:
+              {{ wrong | map(attribute='name') | list }} --
+              {{ wrong | map(attribute='msg') | list }}
+            quiet: true
+
+        # Anti-vacuity. A `pass` verdict only says the module did not fail,
+        # and a module that exited early for some unrelated reason would
+        # satisfy every pass row in the table without validating anything.
+        # An accepted case must have got as far as a clean server-side
+        # simulation.
+        - name: "3f. Every accepted configuration reached a clean simulate"
+          vars:
+            unsimulated: >-
+              {{ fz_runs.results
+                 | rejectattr('failed_when_suppressed_exception', 'defined')
+                 | rejectattr('simulate_result.ok', 'defined') | list }}
+          ansible.builtin.assert:
+            that: unsimulated | length == 0
+            fail_msg: >-
+              accepted without the simulation ever running:
+              {{ unsimulated | map(attribute='item.name') | list }}
+            quiet: true
+
+        # ── 4. Things the case table cannot express ──────────────────────────
+
+        - name: "4. The happy path carried hints, so the fatal case was real"
+          vars:
+            happy: "{{ fz_runs.results | first }}"
+          ansible.builtin.assert:
+            that: happy.hints | default([]) | length > 0
+            fail_msg: >-
+              the recipe published no unanswered-with-empty-default questions,
+              so 'hints-are-fatal-when-asked' proved nothing
+            quiet: true
+
+        - name: "4b. prune_unknown reported what it dropped, by name"
+          vars:
+            pruned_case: >-
+              {{ fz_runs.results
+                 | selectattr('item.name', 'equalto',
+                              'unknown-answer-pruned-when-asked') | first }}
+          ansible.builtin.assert:
+            that:
+              - "'ZZ_NOT_A_QUESTION' in (pruned_case.pruned | default([]))"
+              - "'ZZ_NOT_A_QUESTION' not in (pruned_case.answers_sent | default([]))"
+            fail_msg: >-
+              prune_unknown dropped the answer silently:
+              pruned={{ pruned_case.pruned | default([]) }}
+              sent={{ pruned_case.answers_sent | default([]) }}
+            quiet: true
+
+        # ── 5. A measured artefact, pinned ───────────────────────────────────
+        #
+        # `answers` is no_log, which is correct -- recipe answers routinely
+        # carry passwords. ansible-core masks a no_log value by replacing it
+        # ANYWHERE in the module's output, as a plain substring. So a
+        # one-character answer such as YB_CPU_CORES: 1 masks every "1" in every
+        # message the module emits, including digits in the recipe's own
+        # constraints.
+        #
+        # Nothing acts on the mangled text -- the refusal is still correct --
+        # but the operator reads "requires at least 5********2" at exactly the
+        # moment they need the number. Measured, not inferred: the two runs
+        # below differ by one answer and nothing else.
+        #
+        # If ansible-core stops substring-masking short values, THIS RUNG
+        # FAILS. Delete it then; do not loosen it.
+        - name: "5. Same refusal, with a one-character answer in the set"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ fz_vm }}"
+            recipe: "{{ fz_recipe }}"
+            catalog: "{{ fz_cat }}"
+            answers: {ZZ_HOSTNAME: zz-fuzz-host, ZZ_SECRET: Zz-Fuzz-Scratch-1!,
+                      ZZ_RAM_MB: 256, YB_CPU_CORES: 1}
+          check_mode: true
+          failed_when: false
+          register: fz_masked
+
+        - name: "5b. ...and without it"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ fz_vm }}"
+            recipe: "{{ fz_recipe }}"
+            catalog: "{{ fz_cat }}"
+            answers: {ZZ_HOSTNAME: zz-fuzz-host, ZZ_SECRET: Zz-Fuzz-Scratch-1!,
+                      ZZ_RAM_MB: 256}
+          check_mode: true
+          failed_when: false
+          register: fz_clean
+
+        - name: "5c. Both refused; only the second says which minimum"
+          ansible.builtin.assert:
+            that:
+              - fz_masked.failed_when_suppressed_exception is defined
+              - fz_clean.failed_when_suppressed_exception is defined
+              - "'requires at least' in (fz_masked.msg | default(''))"
+              - "'512' in (fz_clean.msg | default(''))"
+              - "'512' not in (fz_masked.msg | default(''))"
+            fail_msg: >-
+              expected the one-character answer to mask the digits and the
+              clean set to keep them.
+              masked={{ fz_masked.msg | default('') }}
+              clean={{ fz_clean.msg | default('') }}
+            quiet: true
+
+        - name: "5d. Report it, since a passing assert prints nothing"
+          ansible.builtin.debug:
+            msg: >-
+              no_log masking -- with YB_CPU_CORES:1 in the set the module says
+              "{{ fz_masked.msg | default('') | regex_search('requires at least [^;]*') }}";
+              without it, "{{ fz_clean.msg | default('') | regex_search('requires at least [^;]*') }}"
+
+        # ── 6. Names that have to survive a filter ───────────────────────────
+        #
+        # The VM-name convergence check is the one place a name the operator
+        # chose is used to FIND something. It matches client-side for exactly
+        # this reason, and these are the two characters that break the
+        # alternative: an apostrophe ends an OData string literal, and a brace
+        # is the one reserved character pyvergeos' quote_value() does not
+        # escape (pyVergeOS#100). A broken filter here does not error -- it
+        # matches everything or nothing, so the module would either refuse to
+        # deploy a VM that does not exist, or deploy a second copy of one that
+        # does.
+        - name: "6. A VM name containing a quote or a brace must not false-match"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ item }}"
+            recipe: "{{ fz_recipe }}"
+            catalog: "{{ fz_cat }}"
+            answers: "{{ fz_base }}"
+          check_mode: true
+          failed_when: false
+          register: fz_names
+          loop:
+            - "zz-from-fuzz-o'brien"
+            - "zz-from-fuzz-{brace}"
+            - "zz-from-fuzz-back\\slash"
+          loop_control:
+            label: "{{ item }}"
+
+        - name: "6b. None of them found a VM, and none of them errored"
+          vars:
+            bad: >-
+              {{ fz_names.results
+                 | selectattr('already_existed', 'defined')
+                 | selectattr('already_existed') | list }}
+            errored: >-
+              {{ fz_names.results
+                 | selectattr('failed_when_suppressed_exception', 'defined')
+                 | list }}
+          ansible.builtin.assert:
+            that:
+              - bad | length == 0
+              - errored | length == 0
+            fail_msg: >-
+              a name with a reserved character was mishandled. falsely
+              existing: {{ bad | map(attribute='item') | list }};
+              errored: {{ errored | map(attribute='item') | list }} --
+              {{ errored | map(attribute='msg') | list }}
+            quiet: true
+
+        # ── 7. Ambiguity ─────────────────────────────────────────────────────
+
+        - name: "7. A second catalog"
+          vergeio.vergeos.catalog:
+            insecure: true
+            name: "{{ fz_cat2 }}"
+            repository: Local
+            description: fuzz ladder second catalog (zz- disposable)
+            publishing_scope: private
+            enabled: true
+
+        - name: "7b. Read its key"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/catalogs?fields=name%2C%24key"
+          register: fz_cat2_r
+
+        - name: "7c. Publish a second recipe with the SAME name into it"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/vm_recipes"
+            method: POST
+            body:
+              name: "{{ fz_recipe }}"
+              catalog: >-
+                {{ (fz_cat2_r.json | selectattr('name', 'equalto', fz_cat2)
+                    | first)['$key'] }}
+              vm: "{{ fz_src_key }}"
+              description: fuzz ladder duplicate, for the ambiguity check
+              version: "1.0"
+              icon: box
+          register: fz_dup_r
+
+        - name: "7d. An ambiguous recipe name must be refused, not guessed"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ fz_vm }}"
+            recipe: "{{ fz_recipe }}"
+            answers: "{{ fz_base }}"
+          check_mode: true
+          failed_when: false
+          register: fz_ambig
+
+        - name: "7e. It refused, and said so in those terms"
+          ansible.builtin.assert:
+            that:
+              - fz_ambig.failed_when_suppressed_exception is defined
+              - "'recipes named' in (fz_ambig.msg | default(''))"
+              - "'disambiguate' in (fz_ambig.msg | default(''))"
+            fail_msg: >-
+              two recipes share a name and the module picked one anyway, or
+              refused for another reason: {{ fz_ambig.msg | default('(none)') }}
+            quiet: true
+
+        # Naming the PRIMARY catalog, whose recipe is the one carrying the
+        # hand-written ZZ_* questions. The duplicate was published straight
+        # from the source VM and has only the auto-published set, so if the
+        # catalog were ignored every ZZ_* answer would come back "unknown
+        # answer". Passing proves the catalog chose the recipe, not merely
+        # that a recipe was chosen.
+        - name: "7f. Naming the catalog resolves it, onto the RIGHT recipe"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ fz_vm }}"
+            recipe: "{{ fz_recipe }}"
+            catalog: "{{ fz_cat }}"
+            answers: "{{ fz_base }}"
+          check_mode: true
+          failed_when: false
+          register: fz_disambig
+
+        - name: "7g. Clean simulate, and the ZZ_ answers were the ones sent"
+          ansible.builtin.assert:
+            that:
+              - fz_disambig.failed_when_suppressed_exception is not defined
+              - fz_disambig.simulate_result.ok | default(false)
+              - "'ZZ_RAM_MB' in (fz_disambig.answers_sent | default([]))"
+            fail_msg: >-
+              the disambiguated run did not land on the hand-authored recipe:
+              sent={{ fz_disambig.answers_sent | default([]) }}
+              msg={{ fz_disambig.msg | default('') }}
+            quiet: true
+
+        - name: "7h. Remove the duplicate"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/vm_recipes/{{ fz_dup_r.json['$key'] }}"
+            method: DELETE
+            status_code: [200, 201, 202, 204]
+
+        # ── 8. The whole table created nothing ───────────────────────────────
+
+        - name: "8. Check mode means check mode"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: fz_vms_after
+          changed_when: false
+
+        - name: "8b. No VM was deployed by any rung above"
+          vars:
+            made: >-
+              {{ fz_vms_after.vms | map(attribute='name')
+                 | select('match', '^zz-from-fuzz') | list }}
+          ansible.builtin.assert:
+            that: made | length == 0
+            fail_msg: "a check-mode rung deployed {{ made }}"
+            quiet: true
+
+      always:
+        - name: "9. Teardown -- remove everything the ladder made"
+          ansible.builtin.include_tasks: recipe_fuzz_teardown.yml
+
+        - name: "9b. Teardown must have removed everything"
+          ansible.builtin.assert:
+            that:
+              - fz_left_vms | default([]) | length == 0
+              - fz_left_recipes | default([]) | length == 0
+              - fz_left_cats | default([]) | length == 0
+            fail_msg: >-
+              teardown left vms={{ fz_left_vms | default([]) }}
+              recipes={{ fz_left_recipes | default([]) }}
+              catalogs={{ fz_left_cats | default([]) }}
+            quiet: true
+
+        - name: Recap
+          ansible.builtin.debug:
+            msg: >-
+              recipe fuzz: {{ fz_results | default([]) | length }} hostile
+              configurations, {{ fz_results | default([]) | selectattr('ok')
+              | list | length }} behaved as declared,
+              {{ fz_results | default([]) | rejectattr('ok') | list | length }}
+              mismatched -- plus reserved-character VM names, catalog
+              ambiguity, and zero leftovers

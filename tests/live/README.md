@@ -52,7 +52,46 @@ All 18 modules added in this port have live coverage. The last three
 ladders were written here; the first eight came with the modules and were
 re-run unchanged except for the password-auth fallback in the helpers.
 
+## Results — recipe suite, VergeOS 26.1.8, pyvergeos 1.2.7, 2026-09-21
+
+`vm_recipe_deploy` and `vm_recipe_info` get five ladders rather than one,
+because the interesting behaviour is spread across four axes that do not
+combine into a single run: one recipe end to end, every recipe at once,
+the module's own parameters, two deploys at once, and an answer validator
+attacked on purpose.
+
+| Ladder | Covers | Result |
+|---|---|---|
+| `verify-recipe-deploy.yml` | one recipe, refusals → deploy → convergence → teardown | PASS `ok=25 changed=2 failed=0 rescued=4` |
+| `verify-recipe-matrix.yml` | all 32 recipes simulated in check mode | PASS `ok=10` — 29 clean, 3 blocked-as-declared |
+| `verify-recipe-scenarios.yml` | `prune_unknown`, `fail_on_hints`, `catalog`, answer types | PASS `ok=28 failed=0` |
+| `verify-recipe-concurrency.yml` | two deploys racing for one VM name | PASS `ok=19 changed=3 failed=0` |
+| `verify-recipe-fuzz.yml` | 34 hostile answer sets against a hand-authored recipe | PASS `ok=61 changed=4 failed=0` |
+
+Only `verify-recipe-deploy.yml`, `-concurrency` and `-fuzz` create
+anything. The fuzz ladder builds its own catalog, source VM and recipe
+because no stock recipe carries the constraints it needs to attack; its
+34 deploy cases then all run in check mode, and rung 8 asserts nothing was
+built. Each has been run three times with identical results and zero
+leftovers.
+
+The fuzz table is falsifiable, which was checked rather than assumed: with
+one case's `matching` string changed to the wrong reason, rung 3e fails;
+with one valid case declared `expect: refuse`, rung 3c fails.
+
 ## Measured platform behaviours worth knowing
+
+- **A one-character answer masks digits in the module's own error
+  messages.** `vm_recipe_deploy`'s `answers` is `no_log`, which is right —
+  recipe answers routinely carry passwords — and ansible-core masks a
+  `no_log` value by replacing it *anywhere* in the module's output as a
+  plain substring. So `YB_CPU_CORES: 1` in the answer set turns
+  *"the recipe requires at least 512"* into
+  *"the recipe requires at least 5\*\*\*\*\*\*\*\*2"*. Nothing acts on the
+  mangled text and the refusal itself is correct, but the operator loses
+  the number at the moment they need it. Measured with two runs differing
+  by exactly one answer; pinned by rung 5 of `verify-recipe-fuzz.yml`, and
+  the reason every `matching` string in that table is digit-free.
 
 - **`file`: `filesize` settles asynchronously.** Immediately after an
   upload of a 1048576-byte file the row reads `filesize: 786432`, reaching

@@ -585,3 +585,80 @@ neighbour differing only by a brace token and asserts it survives.
 pyvergeos#100 is released and `requirements.txt` floors past it. That is now the
 third distinct reason (B1 escaping, B18 SDK fail-open, B19 brace stripping) —
 the client-side matching that keeps getting flagged as redundant is load-bearing.
+
+---
+
+## B20 — a one-character answer masks the digits in every `vm_recipe_deploy` message
+**Status:** OPEN (ansible-core behaviour; our exposure is a design trade-off)
+**Severity:** low — cosmetic, but it removes the diagnostic at the moment it is needed
+**Found:** 2026-09-21, building `tests/live/verify-recipe-fuzz.yml`
+
+B14 recorded that a `no_log` answer whose value equals the VM name masks the
+name. That is the *exact-match* case, and `0fd7fd9` fixed it by not echoing the
+name. This is the *substring* case, which that fix does not reach and cannot.
+
+`AnsibleModule` collects every `no_log` value into a set of strings —
+including integers, via `_return_datastructure_name`, which yields
+`to_native(obj)` for `int` and `float` — and `_remove_values_conditions` then
+does a plain `native_str_value.replace(omit_me, '*' * 8)` for each of them
+against every string the module returns. A one-character answer therefore
+masks that character *everywhere*, including inside numbers that have nothing
+to do with any answer.
+
+`answers` must stay `no_log`: recipe answers routinely carry passwords, and
+ansible-core logs the invocation before the module runs, so redacting inside
+the module is too late. Small integers are equally unavoidable —
+`YB_CPU_CORES: 1` is the ordinary answer, not a contrived one.
+
+### Reproduce
+
+Two runs differing by exactly one answer. Measured against the lab, VergeOS
+26.1.8, ansible-core 2.20:
+
+```yaml
+- vergeio.vergeos.vm_recipe_deploy:
+    name: zz-probe
+    recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+    answers: {YB_CPU_CORES: 5, YB_RAM: 100}   # YB_RAM's minimum is 256
+  check_mode: true
+  failed_when: false
+```
+
+```
+with    YB_CPU_CORES: 5  ->  "... the recipe requires at least 2********6"
+without YB_CPU_CORES     ->  "... the recipe requires at least 256"
+```
+
+The same run also reports `answer 'YB_RAM' is ********`, which is the
+exact-match case and is working as intended.
+
+### Signature
+
+A module message carrying `********` inside a number, a key or a hostname
+rather than in place of one. The masked run is otherwise correct: the refusal,
+the exit code and the structured return values are all right — only the prose
+is damaged.
+
+### Impact, stated plainly
+
+Nothing acts on the mangled text. The cost is that an operator reading a
+failed deploy sees `requires at least 5********2` instead of the number they
+need, and the same masking applies to any digit, key fragment or word that
+happens to match a short answer value. It is the reason every `matching`
+string in `verify-recipe-fuzz.yml`'s case table is digit-free.
+
+### Options, none of them free
+
+1. **Accept and document.** Zero risk, no fix.
+2. **Split the parameter** — `answers` not `no_log`, plus a `secret_answers`
+   that is. Removes the masking for ordinary numeric answers and keeps
+   credentials protected, at the cost of a breaking change to a module
+   already on `main`.
+3. **Upstream.** The substring masking is ansible-core's, and short `no_log`
+   values mangling unrelated output is a general problem — not ours to fix
+   in this repo.
+
+Not acted on unilaterally: option 2 changes a shipped module's interface.
+Pinned by rung 5 of `verify-recipe-fuzz.yml`, which asserts the masking
+happens — **if ansible-core stops substring-masking short values that rung
+fails, and the right response is to delete it, not to loosen it.**
