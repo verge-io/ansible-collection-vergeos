@@ -279,7 +279,7 @@
         - name: "5b. Launch every member simultaneously"
           ansible.builtin.command:
             argv:
-              - ansible-playbook
+              - "{{ ansible_playbook_python | dirname }}/ansible-playbook"
               - "{{ playbook_dir }}/recipe_concurrency_worker.yml"
               - -i
               - "{{ playbook_dir }}/localhost.ini"
