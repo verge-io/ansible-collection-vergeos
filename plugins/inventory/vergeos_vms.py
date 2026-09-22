@@ -125,6 +125,7 @@ sites:
 
 ---
 # Multi-site configuration
+---
 plugin: vergeio.vergeos.vergeos_vms
 sites:
   - name: denver
@@ -138,6 +139,7 @@ sites:
 
 ---
 # Full configuration with caching and filtering
+---
 plugin: vergeio.vergeos.vergeos_vms
 cache: true
 cache_plugin: jsonfile

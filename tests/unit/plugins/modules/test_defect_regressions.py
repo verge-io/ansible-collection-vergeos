@@ -81,19 +81,27 @@ def test_d2_drive_tier_converges_against_preferred_tier():
     drive.save.assert_not_called()
 
 
-def test_d2_drive_tier_change_is_sent_as_a_kwarg_not_an_attribute():
-    """The diff must arrive as save(**kwargs).
+def test_d2_drive_tier_is_written_as_preferred_tier_not_the_alias():
+    """The API field name goes on the wire, not the friendly alias.
 
-    pyvergeos routes attribute-set fields out as a RAW PUT, skipping the
-    tier -> preferred_tier translation in DriveManager.update(). Measured on
-    26.1.8: setattr+save() sent {'tier': 1} and the platform ignored it;
-    save(tier=1) sent {'preferred_tier': '1'} and it applied.
+    The live row has no 'tier' key -- it has 'preferred_tier', a string.
+    Measured on 26.1.8: PUT {'tier': 1} returns HTTP 200 and is silently
+    ignored; PUT {'preferred_tier': '1'} applies.
+
+    Writing preferred_tier directly rather than sending 'tier' and relying
+    on DriveManager.update() to translate it. The alias route works only
+    for kwargs -- ResourceObject._save() sends attribute-set fields as a
+    raw PUT that skips the typed update() (pyvergeos#97) -- and needs
+    pyvergeos >= 1.2.7. The API field name needs no SDK cooperation.
     """
     changed, drive = _drive_update({'tier': 1})
     assert changed is True
     drive.save.assert_called_once()
-    assert drive.save.call_args[1].get('tier') == 1, \
-        "the tier diff must go through save(**kwargs) to reach the SDK translation"
+    sent = drive.save.call_args[1]
+    assert sent.get('preferred_tier') == '1', \
+        "the tier diff must be written as preferred_tier, as a string"
+    assert 'tier' not in sent, \
+        "the raw 'tier' alias must not be sent -- the platform ignores it"
 
 
 def test_d2_string_and_int_tiers_compare_equal():
@@ -105,27 +113,49 @@ def test_d2_string_and_int_tiers_compare_equal():
 
 # ── D3 ───────────────────────────────────────────────────────────────────────
 
-def test_d3_disable_sends_none_never_empty_string():
-    """'' is rejected by the platform:
-    "value '' is not in list for field 'cloudinit_datasource'".
-    """
+def _remove_ci(current_datasource):
+    """Run remove_cloudinit against a VM whose datasource is as given."""
     client = MagicMock()
     module = MagicMock()
     module.check_mode = False
     module.params = {'vm_name': 'v', 'vm_id': None}
+    row = {'$key': 7}
+    if current_datasource is not None:
+        row['cloudinit_datasource'] = current_datasource
 
     with patch.object(ci_mod, 'get_vm') as get_vm, \
-         patch.object(ci_mod, 'delete_cloudinit_files', return_value=True), \
+         patch.object(ci_mod, 'delete_cloudinit_files', return_value=False), \
          patch.object(ci_mod, 'enable_cloudinit_datasource') as set_ds:
-        get_vm.return_value = as_row(MagicMock(), {'$key': 7})
+        get_vm.return_value = as_row(MagicMock(), row)
         try:
             ci_mod.remove_cloudinit(client, module)
         except SystemExit:
             pass
+    return set_ds, module
+
+
+def test_d3_disable_sends_none_never_empty_string():
+    """'' is rejected by the platform:
+    "value '' is not in list for field 'cloudinit_datasource'".
+    """
+    set_ds, _ = _remove_ci('nocloud')
 
     set_ds.assert_called_once()
     assert set_ds.call_args[0][-1] == 'none', \
         "state=absent must send 'none'; '' is rejected by the platform"
+
+
+def test_d3_disable_is_idempotent_on_an_already_disabled_vm():
+    """An already-disabled VM must report changed=false, not re-send 'none'.
+
+    The guard came from main. Without it, state=absent reported changed
+    every run on a VM that had never had cloud-init configured.
+    """
+    for already_off in ('none', 'NONE', None, ''):
+        set_ds, module = _remove_ci(already_off)
+        set_ds.assert_not_called()
+        assert module.exit_json.call_args[1]['changed'] is False, \
+            "disabling an already-disabled VM (%r) must be a no-op" % already_off
 
 
 def test_d3_datasource_choices_offer_none():

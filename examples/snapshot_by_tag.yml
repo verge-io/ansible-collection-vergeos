@@ -48,7 +48,7 @@
     - name: Generate one timestamp for the whole run  # noqa: run-once[task]
       ansible.builtin.set_fact:
         snapshot_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
-      run_once: true
+      run_once: true # noqa: run-once - intentional: one timestamp shared across all hosts
       delegate_to: localhost
 
     - name: Create snapshot of VM

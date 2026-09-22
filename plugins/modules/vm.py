@@ -38,10 +38,10 @@ options:
   enabled:
     description:
       - Whether the VM is enabled.
-      - When omitted, the existing value is preserved on update and the
-        platform default applies on create. This matters for partial
-        updates - a task that sets only I(description) must not also
-        re-enable a VM somebody deliberately disabled.
+      - Defaults to C(true) when creating. Omit to leave unchanged on update.
+      - The omit-on-update behaviour matters for partial updates - a task
+        that sets only I(description) must not also re-enable a VM somebody
+        deliberately disabled.
     type: bool
   os_family:
     description:
@@ -195,10 +195,11 @@ def build_vm_data(module):
     """Build VM data dict from module params"""
     vm_data = {
         'name': module.params['name'],
+        'enabled': module.params['enabled'] if module.params['enabled'] is not None else True,
     }
 
     optional_fields = [
-        'description', 'enabled', 'os_family', 'cpu_cores',
+        'description', 'os_family', 'cpu_cores',
         'ram', 'machine_type', 'machine_subtype', 'bios_type',
         'network', 'boot_order'
     ]
@@ -285,10 +286,7 @@ def update_vm(module, client, vm):
         vm_dict.update(update_data)
         return True, vm_dict
 
-    # Update VM attributes and save
-    for key, value in update_data.items():
-        setattr(vm, key, value)
-    vm.save()
+    vm = vm.save(**update_data)
     return True, dict(vm)
 
 

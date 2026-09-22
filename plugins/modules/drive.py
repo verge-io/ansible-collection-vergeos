@@ -38,9 +38,9 @@ options:
   drive_type:
     description:
       - Type of storage drive.
+      - Defaults to C(virtio) when creating. Omit to leave unchanged on update.
     type: str
     choices: [ virtio, ide, sata, scsi ]
-    default: virtio
   media_type:
     description:
       - Media type for the drive.
@@ -54,8 +54,8 @@ options:
   read_only:
     description:
       - Whether the drive is read-only.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
@@ -158,9 +158,9 @@ def create_drive(module, client, vm):
 
     drive_data = {
         'name': module.params['name'],
-        'interface': interface_mapping.get(module.params.get('drive_type', 'virtio'), 'virtio-scsi'),
+        'interface': interface_mapping.get(module.params['drive_type'] or 'virtio', 'virtio-scsi'),
         'media': module.params.get('media_type', 'disk'),
-        'readonly': module.params.get('read_only', False),
+        'readonly': module.params['read_only'] if module.params['read_only'] is not None else False,
     }
 
     if module.params.get('size'):
@@ -198,16 +198,25 @@ def update_drive(module, client, drive):
             update_data['interface'] = target_interface
             changed = True
 
-    # Check tier.
-    # The live row carries 'preferred_tier' as a STRING; there is no 'tier'
-    # key on it, so comparing drive_dict['tier'] is always None != <int> and
-    # the module reports changed forever. Compare the real field, but keep
-    # sending the friendly name 'tier' -- pyvergeos >= 1.2.7 translates it to
-    # preferred_tier inside DriveManager.update(), and that translation is
-    # only reached for kwargs passed to save() (see the save call below).
+    # Check tier. The API field is preferred_tier and is returned as a
+    # string (e.g. '4'); the module previously read/wrote a nonexistent
+    # 'tier' field, so tier updates never converged.
+    #
+    # Writing preferred_tier directly (main's fix) rather than sending the
+    # friendly 'tier' alias and relying on DriveManager.update() to
+    # translate it. The alias route works on pyvergeos >= 1.2.7, but only
+    # for kwargs -- ResourceObject._save() sends attribute-set fields as a
+    # raw PUT that bypasses the typed update() where the translation lives
+    # (pyvergeos#97). Writing the API field name needs no SDK cooperation
+    # at all, which is why this keeps the floor at >=1.0.1.
     if module.params.get('tier') is not None:
-        if str(drive_dict.get('preferred_tier') or '') != str(module.params['tier']):
-            update_data['tier'] = module.params['tier']
+        current_tier = drive_dict.get('preferred_tier')
+        try:
+            current_tier = int(current_tier)
+        except (TypeError, ValueError):
+            current_tier = None
+        if current_tier != module.params['tier']:
+            update_data['preferred_tier'] = str(module.params['tier'])
             changed = True
 
     # Check read_only
@@ -223,15 +232,11 @@ def update_drive(module, client, drive):
         drive_dict.update(update_data)
         return True, drive_dict
 
-    # Pass the diff as kwargs, not via setattr.
-    # pyvergeos >= 1.2.7 sends attribute-set (dirty) fields as a RAW PUT and
-    # routes only kwargs through the manager's typed update(). The tier ->
-    # preferred_tier translation lives in that typed update(), so a dirty
-    # 'tier' goes out untranslated and the platform discards it silently
-    # (HTTP 200, no change). Measured both ways on 26.1.8:
-    #   setattr + save()      -> PUT {'tier': 1}            tier unchanged
-    #   save(**{'tier': 1})   -> PUT {'preferred_tier': '1'} tier applied
-    return True, dict(drive.save(**update_data))
+    # Pass the diff as kwargs, not via setattr: a bare save() PUTs {} on
+    # pyvergeos < 1.2.7, and even on newer SDKs the dirty-field path is a
+    # raw PUT that skips the manager's typed update().
+    drive = drive.save(**update_data)
+    return True, dict(drive)
 
 
 def delete_drive(module, client, drive):
@@ -250,10 +255,10 @@ def main():
         name=dict(type='str', required=True),
         state=dict(type='str', default='present', choices=['present', 'absent']),
         size=dict(type='int'),
-        drive_type=dict(type='str', default='virtio', choices=['virtio', 'ide', 'sata', 'scsi']),
+        drive_type=dict(type='str', choices=['virtio', 'ide', 'sata', 'scsi']),
         media_type=dict(type='str', default='disk', choices=['disk', 'cdrom']),
         tier=dict(type='int'),
-        read_only=dict(type='bool', default=False),
+        read_only=dict(type='bool'),
     )
 
     module = AnsibleModule(

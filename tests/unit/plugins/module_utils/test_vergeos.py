@@ -30,6 +30,7 @@ class TestGetVergeosClient:
             host='vergeos.example.com',
             username='admin',
             password='secret',
+            token=None,
             verify_ssl=True
         )
 
@@ -53,6 +54,7 @@ class TestGetVergeosClient:
             host='vergeos.example.com',
             username='admin',
             password='secret',
+            token=None,
             verify_ssl=True
         )
 
@@ -76,6 +78,7 @@ class TestGetVergeosClient:
             host='vergeos.example.com',
             username='admin',
             password='secret',
+            token=None,
             verify_ssl=True
         )
 
@@ -99,6 +102,7 @@ class TestGetVergeosClient:
             host='vergeos.example.com',
             username='admin',
             password='secret',
+            token=None,
             verify_ssl=False
         )
 
@@ -196,3 +200,73 @@ class TestVergeosArgumentSpec:
         spec = vergeos_argument_spec()
 
         assert spec['insecure'].get('default') is False
+
+    def test_api_key_is_in_the_spec_and_no_log(self):
+        """api_key carries a credential, so it must never be echoed."""
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import vergeos_argument_spec
+
+        spec = vergeos_argument_spec()
+
+        assert 'api_key' in spec
+        assert spec['api_key'].get('no_log') is True
+        assert spec['api_key'].get('required') is False
+
+    def test_api_key_falls_back_to_the_env(self):
+        """VERGEOS_API_KEY, matching the VERGEOS_* convention of the others."""
+        from ansible.module_utils.basic import env_fallback
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import vergeos_argument_spec
+
+        spec = vergeos_argument_spec()
+
+        assert spec['api_key'].get('fallback') == (env_fallback, ['VERGEOS_API_KEY'])
+
+
+class TestApiKeyAuth:
+    """Bearer-token auth, merged from main (PR #3).
+
+    Verified against a live 26.1.8 system on 2026-09-21: with a real 64-char
+    key in VERGEOS_API_KEY and username/password unset, vm_info returned the
+    system's VMs; an invalid key failed with "Login required" rather than
+    silently succeeding.
+    """
+
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.VergeClient')
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    def test_api_key_is_passed_as_token(self, MockVergeClient):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import get_vergeos_client
+
+        module = MagicMock()
+        module.params = {'host': 'vergeos.example.com', 'username': None,
+                         'password': None, 'api_key': 'k' * 64, 'insecure': False}
+
+        get_vergeos_client(module)
+
+        assert MockVergeClient.call_args.kwargs['token'] == 'k' * 64
+
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.VergeClient')
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    def test_api_key_wins_over_username_and_password(self, MockVergeClient):
+        """Documented precedence: the key bypasses 2FA/TOTP, so it must win."""
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import get_vergeos_client
+
+        module = MagicMock()
+        module.params = {'host': 'vergeos.example.com', 'username': 'admin',
+                         'password': 'secret', 'api_key': 'k' * 64, 'insecure': False}
+
+        get_vergeos_client(module)
+
+        assert MockVergeClient.call_args.kwargs['token'] == 'k' * 64
+
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.VergeClient')
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    def test_empty_api_key_is_treated_as_absent(self, MockVergeClient):
+        """An unset env var arrives as '', which must not be sent as a token."""
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import get_vergeos_client
+
+        module = MagicMock()
+        module.params = {'host': 'vergeos.example.com', 'username': 'admin',
+                         'password': 'secret', 'api_key': '', 'insecure': False}
+
+        get_vergeos_client(module)
+
+        assert MockVergeClient.call_args.kwargs['token'] is None

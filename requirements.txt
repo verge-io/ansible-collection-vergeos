@@ -1,1 +1,21 @@
+# The floor is higher than main's >=1.0.1 because this branch adds modules
+# that need managers the older SDK does not have. Measured by installing each
+# version and introspecting VergeClient against the 24 managers our modules
+# reach for:
+#
+#   1.0.1  missing: physical_drives      (breaks physical_drive_info, drive_health)
+#   1.1.0  missing: physical_drives
+#   1.2.0  missing: physical_drives
+#   1.2.3  missing: none                 <- hard minimum for manager availability
+#   1.2.5  adds the OData escaping fix (pyvergeos#72) that any .get(name=...)
+#          with an apostrophe in the name depends on
+#   1.2.7  what the 887 unit tests and 24 live ladders are actually verified
+#          against
+#
+# Declaring 1.2.7 rather than the 1.2.3 hard minimum: claiming support for a
+# version nothing has been run on is not support. Lower it if someone runs the
+# suite against 1.2.3/1.2.5 and it passes.
+#
+# Note this is NOT required for the update-persistence or drive-tier fixes any
+# more -- those write API field names directly and need no SDK cooperation.
 pyvergeos>=1.2.7

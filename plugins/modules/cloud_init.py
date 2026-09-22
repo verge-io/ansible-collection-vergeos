@@ -31,8 +31,8 @@ options:
   datasource:
     description:
       - The cloud-init datasource type.
-      - Set to C(nocloud) to enable cloud-init.
-      - Set to empty string or omit to disable cloud-init.
+      - Set to C(nocloud) to enable cloud-init (default with I(state=present)).
+      - Use I(state=absent) to disable cloud-init and remove its files.
     type: str
     choices: [ nocloud, none, '' ]
   user_data:
@@ -57,7 +57,9 @@ options:
     description:
       - Convenience parameter to set hostname in both user-data and meta-data.
       - Generates standard user-data and meta-data if not explicitly provided.
-      - Mutually exclusive with explicit I(user_data) or I(meta_data).
+      - May be combined with I(user_data) or I(meta_data); explicit content
+        takes precedence and I(hostname) only fills in whichever file was
+        not supplied.
     type: str
   network:
     description:
@@ -387,15 +389,24 @@ def remove_cloudinit(client, module):
 
     # Get VM
     vm = get_vm(client, module, vm_name, vm_id_param)
-    vm_key = str(dict(vm).get('$key'))
+    vm_dict = dict(vm)
+    vm_key = str(vm_dict.get('$key'))
 
-    # Disable cloud-init. 'none' is the platform's disable value; '' is
-    # rejected. pyvergeos >= 1.2.7 would normalise '' for us, but saying it
-    # outright does not depend on that staying true.
-    enable_cloudinit_datasource(client, module, vm_key, 'none')
+    # Disable cloud-init datasource. VergeOS rejects '' as a datasource
+    # value; the supported disable value is 'none'. Saying 'none' outright
+    # does not depend on pyvergeos >= 1.2.7 normalising '' for us.
+    #
+    # Guarded rather than unconditional so an already-disabled VM reports
+    # changed=false.
+    changed = False
+    current_datasource = str(vm_dict.get('cloudinit_datasource') or 'none')
+    if current_datasource.lower() != 'none':
+        enable_cloudinit_datasource(client, module, vm_key, 'none')
+        changed = True
 
     # Delete cloud-init files
-    changed = delete_cloudinit_files(client, module, vm_key)
+    files_deleted = delete_cloudinit_files(client, module, vm_key)
+    changed = changed or files_deleted
 
     module.exit_json(
         changed=changed,

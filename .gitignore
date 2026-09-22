@@ -24,3 +24,9 @@ tests/integration/test_*.yml
 inventory/vergeos_vms.yml
 inventory/demo.vergeos_vms.yml
 .probe/
+
+# ansible-test sanity creates this in the source tree -- it is a nested copy
+# of the whole collection. 251 files of it were committed by a `git add -A`
+# in 1688259 before this rule existed.
+.ansible/
+tests/output/

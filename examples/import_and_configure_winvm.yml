@@ -18,11 +18,11 @@
     # ova_file_id: "46"
 
     # Network configuration
-    network_name: "External"          # VergeOS network to attach NIC to
+    network_name: "External" # VergeOS network to attach NIC to
     ip_address: "192.168.1.15"
     subnet: "24"
     gateway: "192.168.1.1"
-    admin_password: "Password123!"    # Windows Administrator password
+    admin_password: "Password123!" # Windows Administrator password
 
     # Unattend.xml content (inline for testing)
     # For production, consider using ansible-vault to encrypt this variable

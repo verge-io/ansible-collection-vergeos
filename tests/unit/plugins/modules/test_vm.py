@@ -144,6 +144,52 @@ class TestVmStatePresent:
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is True
 
+    # Patch targets are plugins.modules.vm.*, not module_utils.vergeos.*:
+    # each module binds its own reference to get_vergeos_client at import,
+    # so patching where the name is DEFINED silently misses once any other
+    # test has already imported vm. (Retargeted on merge; main's copy of
+    # this test patched the definition site.)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
+    def test_partial_update_sends_changes_and_preserves_enabled(self, mock_get_client):
+        """Issues #80/#83: save() receives the changed fields; omitted enabled is not sent"""
+        mock_client = MagicMock()
+        mock_vm = MagicMock()
+        # A plain dict, NOT an __iter__ override. MagicMock auto-provides
+        # keys(), and dict() prefers the mapping protocol, so assigning
+        # __iter__ is ignored and dict(mock) decodes as {} -- which made this
+        # test's premise (a VM with enabled=False) never actually apply. It
+        # passed for the wrong reason. See B16 and
+        # tests/unit/test_fixture_discipline.py.
+        vm_row = {'$key': 1, 'name': 'existing-vm',
+                  'enabled': False, 'description': ''}
+        mock_vm.keys.return_value = list(vm_row.keys())
+        mock_vm.__getitem__.side_effect = lambda k: vm_row[k]
+        mock_vm.save.return_value = {'$key': 1, 'name': 'existing-vm', 'enabled': False, 'description': 'x'}
+        mock_client.vms.get.return_value = mock_vm
+        mock_get_client.return_value = mock_client
+
+        mock_module = MagicMock()
+        mock_module.params = {
+            'host': 'vergeos.example.com', 'username': 'admin', 'password': 'secret',
+            'insecure': False, 'name': 'existing-vm', 'state': 'present',
+            'description': 'x', 'enabled': None, 'os_family': None, 'cpu_cores': None,
+            'ram': None, 'machine_type': None, 'machine_subtype': None,
+            'bios_type': None, 'network': None, 'boot_order': None
+        }
+        mock_module.check_mode = False
+
+        with patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.AnsibleModule', return_value=mock_module):
+            from ansible_collections.vergeio.vergeos.plugins.modules import vm
+            mock_module.reset_mock()
+            try:
+                vm.main()
+            except SystemExit:
+                pass
+
+        mock_vm.save.assert_called_once_with(description='x')
+        assert mock_module.exit_json.call_args[1]['changed'] is True
+
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
     def test_no_change_when_vm_matches(self, mock_get_client):

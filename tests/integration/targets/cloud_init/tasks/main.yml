@@ -3,6 +3,6 @@
 # Note: Cloud-init file management requires specific SDK capabilities
 # that may not be available in all environments
 
-- name: "cloud_init: Skip test - cloud_init requires specific SDK support"
+- name: "Cloud-init: Skip test - cloud_init requires specific SDK support"
   ansible.builtin.debug:
     msg: "cloud_init tests skipped - SDK cloud-init file management not available in current pyvergeos version"

@@ -42,6 +42,23 @@ options:
     description:
       - IP address for the network.
     type: str
+  network:
+    description:
+      - CIDR-notation network address (e.g. C(10.10.10.0/24)).
+      # Folded scalar: C(Validation error: Gateway is outside of network)
+      # contains ": ", which YAML reads as a mapping key inside a plain
+      # scalar and rejects -- taking the WHOLE DOCUMENTATION block with it.
+      # See ansible-collection-vergeos#17.
+      - >-
+        Required by the VergeOS API for vnet creation; the legacy
+        combination of C(ip_address) + C(subnet_mask) + C(gateway)
+        without C(network) is rejected by the server with
+        C(Validation error: Gateway is outside of network).
+      - When set, this field supersedes the implicit network
+        inferred from C(subnet_mask) — operators should specify
+        either this field OR C(subnet_mask), not both.
+    type: str
+    version_added: "2.1.0"
   subnet_mask:
     description:
       - Subnet mask for the network.
@@ -176,6 +193,7 @@ def build_network_data(module):
         'description': 'description',
         'network_type': 'type',
         'ip_address': 'ip_address',
+        'network': 'network',
         'subnet_mask': 'subnet_mask',
         'gateway': 'gateway',
         'dhcp_enabled': 'dhcp_enabled',
@@ -208,11 +226,15 @@ def update_network(module, client, network):
     changed = False
     update_data = {}
 
-    # Map our friendly parameter names to API fields
+    # Map our friendly parameter names to API fields. Unlike the create
+    # path (where the SDK translates ip_address), updates send raw API
+    # fields: the router IP field is 'ipaddress'. 'network' (CIDR) only
+    # takes effect once the parameter exists in the argument spec.
     param_mapping = {
         'description': 'description',
         'network_type': 'type',
-        'ip_address': 'ip_address',
+        'ip_address': 'ipaddress',
+        'network': 'network',
         'subnet_mask': 'subnet_mask',
         'gateway': 'gateway',
         'dhcp_enabled': 'dhcp_enabled',
@@ -236,10 +258,7 @@ def update_network(module, client, network):
         network_dict.update(update_data)
         return True, network_dict
 
-    # Update network attributes and save
-    for key, value in update_data.items():
-        setattr(network, key, value)
-    network.save()
+    network = network.save(**update_data)
     return True, dict(network)
 
 
@@ -260,6 +279,7 @@ def main():
         description=dict(type='str'),
         network_type=dict(type='str', choices=['internal', 'external', 'vlan', 'overlay']),
         ip_address=dict(type='str'),
+        network=dict(type='str'),
         subnet_mask=dict(type='str'),
         gateway=dict(type='str'),
         dhcp_enabled=dict(type='bool'),

@@ -1,14 +1,14 @@
 ---
 namespace: vergeio
 name: vergeos
-version: 2.0.0
+version: 2.0.1
 readme: README.md
 authors:
   - VergeIO
 description: Ansible collection for managing VergeOS virtualization infrastructure
 license:
   - GPL-3.0-or-later
-license_file: ''
+license_file: ""
 tags:
   - vergeio
   - vergeos
@@ -26,9 +26,9 @@ build_ignore:
   - .claude
   - .mcp.json
   - CLAUDE.md
-  - '*.tar.gz'
+  - "*.tar.gz"
   - __pycache__
-  - '*.pyc'
+  - "*.pyc"
   - .venv
   # No trailing slashes. build_ignore is fnmatch against the path relative to
   # the collection root, so 'tests/' matches nothing and shipped the whole
@@ -39,3 +39,5 @@ build_ignore:
   # clone.
   - .probe
   - .pytest_cache
+  - .ansible
+  - tests/output
