@@ -67,13 +67,30 @@ Affected stock modules while open: `vm_info`, `vm`, `network`,
   so the *original* rationale has expired.
 
   **Do not remove them.** A 2026-09-21 review recommended exactly that, and
-  it was wrong. They are what keeps this collection clear of
-  pyvergeos#96: `client.vms.list(name=X)` silently discards the name and
-  returns every non-snapshot VM. An "optimisation" from a client-side match
-  to `vms.list(name=...)` would turn a correct lookup into one that matches
-  everything — and the modules that do that lookup go on to update and
-  delete. Revisit only once #96 is fixed and the floor is raised past it.
-  See B18.
+  it was wrong. The reasoning has since changed, and the conclusion has not.
+
+  The original reason was pyvergeos#96 — `client.vms.list(name=X)` silently
+  discarded the name and returned every non-snapshot VM. **#96 is fixed on
+  `origin/dev` and unreleased**; measured 2026-09-22, `list(name=...)` now
+  filters correctly. The floor is still `>=1.2.7`, which carries the defect,
+  so the workarounds remain load-bearing today on that basis alone.
+
+  They stay after #96 ships, for a different and sharper reason: **#100 is
+  still open on dev**. `{...}` is stripped out of a filter literal, so a name
+  containing braces resolves to a *different object*. Measured on dev against
+  a real VM:
+
+  ```
+  list(name='zz-i96x-f-vm')     -> 1  the right VM
+  list(name='zz-i9{X}6x-f-vm')  -> 1  the SAME VM — wrong object, no error
+  list(name='zz-i9{X}x-f-vm')   -> 0  proves the brace is STRIPPED, not wildcarded
+  ```
+
+  #96's fix makes this **more** dangerous, not less. While `list()` returned
+  everything, no caller could trust a server-side name filter and the brace
+  bug was masked. Now that ordinary names filter correctly, a server-side
+  lookup looks safe — and the one input that silently hits the wrong row is
+  still there, in modules that go on to update and delete. See B18 and B19.
 - `modules/catalog.py` did not work around B1 — it **reimplemented** it,
   hand-building `filter="name eq '%s'"` after SQL-doubling. Fixed
   2026-09-21; see `TestLookupDelegatesEscapingToTheSDK` and the apostrophe
@@ -480,8 +497,23 @@ the collection owners rather than a lint fix.
 ---
 
 ## B18 — pyvergeos `list()` returns every row when it cannot apply a filter
-**Status:** OPEN (upstream pyvergeos **#96**) · **Severity:** high ·
-**Measured on 1.2.7, 2026-09-21**
+**Status:** FIXED UPSTREAM AND UNRELEASED (pyvergeos **#96**) — present in
+every released version including the `>=1.2.7` floor, fixed on `origin/dev`
+· **Severity:** high · **Measured on 1.2.7, 2026-09-21; re-measured against
+`origin/dev`, 2026-09-22**
+
+Verified both ways on 2026-09-22, same call, same lab:
+
+```
+released 1.2.7   list(name='zz-i96x-f-vm')  -> 8 rows (every VM)
+origin/dev       list(name='zz-i96x-f-vm')  -> 1 row
+```
+
+`origin/dev` merges the shorthand kwargs into the filter instead of choosing
+one or the other, and the code cites this issue. **Do not raise
+`requirements.txt` past `1.2.7` until that ships**, and do not treat the
+client-side workarounds as removable when it does — B19 is the reason they
+stay.
 
 `client.vms.list(name='does-not-exist')` returns **every non-snapshot VM**.
 `VMManager.list()` always supplies its own `is_snapshot eq false` filter,
@@ -582,9 +614,26 @@ which is immune to this and to B18. Pinned by `TestLookupIsClientSideAndNeverFil
 neighbour differing only by a brace token and asserts it survives.
 
 **Do not reintroduce a server-side `name eq '...'` lookup anywhere** until
-pyvergeos#100 is released and `requirements.txt` floors past it. That is now the
-third distinct reason (B1 escaping, B18 SDK fail-open, B19 brace stripping) —
-the client-side matching that keeps getting flagged as redundant is load-bearing.
+pyvergeos#100 is released and `requirements.txt` floors past it.
+
+Three reasons were recorded for the client-side matching: B1 escaping, B18's
+SDK fail-open, and this. **Two of the three are now fixed on `origin/dev` and
+unreleased**, which sounds like the case is weakening. It is not. Re-measured
+against `origin/dev` on 2026-09-22:
+
+```
+list(name='zz-i96x-f-vm')     -> 1  the right VM
+list(name='zz-i9{X}6x-f-vm')  -> 1  the SAME VM — wrong object, silently
+list(name='zz-i9{X}x-f-vm')   -> 0  the brace is STRIPPED, not a wildcard
+```
+
+The fail-open used to mask this: when every name returned every row, nobody
+could rely on a server-side filter, so nobody was exposed to the brace. With
+#96 fixed, ordinary names filter correctly and a server-side lookup starts to
+look safe — while the one input that resolves to the wrong row is unchanged,
+in modules that go on to update and delete.
+
+**One remaining reason, and it is worse than the three it replaces.**
 
 ---
 

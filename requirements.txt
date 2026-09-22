@@ -18,4 +18,11 @@
 #
 # Note this is NOT required for the update-persistence or drive-tier fixes any
 # more -- those write API field names directly and need no SDK cooperation.
+# Verified against BOTH released 1.2.7 and origin/dev (22 commits ahead) on
+# 2026-09-22: 15 live ladders, identical task counts, failed=0 on both, plus
+# 929 unit tests. See docs/SDK-COMPATIBILITY.md.
+#
+# Do not raise this floor until pyvergeos#96/#97/#98 are RELEASED -- they are
+# fixed on dev and unreleased -- and do not swap client-side name matching for
+# list(name=...) when it moves, because #100 is still open and survives #96.
 pyvergeos>=1.2.7
