@@ -54,6 +54,7 @@
     eg_upper: ZZ-FROM-EDGE
     eg_snapname: zz-from-edge-snapshadow
     eg_snapsrc: zz-edge-snapsrc
+    eg_apikey: zz-edge-authkey
     eg_answers:
       YB_CPU_CORES: 1
       YB_RAM: 1024
@@ -471,8 +472,76 @@
               (instance keys {{ mine | map(attribute='$key') | list }})
             quiet: true
 
+        # ── 10. Recipes under TOKEN auth ─────────────────────────────────────
+        #
+        # Every other recipe ladder authenticates with a username and
+        # password, because that is what the environment carries. An API key
+        # is a different auth path through the SDK, and it is what anyone
+        # running this from CI will actually use -- so "the recipe modules
+        # work" had only ever been established for half of the ways in to
+        # them.
+        #
+        # username and password are passed as empty strings deliberately: the
+        # argument spec falls back to VERGEOS_USERNAME / VERGEOS_PASSWORD from
+        # the environment, so leaving them out would silently test the
+        # password path again and pass for the wrong reason.
+        - name: "10. A scratch API key"
+          vergeio.vergeos.api_key:
+            insecure: true
+            user: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+            name: "{{ eg_apikey }}"
+            description: edge ladder scratch key (zz- disposable)
+            state: present
+          register: eg_key
+          no_log: true
+
+        - name: "10b. Read a recipe's questions with the key alone"
+          vergeio.vergeos.vm_recipe_info:
+            host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+            api_key: "{{ eg_key.secret }}"
+            username: ""
+            password: ""
+            insecure: true
+            name: "{{ eg_recipe }}"
+            catalog: "{{ eg_cat }}"
+            questions: true
+          register: eg_tok_info
+          changed_when: false
+
+        - name: "10c. And simulate a deploy with the key alone"
+          vergeio.vergeos.vm_recipe_deploy:
+            host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+            api_key: "{{ eg_key.secret }}"
+            username: ""
+            password: ""
+            insecure: true
+            name: zz-from-edge-token
+            recipe: "{{ eg_recipe }}"
+            catalog: "{{ eg_cat }}"
+            answers: "{{ eg_answers }}"
+          check_mode: true
+          register: eg_tok_deploy
+
+        - name: "10d. Both worked, and the simulate really ran"
+          ansible.builtin.assert:
+            that:
+              - eg_tok_info.questions | length > 0
+              - eg_tok_deploy.simulate_result.ok | default(false)
+            fail_msg: >-
+              token auth did not carry the recipe modules:
+              questions={{ eg_tok_info.questions | default([]) | length }}
+              simulate={{ eg_tok_deploy.simulate_result | default({}) }}
+            quiet: true
+
       always:
-        - name: "9. Teardown"
+        - name: "9. Remove the scratch API key"
+          vergeio.vergeos.api_key:
+            insecure: true
+            user: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+            name: "{{ eg_apikey }}"
+            state: absent
+
+        - name: "9a. Teardown"
           ansible.builtin.include_tasks: recipe_scratch_teardown.yml
           vars:
             td_prefix: edge
@@ -497,5 +566,6 @@
           is not mistaken for a VM -> names differ by case -> a re-run with
           changed answers converges without rewriting a hand edit ->
           power_on on a disabled VM is refused rather than silently
-          re-enabling it -> auto_update
+          re-enabling it -> the recipe modules work under API-key auth as
+          well as password auth -> auto_update
           reaches the instance row -> zero leftovers

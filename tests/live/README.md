@@ -69,7 +69,7 @@ attacked on purpose.
 | `verify-recipe-fuzz.yml` | 34 hostile answer sets against a hand-authored recipe | PASS `ok=64 changed=4 failed=0` |
 | `verify-recipe-real.yml` | all 30 deployable recipes DEPLOYED, powered on, boot-proved | PASS 30/30 |
 | `verify-recipe-custom.yml` | a recipe authored from scratch, then deployed from | PASS `ok=190 changed=16 failed=0` |
-| `verify-recipe-edges.yml` | the parameters and branches the other seven never reach | PASS `ok=101 changed=18 failed=0` |
+| `verify-recipe-edges.yml` | the parameters and branches the other seven never reach | PASS `ok=106 changed=20 failed=0` |
 
 Only `verify-recipe-deploy.yml`, `-concurrency`, `-fuzz` and `-real` create
 anything. The fuzz ladder builds its own catalog, source VM and recipe
@@ -137,6 +137,11 @@ What it established:
 - **A re-run with changed answers converges without rewriting a hand edit.**
   The VM's RAM was altered outside Ansible first, so this is a real check
   rather than a restatement of idempotence.
+- **The recipe modules work under API-key auth**, not just the username and
+  password every other ladder happens to use. `username` and `password` are
+  passed as empty strings in that rung on purpose — the argument spec falls
+  back to the environment, so omitting them would quietly re-test the
+  password path and pass for the wrong reason.
 
 ### A warning that was not true
 
