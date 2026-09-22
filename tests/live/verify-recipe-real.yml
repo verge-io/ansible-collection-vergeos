@@ -1,0 +1,251 @@
+---
+# DEPLOY every VM recipe on the system FOR REAL through the vm_from_recipe
+# role -- power it on, prove the guest boots, then tear it down.
+#
+#   ansible-playbook verify-recipe-real.yml
+#   ansible-playbook verify-recipe-real.yml -e '{"real_only": "Debian 12 (Bookworm)"}'
+#   ansible-playbook verify-recipe-real.yml -e '{"real_keep": ["Ubuntu Server 22.04 (Jammy Jellyfish)"]}'
+#
+# ⚠️ real_only and real_keep must be passed as JSON. `-e key=value` splits on
+# whitespace, so -e real_only='Debian 12 (Bookworm)' arrives as "Debian".
+#
+# ⚠️ This CREATES AND DESTROYS VMs -- it is not verify-recipe-matrix.yml,
+# which only simulates. Everything it makes is named zz-real-* and lives on
+# DMZ, the appliance's own isolated network (100.64.0.0/16 with its own DHCP
+# pool), so nothing it deploys can reach or collide with the LAN. Stock
+# recipes and catalogs are only ever read.
+#
+# Why it exists. A simulate is a real server-side dry run and catches a great
+# deal, but it has never once caught the class of defect that only appears
+# once objects exist: the NIC attached to nothing, the driveless VM that
+# convergence called success, the VM that builds perfectly and never boots.
+# Simulating 32 recipes and deploying one was measuring the cheap thing
+# because it was cheap.
+#
+# Serial by construction: one VM at a time, each torn down before the next is
+# built, so the sweep's peak footprint is one VM regardless of its length.
+# Budget 4-6 minutes per recipe -- the first deploy of a given distro also
+# pulls its cloud image over the internet, which can take far longer.
+#
+# ⚠️ Do not run two copies at once. VM names are derived from recipe names, so
+# a second copy would tear down the first one's VM mid-run.
+- name: Deploy every VM recipe for real
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # ── What to answer ───────────────────────────────────────────────────────
+    real_base_answers:
+      USER: ladder
+      PASSWORD: RealSweepScratch1!
+      YB_CPU_CORES: 1
+      # 2048 rather than the simulate matrix's 1024: this one actually boots
+      # guests, and the Services recipe already proved some recipes enforce a
+      # floor. The sweep is serial, so the extra GB costs nothing.
+      YB_RAM: 2048
+      YB_DRIVE_OS_SIZE: 10737418240
+      SELECT_OS_TIER: 1
+      YB_IP_ADDR_TYPE: dhcp
+      # ⚠️ ALWAYS answered, never left to the recipe default. The default is
+      # __new_internal__ and the platform does NOT apply it -- a real deploy
+      # left eth0 attached to nothing while every other check passed. DMZ is
+      # isolated and has a real DHCP pool, so a guest that boots gets an
+      # address without touching the LAN.
+      YB_NIC_ETH0: DMZ
+
+    real_overrides:
+      # The wizard recipe names its NIC question differently, and defaults to
+      # attaching a CD-ROM with no media selected, which fails CREATE_CDROM.
+      "New VM":
+        YB_NIC_main_nic: DMZ
+        SELECT_CREATE_CDROM: "no"
+      "Kubernetes K3S":
+        CLUSTER_SECRET: RealSweepScratch1!
+      "OpenVPN-AS":
+        VPNPASS: RealSweepScratch1!
+
+    # ── What not to deploy, and why ──────────────────────────────────────────
+    # Anything not listed here IS deployed for real.
+    real_skip:
+      "Services": >-
+        standing instruction: never deploy a second NAS service on this
+        appliance. It stays simulate-only in verify-recipe-matrix.yml.
+      "Tenant Crash Cart": >-
+        tenant-scoped, and tenants are deliberately out of scope for the
+        vm_recipe_deploy module
+      "Windows 2022 - Evaluation": >-
+        its WINDOWS_ISO question is a list drawn from the file catalogue and
+        no Windows Server 2022 ISO is present. See the matrix_blocked entry
+        in verify-recipe-matrix.yml.
+      "Windows 2025 - Evaluation": >-
+        same refusal as 2022
+
+    # Deployed for real but NOT boot-checked, with the reason. The boot check
+    # asserts a guest wrote to disk, so a recipe that legitimately produces no
+    # bootable guest belongs here rather than in real_skip -- the deploy is
+    # still worth exercising.
+    real_no_boot_check:
+      "New VM": >-
+        builds a blank unformatted drive with no OS by design. It is the
+        negative control for the boot check and MUST NOT pass one.
+
+    # ── Knobs ────────────────────────────────────────────────────────────────
+    # Recipe names whose VMs are LEFT RUNNING for manual inspection instead of
+    # being torn down. Pass as JSON.
+    real_keep: []
+    # Deploy a single recipe, for iterating on one failure without re-running
+    # the whole sweep.
+    real_only: ""
+    # Or a subset, by name. Pass as JSON. Takes precedence over real_only.
+    real_include: []
+    # Measured on this lab: a small Linux guest writes within ~2.5 minutes of
+    # power-on. 300s leaves headroom without making a genuinely dead recipe
+    # cost ten.
+    real_boot_timeout: 300
+    # Longer than the role's 1800s default, because this sweep is the one case
+    # that reliably hits COLD images -- the first deploy of a distro pulls its
+    # cloud image over the internet.
+    real_wait_timeout: 3000
+    # How long to wait for a DHCP lease to show up on the NIC. Informational
+    # only; a recipe is not failed for want of an address.
+    real_ip_grace: 60
+
+  tasks:
+    - name: "0. Enumerate every recipe on the system"
+      vergeio.vergeos.vm_recipe_info:
+        insecure: true
+      register: all_recipes
+      changed_when: false
+
+    - name: "0b. Decide what to deploy"
+      vars:
+        deployable: >-
+          {{ all_recipes.recipes | rejectattr('name', 'in', real_skip) | list }}
+      ansible.builtin.set_fact:
+        real_recipes: >-
+          {{ deployable | selectattr('name', 'in', real_include) | list
+             if real_include | length > 0
+             else (deployable | selectattr('name', 'equalto', real_only) | list
+                   if real_only | length > 0 else deployable) }}
+        real_results: []
+
+    - name: "0c. A named recipe must exist and not be skipped"
+      ansible.builtin.assert:
+        that: real_recipes | length > 0
+        fail_msg: >-
+          real_only='{{ real_only }}' matched no deployable recipe. It is
+          either not a recipe on this system, or it is in real_skip.
+        quiet: true
+      when: real_only | length > 0
+
+    # Checked against every recipe on the system, NOT against this run's
+    # selection. Re-running a subset with real_include while keeping the VMs
+    # an earlier full sweep left standing is the normal way to chase down a
+    # handful of failures, and real_keep has to keep meaning the same thing
+    # across both -- rung 0d3 reads it to decide what counts as wreckage.
+    - name: "0d. Every recipe asked to be kept must exist"
+      vars:
+        unknown_keep: >-
+          {{ real_keep
+             | reject('in', all_recipes.recipes | map(attribute='name') | list)
+             | list }}
+      ansible.builtin.assert:
+        that: unknown_keep | length == 0
+        fail_msg: >-
+          real_keep names recipes that do not exist on this system, so the
+          names are probably misspelled: {{ unknown_keep }}
+        quiet: true
+
+    # A sweep that ran out of RAM and reported six working recipes as broken
+    # started exactly here: leftovers from a previous run still holding
+    # memory, invisible because nothing looked. A kept VM is expected; any
+    # other zz-real-* is wreckage, and it gets a refusal rather than a warning
+    # because its cost lands on whichever recipe happens to be last.
+    - name: "0d2. No leftovers from a previous run may be holding resources"
+      vergeio.vergeos.vm_info:
+        insecure: true
+      register: pre_vms
+      changed_when: false
+
+    - name: "0d3. Refuse to start on top of wreckage"
+      vars:
+        # From real_keep itself, NOT from the recipes this run selected.
+        # Re-running a subset must not condemn the VMs an earlier run was
+        # asked to leave standing.
+        keep_vms: >-
+          {{ real_keep | map('lower')
+             | map('regex_replace', '[^a-z0-9]+', '-')
+             | map('regex_replace', '^-|-$', '')
+             | map('regex_replace', '^', 'zz-real-') | list }}
+        leftovers: >-
+          {{ pre_vms.vms | map(attribute='name') | select('match', '^zz-real-')
+             | reject('in', keep_vms) | list }}
+      ansible.builtin.assert:
+        that: leftovers | length == 0
+        fail_msg: >-
+          {{ leftovers | length }} VM(s) from an earlier run are still here and
+          still holding cluster resources: {{ leftovers }}. Remove them first
+          -- they have to be STOPPED before they can be deleted.
+        quiet: true
+
+    - name: "0e. Announce the run"
+      ansible.builtin.debug:
+        msg: >-
+          deploying {{ real_recipes | length }} recipe(s) for real;
+          {{ real_skip | length }} skipped by policy
+          ({{ real_skip.keys() | list }});
+          {{ real_no_boot_check | length }} without a boot check
+          ({{ real_no_boot_check.keys() | list }});
+          {{ real_keep | length }} left running afterwards
+          ({{ real_keep }}).
+
+    # VM names are derived from the recipe name rather than its key, because
+    # the whole point of leaving one running is that a human then goes and
+    # finds it in the UI. zz-real-a3f9c1 is not findable; zz-real-debian-12
+    # is.
+    - name: "1. Deploy each recipe"
+      ansible.builtin.include_tasks: recipe_real_one.yml
+      loop: "{{ real_recipes | sort(attribute='name') }}"
+      loop_control:
+        loop_var: rx
+        label: "{{ rx.name }}"
+      vars:
+        rx_vm: >-
+          zz-real-{{ rx.name | lower | regex_replace('[^a-z0-9]+', '-')
+                     | regex_replace('^-|-$', '') | truncate(40, true, '') }}
+
+    - name: "2. The sweep"
+      ansible.builtin.debug:
+        msg: "{{ real_results | map(attribute='line') | list }}"
+
+    # No known-blocked list here, unlike the simulate matrix. A recipe that
+    # cannot be deployed at all belongs in real_skip with a reason; anything
+    # that gets as far as being deployed is expected to work, and a failure is
+    # a finding rather than something to declare and tolerate.
+    - name: "3. Every deployed recipe must have worked"
+      ansible.builtin.assert:
+        that: real_results | rejectattr('ok') | list | length == 0
+        fail_msg: >-
+          {{ real_results | rejectattr('ok') | map(attribute='line') | list }}
+        quiet: true
+
+    - name: "4. What is still running, for manual verification"
+      ansible.builtin.debug:
+        msg: >-
+          {{ real_results | selectattr('kept')
+             | map(attribute='vm') | list }}
+          -- on DMZ (100.64.0.0/16), user 'ladder'. Addresses:
+          {{ real_results | selectattr('kept')
+             | map(attribute='ip') | list }}
+      when: real_keep | length > 0
+
+    - name: Recap
+      ansible.builtin.debug:
+        msg: >-
+          {{ real_results | selectattr('ok') | list | length }} of
+          {{ real_results | length }} recipes deployed, powered on, boot-proved
+          and torn down
+          ({{ real_results | selectattr('kept') | list | length }} left
+          running on request);
+          {{ real_results | selectattr('ip', 'ne', '') | list | length }}
+          reported a DHCP address.

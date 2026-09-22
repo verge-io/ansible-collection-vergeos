@@ -1,0 +1,56 @@
+---
+# Teardown helper for verify-recipe-real.yml. Removes ONE VM, properly.
+#
+# Two things here are load-bearing, both learned the hard way in a 28-recipe
+# sweep that left seventeen VMs running:
+#
+#   1. The platform REFUSES to delete a running VM -- the API answers
+#      "Virtual Machine must be stopped to delete". So this stops it first.
+#      The vergeio.vergeos.vm module deliberately does not stop-then-delete on
+#      state: absent, and it is right not to: an `absent` that powered off a
+#      running workload in order to remove it would be a far worse default
+#      than a refusal.
+#
+#   2. NO failed_when: false. Suppressing the failure is what made the
+#      refusal invisible -- the task printed "ok", deleted nothing, and the
+#      sweep carried on until the cluster ran out of RAM and every remaining
+#      recipe failed with "Not enough available resources to start machine".
+#      Six recipes were reported as broken when the only thing broken was the
+#      teardown. A teardown that cannot fail is not a teardown.
+#
+# The caller decides whether a teardown failure is fatal; this file just
+# refuses to hide one.
+
+- name: "Stop {{ td_vm }} before removing it"
+  vergeio.vergeos.vm:
+    insecure: true
+    name: "{{ td_vm }}"
+    state: stopped
+  register: td_stop
+  # A VM that does not exist is not an error here -- a deploy can fail before
+  # creating anything, and this still has to run. Anything else is.
+  failed_when:
+    - td_stop.failed | default(false)
+    - "'does not exist' not in (td_stop.msg | default(''))"
+
+- name: "Delete {{ td_vm }}"
+  vergeio.vergeos.vm:
+    insecure: true
+    name: "{{ td_vm }}"
+    state: absent
+
+# The delete reporting success is not the same as the VM being gone, and
+# that distinction is the entire reason this file exists.
+- name: "Confirm {{ td_vm }} is actually gone"
+  vergeio.vergeos.vm_info:
+    insecure: true
+    name: "{{ td_vm }}"
+  register: td_gone
+  changed_when: false
+
+- name: "Assert {{ td_vm }} is gone"
+  ansible.builtin.assert:
+    that: td_gone.vms | default([]) | length == 0
+    fail_msg: >-
+      '{{ td_vm }}' still exists after a delete that reported success
+    quiet: true

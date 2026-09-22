@@ -66,9 +66,10 @@ attacked on purpose.
 | `verify-recipe-matrix.yml` | all 32 recipes simulated in check mode | PASS `ok=10` — 29 clean, 3 blocked-as-declared |
 | `verify-recipe-scenarios.yml` | `prune_unknown`, `fail_on_hints`, `catalog`, answer types | PASS `ok=28 failed=0` |
 | `verify-recipe-concurrency.yml` | two deploys racing for one VM name | PASS `ok=19 changed=3 failed=0` |
-| `verify-recipe-fuzz.yml` | 34 hostile answer sets against a hand-authored recipe | PASS `ok=61 changed=4 failed=0` |
+| `verify-recipe-fuzz.yml` | 34 hostile answer sets against a hand-authored recipe | PASS `ok=64 changed=4 failed=0` |
+| `verify-recipe-real.yml` | all 28 deployable recipes DEPLOYED, powered on, boot-proved | PASS 28/28 |
 
-Only `verify-recipe-deploy.yml`, `-concurrency` and `-fuzz` create
+Only `verify-recipe-deploy.yml`, `-concurrency`, `-fuzz` and `-real` create
 anything. The fuzz ladder builds its own catalog, source VM and recipe
 because no stock recipe carries the constraints it needs to attack; its
 34 deploy cases then all run in check mode, and rung 8 asserts nothing was
@@ -79,7 +80,43 @@ The fuzz table is falsifiable, which was checked rather than assumed: with
 one case's `matching` string changed to the wrong reason, rung 3e fails;
 with one valid case declared `expect: refuse`, rung 3c fails.
 
+## The real sweep — 28 of 28, VergeOS 26.1.8, 2026-09-21
+
+`verify-recipe-real.yml` deploys every recipe not in its skip list for real,
+powers it on, and proves the guest booted by watching for disk **writes** —
+read counters and NIC transmit counters both move on a VM sitting at "no
+bootable device", so neither is usable as a signal. Every one of the 28 also
+took a DHCP lease on DMZ, which is a second, independent sign the guest got
+all the way up.
+
+Four recipes are skipped with reasons (`Services`, `Tenant Crash Cart`, and
+both Windows evaluations, whose `WINDOWS_ISO` question is a list filtered to
+a filename that is not present). `New VM` is deployed but not boot-checked:
+it builds a blank unformatted drive by design, and is the negative control
+the boot check must *not* pass.
+
+Write volumes at first observation ranged from 11 MB (AlmaLinux 9) to 466 MB
+(Ubuntu 22.04). That is a floor caught the moment the guest started writing,
+not a total.
+
 ## Measured platform behaviours worth knowing
+
+- **`state: absent` will not delete a running VM, and that is correct.** The
+  API answers `Virtual Machine must be stopped to delete`. The `vm` module
+  surfaces it honestly and deliberately does not stop-then-delete, because an
+  `absent` that powered off a running workload in order to remove it would be
+  a far worse default than a refusal. Tear down with `state: stopped` first —
+  `recipe_real_teardown.yml` is the worked example, and it does **not**
+  suppress the failure.
+- **`state: stopped` does not create a missing VM, but `state: running`
+  does.** The asymmetry is deliberate and now documented on the module;
+  creating a machine in order to report it as stopped is rarely what was
+  meant.
+- **The cluster's real VM ceiling is well under its physical RAM.** Each node
+  reports `ram: 94208` MB but `vm_ram: ~68352` MB, with `target_ram_pct: 80`
+  and `ram_overcommit_pct: 0`. With the nested `vlab-node-*` lab standing at
+  16 GB each plus `nas1` at 8 GB, roughly 56 GB is already committed before
+  any sweep starts, and a VM has to fit on a single node.
 
 - **A one-character answer used to mask digits in the module's own error
   messages** (B20, now fixed). `answers` is `no_log`, which is right —

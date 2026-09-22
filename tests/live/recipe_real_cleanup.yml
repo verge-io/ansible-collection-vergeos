@@ -1,0 +1,46 @@
+---
+# Remove every zz-real-* VM except a keep set.
+#
+#   ansible-playbook recipe_real_cleanup.yml
+#   ansible-playbook recipe_real_cleanup.yml -e '{"keep": []}'
+#
+# verify-recipe-real.yml refuses to start when VMs from an earlier run are
+# still holding cluster resources. This is what clears them, and it exists
+# as a playbook rather than as advice because the VMs have to be STOPPED
+# before they can be deleted -- `state: absent` alone answers
+# "Virtual Machine must be stopped to delete" and removes nothing.
+- name: Clean up the sweep's leftovers
+  hosts: localhost
+  gather_facts: false
+  vars:
+    keep:
+      - zz-real-ubuntu-server-22-04-jammy-jellyfish
+      - zz-real-ubuntu-server-24-04-noble-numbat
+      - zz-real-debian-12-bookworm
+      - zz-real-debian-13-trixie
+      - zz-real-rocky-linux-9-latest
+      - zz-real-almalinux-9-latest
+      - zz-real-centos-9-stream
+      - zz-real-fedora-39
+  tasks:
+    - name: List VMs
+      vergeio.vergeos.vm_info:
+        insecure: true
+      register: vms
+      changed_when: false
+
+    - name: What will go
+      ansible.builtin.debug:
+        msg: "{{ doomed }}"
+      vars:
+        doomed: >-
+          {{ vms.vms | map(attribute='name') | select('match', '^zz-real-')
+             | reject('in', keep) | list }}
+
+    - name: Remove each
+      ansible.builtin.include_tasks: recipe_real_teardown.yml
+      loop: >-
+        {{ vms.vms | map(attribute='name') | select('match', '^zz-real-')
+           | reject('in', keep) | list }}
+      loop_control:
+        loop_var: td_vm

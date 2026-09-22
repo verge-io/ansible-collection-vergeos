@@ -1,0 +1,129 @@
+---
+# Real-sweep helper: DEPLOY one recipe for real through the vm_from_recipe
+# role, power it on, prove the guest boots, note its address, and tear it down
+# unless it was asked to stay.
+#
+# Records a verdict either way and never aborts the sweep. One broken recipe
+# must not cost the other twenty-seven -- the whole point of a sweep is the
+# table at the end.
+#
+# Teardown is in always:, so a failure mid-deploy still removes the VM.
+# Without that, a sweep that failed on recipe 3 leaves its wreckage behind and
+# every later run converges onto it and calls that success.
+
+# Facts persist across loop iterations. A recipe that fails BEFORE its deploy
+# would otherwise be judged on the PREVIOUS recipe's drives, NICs and writes --
+# which is how a broken recipe once reported the last good one's evidence.
+- name: "Reset per-recipe state before {{ rx.name }}"
+  ansible.builtin.set_fact:
+    vm_from_recipe_deploy: {}
+    vm_from_recipe_built_drives: {}
+    vm_from_recipe_built_nics: {}
+    vm_from_recipe_boot: {}
+    rx_ok: false
+    rx_detail: ""
+    rx_ip: ""
+
+- name: "Deploy for real: {{ rx.name }}"
+  block:
+    - name: "Deploy for real, as VM {{ rx_vm }}"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.vm_from_recipe
+      vars:
+        vm_from_recipe_recipe: "{{ rx.name }}"
+        vm_from_recipe_name: "{{ rx_vm }}"
+        vm_from_recipe_insecure: true
+        vm_from_recipe_prune_unknown: true
+        vm_from_recipe_power_on: true
+        vm_from_recipe_verify_boot: "{{ rx.name not in real_no_boot_check }}"
+        vm_from_recipe_boot_timeout: "{{ real_boot_timeout | int }}"
+        vm_from_recipe_wait_timeout: "{{ real_wait_timeout | int }}"
+        vm_from_recipe_answers: >-
+          {{ real_base_answers
+             | combine({'HOSTNAME': rx_vm, 'YB_HOSTNAME': rx_vm})
+             | combine(real_overrides[rx.name] | default({})) }}
+
+    # Informational, and labelled as such rather than asserted. A guest that
+    # has taken a DHCP lease on DMZ has got far past the disk writes the boot
+    # check measures -- but the address only appears once the guest agent or
+    # the DHCP snoop reports it, and not every cloud image carries the agent.
+    # Asserting on it would fail recipes that are working.
+    - name: "Wait a moment for a DHCP lease on {{ rx_vm }}"
+      vergeio.vergeos.vm_nic_info:
+        insecure: true
+        vm: "{{ rx_vm }}"
+      register: rx_nics
+      changed_when: false
+      failed_when: false
+      retries: "{{ (real_ip_grace | int // 10) | int }}"
+      delay: 10
+      until: >-
+        rx_nics.nics | default([]) | selectattr('ipaddress', 'defined')
+        | rejectattr('ipaddress', 'equalto', '') | list | length > 0
+      when: rx.name not in real_no_boot_check
+
+    - name: "Note the address, if the guest reported one"
+      ansible.builtin.set_fact:
+        rx_ip: >-
+          {{ (rx_nics.nics | default([]) | selectattr('ipaddress', 'defined')
+              | rejectattr('ipaddress', 'equalto', '')
+              | map(attribute='ipaddress') | list | first) | default('', true) }}
+
+    - name: "Record PASS for {{ rx.name }}"
+      ansible.builtin.set_fact:
+        rx_ok: true
+        rx_detail: >-
+          {{ vm_from_recipe_built_drives.drives | default([]) | length }} drive(s),
+          {{ vm_from_recipe_built_nics.nics | default([]) | length }} nic(s),
+          {{ ('wrote ' ~ (vm_from_recipe_boot.drives | default([])
+                          | map(attribute='write_bytes') | sum) ~ ' bytes')
+             if rx.name not in real_no_boot_check else 'boot check waived' }}{{
+             ', ip ' ~ rx_ip if rx_ip | length > 0 else '' }}
+
+  rescue:
+    - name: "Record FAIL for {{ rx.name }}"
+      ansible.builtin.set_fact:
+        rx_ok: false
+        # ansible_failed_result carries the assertion message, and every
+        # post-condition in the role puts the thing worth reading there.
+        # `reason` is the fallback: a role that cannot be loaded at all fails
+        # with that and no msg, which otherwise reads as "failed with no
+        # message" and sends you looking at the recipe instead of the path.
+        rx_detail: >-
+          {{ (ansible_failed_result | default({})).msg
+             | default((ansible_failed_result | default({})).reason
+                       | default('failed with no message'), true) }}
+
+  always:
+    # Named explicitly rather than read back from a list: this must remove
+    # THIS iteration's VM even when the deploy failed before recording a key.
+    #
+    # Deliberately NOT suppressed, and deliberately fatal to the sweep. An
+    # earlier version had `failed_when: false` here and a bare state: absent,
+    # which the platform refuses on a running VM -- so the task printed "ok",
+    # removed nothing, and the sweep kept building. Seventeen VMs later the
+    # cluster was out of RAM and the last six recipes failed with "Not enough
+    # available resources to start machine". They were reported as broken
+    # recipes. Nothing was wrong with any of them.
+    #
+    # Stopping the sweep on a failed teardown is the lesson: carrying on is
+    # what turned one bug into six false findings.
+    - name: "Tear down {{ rx_vm }}"
+      ansible.builtin.include_tasks: recipe_real_teardown.yml
+      vars:
+        td_vm: "{{ rx_vm }}"
+      when: rx.name not in real_keep
+
+- name: "Verdict: {{ rx.name }}"
+  ansible.builtin.set_fact:
+    real_results: >-
+      {{ real_results + [{
+           'name': rx.name,
+           'vm': rx_vm,
+           'ok': rx_ok,
+           'kept': rx.name in real_keep,
+           'ip': rx_ip,
+           'line': (('PASS    ' if rx_ok else 'FAIL    ') ~ rx.name
+                    ~ (' [KEPT as ' ~ rx_vm ~ ']' if rx.name in real_keep else '')
+                    ~ ' -- ' ~ (rx_detail | trim | truncate(200, true)))
+         }] }}
