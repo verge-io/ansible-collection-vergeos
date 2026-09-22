@@ -1,0 +1,174 @@
+---
+# Contract test: every API field name the network module sends must actually
+# exist on a live VergeOS vnet.
+#
+# Why this exists
+# ---------------
+# The VergeOS API accepts unknown fields with HTTP 200 and silently discards
+# them. A misspelled field is therefore invisible to every functional test:
+# the module reports success, the value never lands. That failure mode shipped
+# three times -- #8 (tier/preferred_tier), #10 (ip_address/ipaddress) and
+# #18 (dhcp_end/dhcp_stop, dns_servers/dnslist, subnet_mask) -- and each fix
+# corrected only the field in front of it.
+#
+# This test asserts the whole mapping at once, and then proves round-trip
+# persistence for the fields that previously failed silently.
+#
+#   ansible-playbook tests/live/verify-network-contract.yml
+#
+# Requires VERGEOS_HOST / VERGEOS_USERNAME / VERGEOS_PASSWORD.
+
+- name: Network module API-field contract
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Must mirror UPDATE_FIELD_MAP in plugins/modules/network.py.
+    expected_api_fields:
+      - description
+      - type
+      - ipaddress
+      - network
+      - gateway
+      - dhcp_enabled
+      - dhcp_start
+      - dhcp_stop
+      - layer2_type
+      - layer2_id
+      - dnslist
+      - domain
+      - mtu
+      - on_power_loss
+
+  tasks:
+    # Must be set_fact, not a play var: "{{ 99999 | random }}" in vars is a
+    # lazy template and re-evaluates on every reference, so each task would
+    # get a different network name.
+    - name: Pin a unique network name for this run
+      ansible.builtin.set_fact:
+        net_name: "zz-contract-{{ 99999 | random }}"
+
+    - name: Create a network exercising every mapped field
+      vergeio.vergeos.network:
+        name: "{{ net_name }}"
+        state: present
+        network_type: internal
+        network: 10.99.77.0/24
+        ip_address: 10.99.77.1
+        dhcp_enabled: true
+        dhcp_start: 10.99.77.100
+        dhcp_end: 10.99.77.200
+        dns_servers: [9.9.9.9, 1.1.1.1]
+        domain: contract.test
+        mtu: 1400
+        on_power_loss: leave_off
+      register: created
+
+    - name: Read the network back
+      vergeio.vergeos.network_info:
+        name: "{{ net_name }}"
+      register: info
+
+    - name: Assert no mapped field is unknown to the API
+      ansible.builtin.assert:
+        that:
+          - item in (info.networks[0] | default({}))
+        fail_msg: >-
+          Field '{{ item }}' is in the module's UPDATE_FIELD_MAP but does not
+          exist on a live vnet. The API discards unknown fields silently, so
+          anything the module sends under this name is thrown away. This is
+          the #8/#10/#18 bug class -- fix the mapping in
+          plugins/modules/network.py.
+        quiet: true
+      loop: "{{ expected_api_fields }}"
+
+    # --- round-trip proof for the fields that used to fail silently ---
+
+    - name: DHCP scope end actually persisted (was dropped before 2.1.0)
+      ansible.builtin.assert:
+        that:
+          - info.networks[0].dhcp_stop == '10.99.77.200'
+        fail_msg: >-
+          dhcp_end did not persist: dhcp_stop is
+          '{{ info.networks[0].dhcp_stop }}'. A DHCP scope with a start and no
+          end is a silent misconfiguration (issue #18).
+
+    - name: DNS servers actually persisted on create
+      ansible.builtin.assert:
+        that:
+          - info.networks[0].dnslist == '9.9.9.9,1.1.1.1'
+        fail_msg: "dns_servers did not persist: dnslist is '{{ info.networks[0].dnslist }}'"
+
+    - name: Change DNS and DHCP end via the UPDATE path
+      vergeio.vergeos.network:
+        name: "{{ net_name }}"
+        state: present
+        dns_servers: [8.8.8.8]
+        dhcp_end: 10.99.77.150
+      register: updated
+
+    - name: Read back after update
+      vergeio.vergeos.network_info:
+        name: "{{ net_name }}"
+      register: info2
+
+    - name: Update path must persist too (it silently did not before 2.1.0)
+      ansible.builtin.assert:
+        that:
+          - info2.networks[0].dnslist == '8.8.8.8'
+          - info2.networks[0].dhcp_stop == '10.99.77.150'
+        fail_msg: >-
+          Update path dropped values. dnslist='{{ info2.networks[0].dnslist }}'
+          dhcp_stop='{{ info2.networks[0].dhcp_stop }}' (issue #18)
+
+    # --- idempotence ---
+
+    - name: Re-apply identical configuration
+      vergeio.vergeos.network:
+        name: "{{ net_name }}"
+        state: present
+        network_type: internal
+        network: 10.99.77.0/24
+        ip_address: 10.99.77.1
+        dhcp_enabled: true
+        dhcp_start: 10.99.77.100
+        dhcp_end: 10.99.77.150
+        dns_servers: [8.8.8.8]
+        domain: contract.test
+        mtu: 1400
+        on_power_loss: leave_off
+      register: rerun
+
+    - name: A converged network must report changed=false
+      ansible.builtin.assert:
+        that:
+          - not rerun.changed
+        fail_msg: >-
+          Network did not converge: re-applying identical configuration still
+          reports changed. Some parameter is being compared against an API
+          field that does not exist (issue #18).
+
+    - name: Reject network types the platform does not accept
+      vergeio.vergeos.network:
+        name: "{{ net_name }}-bad"
+        state: present
+        network_type: vlan
+      register: badtype
+      ignore_errors: true
+
+    - name: Assert network_type choices are platform-valid
+      ansible.builtin.assert:
+        that:
+          - badtype is failed
+          - "'must be one of' in (badtype.msg | default(''))"
+        fail_msg: >-
+          'vlan' was accepted by the argument spec. It is not a VergeOS
+          network type; the API rejects it (issue #18). Use layer2_type=vlan.
+
+  post_tasks:
+    - name: Clean up
+      vergeio.vergeos.network:
+        name: "{{ net_name }}"
+        state: absent
+      failed_when: false
