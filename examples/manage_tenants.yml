@@ -11,27 +11,48 @@
   gather_facts: false
 
   vars:
-    customers:
-      - name: acme
-        description: ACME Corp production tenant
-        nodes:
-          - name: acme-node1
-            cpu_cores: 8
-            ram_gb: 32
-        storage:
-          - tier: 1
-            provisioned_gb: 500
-      - name: globex
-        description: Globex staging tenant
-        nodes:
-          - name: globex-node1
-            cpu_cores: 4
-            ram_gb: 16
-        storage:
-          - tier: 3
-            provisioned_gb: 250
+    # Deliberately modest, and the tier is discovered rather than hardcoded.
+    #
+    # This example used to ask for 8 cores / 32 GB on tier 1 and 4 cores /
+    # 16 GB on tier 3. On any system without a tier 3 it failed outright
+    # ("Storage tier 3 not found"), and a tenant node that does not fit on a
+    # single physical node never powers on -- the platform accepts the
+    # poweron and silently leaves the tenant offline, so the play could only
+    # report "Timed out after 180s waiting for tenant to be running".
+    #
+    # Size these to your own system before using this as anything but a demo.
+    tenant_cpu_cores: 4
+    tenant_ram_gb: 8
+    tenant_storage_gb: 50
+    # Tier 1 exists on a default install. Override for anything else:
+    #   -e tenant_tier=2
+    # The collection has no tier-discovery module yet, so this cannot be
+    # derived automatically.
+    tenant_tier: 1
 
   tasks:
+    - name: Build the customer list
+      ansible.builtin.set_fact:
+        customers:
+          - name: acme
+            description: ACME Corp production tenant
+            nodes:
+              - name: acme-node1
+                cpu_cores: "{{ tenant_cpu_cores }}"
+                ram_gb: "{{ tenant_ram_gb }}"
+            storage:
+              - tier: "{{ tenant_tier }}"
+                provisioned_gb: "{{ tenant_storage_gb }}"
+          - name: globex
+            description: Globex staging tenant
+            nodes:
+              - name: globex-node1
+                cpu_cores: "{{ tenant_cpu_cores }}"
+                ram_gb: "{{ tenant_ram_gb }}"
+            storage:
+              - tier: "{{ tenant_tier }}"
+                provisioned_gb: "{{ tenant_storage_gb }}"
+
     - name: Ensure each customer tenant exists and is running
       vergeio.vergeos.tenant:
         name: "{{ item.name }}"

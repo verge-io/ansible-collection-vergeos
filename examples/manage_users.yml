@@ -42,6 +42,19 @@
         role: readonly
         state: present
 
+    # The membership tasks below need this to exist first. Without it the
+    # playbook died at "Group 'engineering' not found" on any system that had
+    # not been prepared by hand.
+    - name: Create the group the memberships reference
+      vergeio.vergeos.group:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: "engineering"
+        description: "Engineering team"
+        state: present
+
     - name: Add user to group
       vergeio.vergeos.member:
         host: "{{ vergeos_host }}"

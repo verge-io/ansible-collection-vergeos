@@ -7,6 +7,12 @@
 #
 #   ansible-playbook examples/cluster_capacity.yml
 #
+# This playbook is a GATE, so a non-zero exit is a finding, not a malfunction:
+# it means at least one node cannot be drained without stranding workloads.
+# That is the answer you came for. Read the per-node reasons above the failure.
+#
+# Pass -e node_names='["node1"]' to test specific nodes instead of all of them.
+#
 - name: Report cluster capacity and drain feasibility
   hosts: localhost
   gather_facts: false
@@ -18,13 +24,30 @@
     vergeos_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true) }}"
 
   tasks:
+    # cluster_info only returns drain_checks for the nodes it is asked about,
+    # so discover them. Without this the playbook printed a headroom number
+    # and no drain verdicts at all -- the one thing it exists to report.
+    - name: Discover nodes unless the caller named them
+      vergeio.vergeos.node_info:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+      register: discovered
+      when: node_names is not defined
+
+    - name: Settle the list of nodes to test
+      ansible.builtin.set_fact:
+        drain_targets: >-
+          {{ node_names | default(discovered.nodes | map(attribute='name') | list, true) }}
+
     - name: Read capacity, testing every node
       vergeio.vergeos.cluster_info:
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
         insecure: "{{ vergeos_insecure }}"
-        drain_candidates: "{{ node_names | default(omit) }}"
+        drain_candidates: "{{ drain_targets }}"
       register: capacity
 
     - name: Report
@@ -51,7 +74,7 @@
           capacity.drain_checks | default([])
           | rejectattr('fits', 'equalto', true) | list | length == 0
         fail_msg: >-
-          {{ capacity.drain_checks
+          {{ capacity.drain_checks | default([])
              | rejectattr('fits', 'equalto', true)
              | map(attribute='reason') | join(' ') }}
         quiet: true
