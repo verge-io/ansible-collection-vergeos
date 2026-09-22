@@ -1,0 +1,186 @@
+---
+# Simulate EVERY VM recipe on the system through vm_recipe_deploy.
+#
+#   ansible-playbook verify-recipe-matrix.yml
+#
+# Creates nothing. Every recipe is run in CHECK MODE, which still performs
+# the real server-side simulation -- it renders cloud-init and walks every
+# recipe step -- and then stops before deploying.
+#
+# Recipes that cannot simulate on this system are declared below with a
+# reason and asserted as KNOWN-BLOCKED. That is the point of the file: a
+# blocked recipe that starts working FAILS the matrix, so the entry gets
+# deleted rather than silently tolerated forever. A silent skip list rots;
+# one that fails when reality improves does not.
+#
+# Answer names differ per recipe, so the matrix runs with
+# prune_unknown: true -- keys a given recipe does not define are dropped
+# and reported rather than refused.
+- name: Recipe matrix live ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # Applied to every recipe. Values are throwaway; nothing is deployed.
+    matrix_base_answers:
+      HOSTNAME: zz-mx
+      YB_HOSTNAME: zz-mx            # the vendor Services recipe wants both
+      USER: ladder
+      PASSWORD: Zz-Matrix-Scratch-1!
+      YB_CPU_CORES: 1
+      YB_RAM: 1024
+      YB_DRIVE_OS_SIZE: 10737418240
+      SELECT_OS_TIER: 1
+      YB_IP_ADDR_TYPE: dhcp
+
+    # Per-recipe additions, keyed by recipe name.
+    matrix_overrides:
+      # The wizard recipe: its NIC question has its own name, and it
+      # defaults to attaching a CD-ROM with no media selected, which fails
+      # CREATE_CDROM.
+      "New VM":
+        YB_NIC_main_nic: External
+        SELECT_CREATE_CDROM: "no"
+      "Kubernetes K3S":
+        CLUSTER_SECRET: Zz-Matrix-Scratch-1!
+      "OpenVPN-AS":
+        VPNPASS: Zz-Matrix-Scratch-1!
+      # Both Windows recipes enforce a 100 GB minimum OS drive and require
+      # explicit EULA acceptance. With these supplied the only thing still
+      # missing is the ISO, which is what their blocked entries say.
+      "Windows 2022 - Evaluation":
+        YB_DRIVE_OS_SIZE: 107374182400
+        YB_RAM: 4096
+        ACCEPT_EULA: true
+        ISO_NAME: win2022.iso
+      "Windows 2025 - Evaluation":
+        YB_DRIVE_OS_SIZE: 107374182400
+        YB_RAM: 4096
+        ACCEPT_EULA: true
+        ISO_NAME: win2025.iso
+      # Publishes NO questions, so nothing is discoverable. These names were
+      # recovered from the stored answers of the existing instance -- the
+      # only way to learn them. Simulate only; never deploy a second NAS.
+      "Services":
+        YB_RAM: 2048                # this recipe enforces RAM >= 2048
+        YB_NIC_1: "3"
+        YB_NIC_1_IP_TYPE: dhcp
+        YB_TIMEZONE: America/New_York
+        YB_NTP: time.nist.gov 0.pool.ntp.org
+        YB_DOMAINNAME: ""
+        YB_ADDC: false
+
+    # Recipes that CANNOT simulate here, with the reason. If one starts
+    # working the matrix FAILS and its entry must be deleted.
+    matrix_blocked:
+      "Windows 2022 - Evaluation": >-
+        WINDOWS_ISO is a list drawn from the file catalogue and no Windows
+        Server 2022 ISO is uploaded on this system
+      "Windows 2025 - Evaluation": >-
+        same as 2022 -- its WINDOWS_ISO list is empty because no Windows
+        Server 2025 ISO is uploaded
+      "Tenant Crash Cart": >-
+        tenant-scoped (its API_CHECK_VW step resolves a tenant); tenants
+        are out of scope for this module
+
+  tasks:
+    - name: "0. Enumerate every recipe on the system"
+      vergeio.vergeos.vm_recipe_info:
+        insecure: true
+      register: all_recipes
+      changed_when: false
+
+    - name: "0b. There must be something to simulate"
+      ansible.builtin.assert:
+        that: all_recipes.recipes | default([]) | length > 0
+        fail_msg: "no recipes found on this system"
+
+    - name: "0c. Announce the run"
+      ansible.builtin.debug:
+        msg: >-
+          {{ all_recipes.recipes | length }} recipes found;
+          {{ matrix_blocked | length }} declared known-blocked.
+
+    # failed_when: false rather than a rescue per recipe. The loop records
+    # every outcome in one results list, and the verdict is computed from
+    # it below -- so one refusal does not stop the matrix, which is the
+    # whole point of running it across the estate.
+    - name: "1. Simulate each recipe in check mode"
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "zz-mx-{{ item['$key'][:8] }}"
+        recipe: "{{ item.name }}"
+        prune_unknown: true
+        answers: >-
+          {{ matrix_base_answers
+             | combine({'HOSTNAME': 'zz-mx-' ~ item['$key'][:6],
+                        'YB_HOSTNAME': 'zz-mx-' ~ item['$key'][:6]})
+             | combine(matrix_overrides[item.name] | default({})) }}
+      check_mode: true
+      failed_when: false
+      register: matrix_runs
+      loop: "{{ all_recipes.recipes | sort(attribute='name') }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: "2. Reduce the runs to a verdict per recipe"
+      ansible.builtin.set_fact:
+        matrix_results: >-
+          {%- set out = [] -%}
+          {%- for r in matrix_runs.results -%}
+            {%- set nm = r.item.name -%}
+            {%- set ok = (not (r.failed | default(false)))
+                         and (r.simulate_result | default({})).ok | default(false) -%}
+            {%- set blocked = nm in matrix_blocked -%}
+            {%- set detail = (r.simulate_result | default({})).errors | default([])
+                             or [r.msg | default('refused before simulate')] -%}
+            {%- set _ = out.append({
+                  'name': nm,
+                  'ok': ok,
+                  'as_expected': (ok and not blocked) or ((not ok) and blocked),
+                  'line': (('PASS    ' if ok else
+                            ('BLOCKED ' if blocked else 'FAIL    '))
+                           ~ nm ~ ' -- '
+                           ~ (detail | join('; ') | truncate(150, true)))
+                }) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "3. The matrix"
+      ansible.builtin.debug:
+        msg: "{{ matrix_results | map(attribute='line') | list }}"
+
+    - name: "4. Nothing was created -- check mode means check mode"
+      vergeio.vergeos.vm_info:
+        insecure: true
+      register: vms_after
+      changed_when: false
+
+    - name: "4b. Assert no zz-mx-* VM exists"
+      ansible.builtin.assert:
+        that: >-
+          vms_after.vms | selectattr('name', 'match', '^zz-mx-')
+          | list | length == 0
+        fail_msg: >-
+          the matrix created VMs:
+          {{ vms_after.vms | map(attribute='name')
+             | select('match', '^zz-mx-') | list }}
+
+    - name: "5. Every recipe behaved as declared"
+      ansible.builtin.assert:
+        that: matrix_results | rejectattr('as_expected') | list | length == 0
+        fail_msg: >-
+          {{ matrix_results | rejectattr('as_expected')
+             | map(attribute='line') | list }}
+        success_msg: >-
+          all {{ matrix_results | length }} recipes behaved as declared
+        quiet: true
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          recipe matrix PASSED:
+          {{ matrix_results | selectattr('ok') | list | length }} simulated
+          clean, {{ matrix_results | rejectattr('ok') | list | length }}
+          blocked-as-declared, of {{ matrix_results | length }} recipes --
+          and nothing was created
