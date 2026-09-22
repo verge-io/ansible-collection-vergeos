@@ -34,6 +34,15 @@
   gather_facts: false
 
   vars:
+    # Split across variables purely so the URLs fit in a line. The GUID is
+    # verbatim from the recipes' own defaults -- it contains a 'g', which is
+    # not a hex digit, and the URL works anyway.
+    win_iso_host: https://software-static.download.prss.microsoft.com
+    win2022_iso_name: SERVER_EVAL_x64FRE_en-us.iso
+    win2025_iso_name: 26100.1742.240906-0331.ge_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso
+    win2022_iso: "{{ win_iso_host }}/sg/download/888969d5-f34g-4e03-ac9d-1f9786c66749/{{ win2022_iso_name }}"
+    win2025_iso: "{{ win_iso_host }}/dbazure/888969d5-f34g-4e03-ac9d-1f9786c66749/{{ win2025_iso_name }}"
+
     # ── What to answer ───────────────────────────────────────────────────────
     real_base_answers:
       USER: ladder
@@ -63,6 +72,37 @@
         CLUSTER_SECRET: RealSweepScratch1!
       "OpenVPN-AS":
         VPNPASS: RealSweepScratch1!
+      # Windows needs the EULA accepted, a 100 GB minimum OS drive, and
+      # WINDOWS_ISO answered explicitly even though its question has a
+      # default. The answer is the DOWNLOAD URL, not a row from the files
+      # table its question points at -- that filter is hardcoded to a retail
+      # MLF filename and resolves to [] here. ISO_NAME is what the recipe
+      # looks for locally FIRST, so a matching local ISO skips the download.
+      #
+      # The 2025 evaluation ISO is already on this appliance under exactly
+      # the name below. The 2022 one is not, so that deploy has to pull ~5 GB
+      # from Microsoft before it can start.
+      # HOSTNAME is overridden because real_overrides is combined LAST, and
+      # because a Windows computer name cannot exceed 15 characters.
+      # zz-real-windows-2022-evaluation is 31. The 2025 recipe declares
+      # max: 15 on HOSTNAME and the module refuses before deploying; the 2022
+      # recipe declares max: 0 and accepts a name Windows itself cannot use.
+      "Windows 2022 - Evaluation":
+        HOSTNAME: zz-win2022
+        ACCEPT_EULA: true
+        YB_RAM: 4096
+        YB_CPU_CORES: 2
+        YB_DRIVE_OS_SIZE: 107374182400
+        ISO_NAME: "{{ win2022_iso_name }}"
+        WINDOWS_ISO: "{{ win2022_iso }}"
+      "Windows 2025 - Evaluation":
+        HOSTNAME: zz-win2025
+        ACCEPT_EULA: true
+        YB_RAM: 4096
+        YB_CPU_CORES: 2
+        YB_DRIVE_OS_SIZE: 107374182400
+        ISO_NAME: "{{ win2025_iso_name }}"
+        WINDOWS_ISO: "{{ win2025_iso }}"
 
     # ── What not to deploy, and why ──────────────────────────────────────────
     # Anything not listed here IS deployed for real.
@@ -73,12 +113,6 @@
       "Tenant Crash Cart": >-
         tenant-scoped, and tenants are deliberately out of scope for the
         vm_recipe_deploy module
-      "Windows 2022 - Evaluation": >-
-        its WINDOWS_ISO question is a list drawn from the file catalogue and
-        no Windows Server 2022 ISO is present. See the matrix_blocked entry
-        in verify-recipe-matrix.yml.
-      "Windows 2025 - Evaluation": >-
-        same refusal as 2022
 
     # Deployed for real but NOT boot-checked, with the reason. The boot check
     # asserts a guest wrote to disk, so a recipe that legitimately produces no
@@ -102,6 +136,12 @@
     # power-on. 300s leaves headroom without making a genuinely dead recipe
     # cost ten.
     real_boot_timeout: 300
+    # Per-recipe overrides. Windows installs itself from the ISO before it
+    # writes anything a boot check can see, and that is a different order of
+    # magnitude from a cloud image that is already installed.
+    real_boot_timeout_overrides:
+      "Windows 2022 - Evaluation": 3600
+      "Windows 2025 - Evaluation": 3600
     # Longer than the role's 1800s default, because this sweep is the one case
     # that reliably hits COLD images -- the first deploy of a distro pulls its
     # cloud image over the internet.

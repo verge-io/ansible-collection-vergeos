@@ -309,7 +309,9 @@
     # behind, and authoring over them produces the ambiguity rung 6 tests --
     # in the middle of rung 2, where it reads as a validator defect.
     - name: "0. Teardown first -- nothing may pre-exist"
-      ansible.builtin.include_tasks: recipe_fuzz_teardown.yml
+      ansible.builtin.include_tasks: recipe_scratch_teardown.yml
+      vars:
+        td_prefix: fuzz
 
     - name: "0b. Nothing was left over to start with"
       ansible.builtin.assert:
@@ -876,7 +878,9 @@
 
       always:
         - name: "9. Teardown -- remove everything the ladder made"
-          ansible.builtin.include_tasks: recipe_fuzz_teardown.yml
+          ansible.builtin.include_tasks: recipe_scratch_teardown.yml
+          vars:
+            td_prefix: fuzz
 
         - name: "9b. Teardown must have removed everything"
           ansible.builtin.assert:

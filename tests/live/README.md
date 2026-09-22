@@ -67,7 +67,8 @@ attacked on purpose.
 | `verify-recipe-scenarios.yml` | `prune_unknown`, `fail_on_hints`, `catalog`, answer types | PASS `ok=28 failed=0` |
 | `verify-recipe-concurrency.yml` | two deploys racing for one VM name | PASS `ok=19 changed=3 failed=0` |
 | `verify-recipe-fuzz.yml` | 34 hostile answer sets against a hand-authored recipe | PASS `ok=64 changed=4 failed=0` |
-| `verify-recipe-real.yml` | all 28 deployable recipes DEPLOYED, powered on, boot-proved | PASS 28/28 |
+| `verify-recipe-real.yml` | all 30 deployable recipes DEPLOYED, powered on, boot-proved | PASS 30/30 |
+| `verify-recipe-custom.yml` | a recipe authored from scratch, then deployed from | PASS `ok=190 changed=16 failed=0` |
 
 Only `verify-recipe-deploy.yml`, `-concurrency`, `-fuzz` and `-real` create
 anything. The fuzz ladder builds its own catalog, source VM and recipe
@@ -89,17 +90,73 @@ bootable device", so neither is usable as a signal. Every one of the 28 also
 took a DHCP lease on DMZ, which is a second, independent sign the guest got
 all the way up.
 
-Four recipes are skipped with reasons (`Services`, `Tenant Crash Cart`, and
-both Windows evaluations, whose `WINDOWS_ISO` question is a list filtered to
-a filename that is not present). `New VM` is deployed but not boot-checked:
-it builds a blank unformatted drive by design, and is the negative control
-the boot check must *not* pass.
+Two recipes are skipped with reasons (`Services`, because this appliance must
+never get a second NAS, and `Tenant Crash Cart`, which is tenant-scoped).
+`New VM` is deployed but not boot-checked: it builds a blank unformatted
+drive by design, and is the negative control the boot check must *not* pass.
+
+**Both Windows evaluations deploy, install and boot** — 2022 wrote 5.78 GB
+and 2025 wrote 5.64 GB before taking DHCP leases. They had previously been
+declared blocked here on the grounds that `WINDOWS_ISO` is a list over the
+`files` table whose filter matches nothing on this appliance. The filter
+really does resolve to `[]`, and the 2025 recipe's filter really does name
+the *2022* ISO — but none of that matters, because the answer the recipe
+wants is the **download URL** from the question's own default, not a row
+from that table. The blocker was inferred from a plausible API message
+(`Missing required answer to 'Windows 2025 ISO'`) and never tested. Two
+working recipes went untested for as long as the entry stood.
 
 Write volumes at first observation ranged from 11 MB (AlmaLinux 9) to 466 MB
 (Ubuntu 22.04). That is a floor caught the moment the guest started writing,
 not a total.
 
+## Recipe authoring — what the platform does for you, and what it does not
+
+`verify-recipe-custom.yml` builds a recipe from scratch and deploys from it,
+in two halves. The first publishes from a **blank** VM: setting `vm` on a
+`vm_recipes` row fires the platform's `set_vm` hook, which snapshots the VM
+and auto-publishes a question set derived from its real shape — one
+`YB_DRIVE_<n>_*` group per drive — so a custom recipe is deployable with no
+question authoring at all. The second publishes from a **real, booted**
+Debian and proves the clone boots. That is the golden-image workflow, and it
+is the one people actually do.
+
+Three things that ladder had to learn the hard way:
+
+- **You cannot publish a recipe from a running VM.** `POST /v4/vm_recipes`
+  with `vm: <key>` answers HTTP 405 `{"err": "VM is currently running"}`.
+  Stop it first.
+- **The auto-published NIC question is not called what you would guess.** A
+  VM with one NIC publishes `YB_NIC_1`, `YB_NIC_1_IP_ADDR` and
+  `YB_NIC_1_INTERNAL_GATEWAY`, and only the bare `YB_NIC_<n>` selects the
+  network. Its default is `__new_internal__`, which **the platform does not
+  apply** — leave it unanswered and the clone boots with its NIC attached to
+  nothing, with every other check passing. The role's `verify_nics`
+  post-condition is what caught it.
+- **A recipe cannot be deleted while instances exist**, and its snapshot
+  cannot be deleted while a deployed clone references the snapshot's drive.
+  Teardown order is therefore instances → deployed clones → recipes →
+  source VMs → catalogs, and `recipe_scratch_teardown.yml` documents each
+  step with the refusal that taught it.
+
+Seen once and **not reproduced**: on the first run of the golden half, the
+clone drive never finished — `media=clone`, `status=importing`,
+`status_info` empty, `used_bytes` frozen at the source's value, and
+`machine_drive_status.modified` unchanged for 25 minutes, still incomplete
+at 1800s. Every subsequent run completed within five minutes. It is recorded
+here rather than filed as a defect because one observation is not a defect,
+but the signature is worth recognising: a stalled clone is otherwise
+indistinguishable from a slow one, since the drive reports no progress at
+all.
+
 ## Measured platform behaviours worth knowing
+
+- **The two Windows recipes disagree about `HOSTNAME`.** The 2025 recipe
+  declares `max: 15`, which is the real Windows computer-name limit, and the
+  module refuses a longer answer before deploying anything. The 2022 recipe
+  declares `max: 0` — unbounded — and will happily accept a 31-character
+  name that Windows itself cannot use. Same vendor, same catalogue, adjacent
+  recipes.
 
 - **`state: absent` will not delete a running VM, and that is correct.** The
   API answers `Virtual Machine must be stopped to delete`. The `vm` module

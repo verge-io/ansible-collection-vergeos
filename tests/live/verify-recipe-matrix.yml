@@ -21,6 +21,15 @@
   gather_facts: false
 
   vars:
+    # Split across variables purely so the URLs fit in a line. The GUID is
+    # verbatim from the recipes' own defaults -- it contains a 'g', which is
+    # not a hex digit, and the URL works anyway.
+    win_iso_host: https://software-static.download.prss.microsoft.com
+    win2022_iso_name: SERVER_EVAL_x64FRE_en-us.iso
+    win2025_iso_name: 26100.1742.240906-0331.ge_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso
+    win2022_iso: "{{ win_iso_host }}/sg/download/888969d5-f34g-4e03-ac9d-1f9786c66749/{{ win2022_iso_name }}"
+    win2025_iso: "{{ win_iso_host }}/dbazure/888969d5-f34g-4e03-ac9d-1f9786c66749/{{ win2025_iso_name }}"
+
     # Applied to every recipe. Values are throwaway; nothing is deployed.
     matrix_base_answers:
       HOSTNAME: zz-mx
@@ -45,19 +54,28 @@
         CLUSTER_SECRET: Zz-Matrix-Scratch-1!
       "OpenVPN-AS":
         VPNPASS: Zz-Matrix-Scratch-1!
-      # Both Windows recipes enforce a 100 GB minimum OS drive and require
-      # explicit EULA acceptance. With these supplied the only thing still
-      # missing is the ISO, which is what their blocked entries say.
+      # Both Windows recipes enforce a 100 GB minimum OS drive, require
+      # explicit EULA acceptance, and require WINDOWS_ISO to be answered even
+      # though the question carries a default.
+      #
+      # WINDOWS_ISO is type: list over table: files, but its filter is
+      # hardcoded to one retail MLF filename that is not present -- the
+      # platform resolves its option set to [] on this appliance, and the 2025
+      # recipe's filter names the 2022 ISO. The answer that works is the
+      # DOWNLOAD URL from the question's own default; ISO_NAME is the filename
+      # the recipe looks for locally first. Both simulate clean with these.
       "Windows 2022 - Evaluation":
         YB_DRIVE_OS_SIZE: 107374182400
         YB_RAM: 4096
         ACCEPT_EULA: true
-        ISO_NAME: win2022.iso
+        ISO_NAME: "{{ win2022_iso_name }}"
+        WINDOWS_ISO: "{{ win2022_iso }}"
       "Windows 2025 - Evaluation":
         YB_DRIVE_OS_SIZE: 107374182400
         YB_RAM: 4096
         ACCEPT_EULA: true
-        ISO_NAME: win2025.iso
+        ISO_NAME: "{{ win2025_iso_name }}"
+        WINDOWS_ISO: "{{ win2025_iso }}"
       # Publishes NO questions, so nothing is discoverable. These names were
       # recovered from the stored answers of the existing instance -- the
       # only way to learn them. Simulate only; never deploy a second NAS.
@@ -72,13 +90,16 @@
 
     # Recipes that CANNOT simulate here, with the reason. If one starts
     # working the matrix FAILS and its entry must be deleted.
+    #
+    # Both Windows entries USED to live here, declared blocked because their
+    # WINDOWS_ISO option set resolves to []. That reason was plausible, came
+    # from a real API message ("Missing required answer to 'Windows 2025
+    # ISO'"), and was wrong: the option set being empty does not matter,
+    # because the answer the recipe wants is a download URL rather than a row
+    # from that table. Neither was ever blocked. Declaring a blocker from a
+    # convincing error message instead of testing it is how a working recipe
+    # goes untested for as long as anyone cares to leave it.
     matrix_blocked:
-      "Windows 2022 - Evaluation": >-
-        WINDOWS_ISO is a list drawn from the file catalogue and no Windows
-        Server 2022 ISO is uploaded on this system
-      "Windows 2025 - Evaluation": >-
-        same as 2022 -- its WINDOWS_ISO list is empty because no Windows
-        Server 2025 ISO is uploaded
       "Tenant Crash Cart": >-
         tenant-scoped (its API_CHECK_VW step resolves a tenant); tenants
         are out of scope for this module

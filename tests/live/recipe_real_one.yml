@@ -36,7 +36,9 @@
         vm_from_recipe_prune_unknown: true
         vm_from_recipe_power_on: true
         vm_from_recipe_verify_boot: "{{ rx.name not in real_no_boot_check }}"
-        vm_from_recipe_boot_timeout: "{{ real_boot_timeout | int }}"
+        vm_from_recipe_boot_timeout: >-
+          {{ real_boot_timeout_overrides[rx.name] | default(real_boot_timeout)
+             | int }}
         vm_from_recipe_wait_timeout: "{{ real_wait_timeout | int }}"
         vm_from_recipe_answers: >-
           {{ real_base_answers

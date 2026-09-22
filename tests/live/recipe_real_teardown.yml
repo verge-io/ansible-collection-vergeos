@@ -21,7 +21,7 @@
 # The caller decides whether a teardown failure is fatal; this file just
 # refuses to hide one.
 
-- name: "Stop {{ td_vm }} before removing it"
+- name: "Stop the VM before removing it -- {{ td_vm }}"
   vergeio.vergeos.vm:
     insecure: true
     name: "{{ td_vm }}"
@@ -41,14 +41,14 @@
 
 # The delete reporting success is not the same as the VM being gone, and
 # that distinction is the entire reason this file exists.
-- name: "Confirm {{ td_vm }} is actually gone"
+- name: "Confirm removal really removed it -- {{ td_vm }}"
   vergeio.vergeos.vm_info:
     insecure: true
     name: "{{ td_vm }}"
   register: td_gone
   changed_when: false
 
-- name: "Assert {{ td_vm }} is gone"
+- name: "Assert removal actually removed {{ td_vm }}"
   ansible.builtin.assert:
     that: td_gone.vms | default([]) | length == 0
     fail_msg: >-
