@@ -60,18 +60,32 @@
     url: "{{ api_base }}/vm_recipe_instances?fields=name%2C%24key%2Crecipe"
   register: fz_td_inst
 
+# Matched two ways, and the second one is not redundant. Selecting only by
+# recipe key misses an ORPHAN -- an instance whose recipe has already been
+# deleted matches no scratch recipe key, so it is never touched and survives
+# every subsequent run. One did exactly that: instance 'zz-from-custom'
+# pointing at a recipe key that no longer existed, invisible to the teardown
+# and to the leftover assertion, still there several ladder runs later.
+#
+# The name match is anchored on zz- so it cannot reach the standing 'nas1'
+# instance, which is row 1 on this appliance.
 - name: "Teardown: delete the instances of every scratch recipe"
   ansible.builtin.uri:
     url: "{{ api_base }}/vm_recipe_instances/{{ item['$key'] }}"
     method: DELETE
     status_code: [200, 201, 202, 204, 404]
   loop: >-
-    {{ fz_td_inst.json | default([])
-       | selectattr('recipe', 'defined')
-       | selectattr('recipe', 'in', fz_td_recipes.json | default([])
-                    | selectattr('name', 'defined')
-                    | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix)
-                    | map(attribute='$key') | list) | list }}
+    {{ (fz_td_inst.json | default([])
+        | selectattr('recipe', 'defined')
+        | selectattr('recipe', 'in', fz_td_recipes.json | default([])
+                     | selectattr('name', 'defined')
+                     | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix)
+                     | map(attribute='$key') | list) | list
+        + fz_td_inst.json | default([])
+        | selectattr('name', 'defined')
+        | selectattr('name', 'match', '(?i)^zz-(' ~ td_prefix
+                     ~ '|from-' ~ td_prefix ~ ')') | list)
+       | unique | list }}
   loop_control:
     label: "{{ item.name | default(item['$key']) }}"
 
@@ -152,6 +166,11 @@
     url: "{{ api_base }}/vms?fields=name%2C%24key"
   register: fz_td_vms2
 
+- name: "Teardown: re-read instances"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/vm_recipe_instances?fields=name%2C%24key%2Crecipe"
+  register: fz_td_inst2
+
 - name: "Teardown: re-read catalogs"
   ansible.builtin.uri:
     url: "{{ api_base }}/catalogs?fields=name%2C%24key"
@@ -166,6 +185,11 @@
     fz_left_vms: >-
       {{ fz_td_vms2.json | default([]) | selectattr('name', 'defined')
          | selectattr('name', 'match', '(?i)^zz-(' ~ td_prefix ~ '|from-' ~ td_prefix ~ ')')
+         | map(attribute='name') | list }}
+    fz_left_instances: >-
+      {{ fz_td_inst2.json | default([]) | selectattr('name', 'defined')
+         | selectattr('name', 'match', '(?i)^zz-(' ~ td_prefix
+                      ~ '|from-' ~ td_prefix ~ ')')
          | map(attribute='name') | list }}
     fz_left_cats: >-
       {{ fz_td_cats2.json | default([]) | selectattr('name', 'defined')

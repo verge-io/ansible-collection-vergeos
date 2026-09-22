@@ -112,6 +112,23 @@ Write volumes at first observation ranged from 11 MB (AlmaLinux 9) to 466 MB
 (Ubuntu 22.04). That is a floor caught the moment the guest started writing,
 not a total.
 
+## Checking the lab is clean — `assert_lab_clean.yml`
+
+Each ladder asserts its own prefix is gone. That is the right check for that
+ladder and a blind one for the suite: nothing looked across all of them at
+once, and nothing looked at `vm_recipe_instances` at all.
+
+The gap was not hypothetical. An instance named `zz-from-custom`, pointing at
+a recipe key that had already been deleted, survived several ladder runs — the
+teardown selected instances **by recipe key**, so an orphan matched nothing,
+and the leftover assertion never read that table. It surfaced only because the
+system reported 33 recipes where it had previously had 32.
+
+Two fixes: the shared teardown now matches instances by name as well as by
+recipe key, and `assert_lab_clean.yml` sweeps `vms`, `vm_recipes`, `catalogs`,
+`vm_recipe_instances` and `vnets` for anything `zz-`. A VM list looking empty
+does not mean the lab is clean.
+
 ## Fleets — the thing a recipe is actually for
 
 Every other ladder deploys ONE VM per play. Nobody keeps a recipe to build one

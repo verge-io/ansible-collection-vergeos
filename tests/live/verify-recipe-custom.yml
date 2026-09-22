@@ -493,10 +493,12 @@
               - fz_left_vms | default([]) | length == 0
               - fz_left_recipes | default([]) | length == 0
               - fz_left_cats | default([]) | length == 0
+              - fz_left_instances | default([]) | length == 0
             fail_msg: >-
               teardown left vms={{ fz_left_vms | default([]) }}
               recipes={{ fz_left_recipes | default([]) }}
               catalogs={{ fz_left_cats | default([]) }}
+              instances={{ fz_left_instances | default([]) }}
             quiet: true
 
     - name: PASSED

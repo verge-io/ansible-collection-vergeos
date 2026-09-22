@@ -60,12 +60,16 @@
         - name: "1. Launch two deploys of DIFFERENT names simultaneously"
           ansible.builtin.command:
             argv:
-              - ansible-playbook
+              - "{{ ansible_playbook_python | dirname }}/ansible-playbook"
               - "{{ worker }}"
               - -i
               - "{{ playbook_dir }}/localhost.ini"
+              # JSON, not -e key=value: `-e` splits its value on whitespace,
+              # so any name or recipe containing a space silently arrives
+              # truncated. Harmless for these names, and wrong the first time
+              # someone reuses this block for one that is not.
               - -e
-              - "worker_vm={{ item }}"
+              - "{{ {'worker_vm': item} | to_json }}"
             chdir: "{{ playbook_dir }}"
           async: 1200
           poll: 0
@@ -108,7 +112,7 @@
               - names | select('equalto', conc_b) | list | length == 1
             fail_msg: >-
               expected one {{ conc_a }} and one {{ conc_b }}, got
-              {{ names | select('match', '^zz-conc-') | list }}
+              {{ names | select('match', '(?i)^zz-conc-') | list }}
 
         # ---- case 2: the same name at once. Exactly one must win. ----
         #
@@ -120,12 +124,12 @@
         - name: "2. Launch two deploys of the SAME name simultaneously"
           ansible.builtin.command:
             argv:
-              - ansible-playbook
+              - "{{ ansible_playbook_python | dirname }}/ansible-playbook"
               - "{{ worker }}"
               - -i
               - "{{ playbook_dir }}/localhost.ini"
               - -e
-              - "worker_vm={{ conc_same }}"
+              - "{{ {'worker_vm': conc_same} | to_json }}"
             chdir: "{{ playbook_dir }}"
           async: 1200
           poll: 0
@@ -222,11 +226,11 @@
           ansible.builtin.assert:
             that: >-
               leftover.vms | map(attribute='name')
-              | select('match', '^zz-conc-') | list | length == 0
+              | select('match', '(?i)^zz-conc-') | list | length == 0
             fail_msg: >-
               leftovers:
               {{ leftover.vms | map(attribute='name')
-                 | select('match', '^zz-conc-') | list }}
+                 | select('match', '(?i)^zz-conc-') | list }}
 
     - name: PASSED
       ansible.builtin.debug:

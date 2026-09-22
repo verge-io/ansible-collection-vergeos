@@ -150,7 +150,14 @@
           {%- set out = [] -%}
           {%- for r in matrix_runs.results -%}
             {%- set nm = r.item.name -%}
-            {%- set ok = (not (r.failed | default(false)))
+            {#- `.failed` is ALWAYS false here: the loop sets failed_when:
+                false, so ansible-core clears it. Testing it was a tautology
+                that happened not to matter, because the simulate_result
+                clause below carried the whole verdict on its own. Using the
+                real signal instead, so a future edit cannot drop the clause
+                that works and keep the one that never could. -#}
+            {%- set refused = r.failed_when_suppressed_exception is defined -%}
+            {%- set ok = (not refused)
                          and (r.simulate_result | default({})).ok | default(false) -%}
             {%- set blocked = nm in matrix_blocked -%}
             {%- set detail = (r.simulate_result | default({})).errors | default([])
@@ -180,12 +187,12 @@
     - name: "4b. Assert no zz-mx-* VM exists"
       ansible.builtin.assert:
         that: >-
-          vms_after.vms | selectattr('name', 'match', '^zz-mx-')
+          vms_after.vms | selectattr('name', 'match', '(?i)^zz-mx-')
           | list | length == 0
         fail_msg: >-
           the matrix created VMs:
           {{ vms_after.vms | map(attribute='name')
-             | select('match', '^zz-mx-') | list }}
+             | select('match', '(?i)^zz-mx-') | list }}
 
     - name: "5. Every recipe behaved as declared"
       ansible.builtin.assert:
