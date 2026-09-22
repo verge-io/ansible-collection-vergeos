@@ -12,6 +12,27 @@ set -- $_NICLIST
 NIC1=$1
 NIC2=$2
 NIC3=$3
+{% if vlab_seed_debug | default(false) %}
+# ---------------------------------------------- debug trace (fuzz mode)
+# Bring up NIC1 (DHCP on External) inside the installer environment and
+# stream the installer's component log to the workstation listener so a
+# stalled component is visible without a console.
+ip link set "$NIC1" up 2>/dev/null
+udhcpc -i "$NIC1" -q -n -t 10 2>/dev/null || true
+(
+  while true; do
+    {
+      echo "=== $(date) uptime=$(cut -d' ' -f1 /proc/uptime)"
+      tail -n 40 /var/log/install.log 2>/dev/null
+      echo "--- dialog processes:"
+      ps | grep -E 'dialog|whiptail' | grep -v grep
+    } > /tmp/trace.txt 2>&1
+    curl -s -m 3 -X POST --data-binary @/tmp/trace.txt {{ vlab_trace_url | default('http://192.168.1.99:8199/') }} >/dev/null 2>&1
+    sleep 15
+  done
+) &
+
+{% endif %}
 YC_INSTALL=basic
 YC_INSTALL_TYPE=controller
 YC_VSAN_NEW=1

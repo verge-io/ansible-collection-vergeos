@@ -36,6 +36,14 @@
     vlab_installer_iso: verge-io-install-26.1.8.iso
     vlab_external_network: External
 
+    # Machine type: empty = platform default (q35 on 26.x). If set to a
+    # pc/i440fx type, the installer CD must ride IDE — i440fx has no AHCI
+    # controller and an ahci CD silently leaves the VM with no boot device
+    # (fuzz finding F-1).
+    vlab_machine_type: ""
+    vlab_cdrom_interface: >-
+      {{ 'ide' if vlab_machine_type.startswith('pc') and 'q35' not in vlab_machine_type else 'ahci' }}
+
     vlab_cpu_cores: 8
     vlab_ram_mb: 16384
     vlab_tier0_disks: 2
@@ -154,6 +162,7 @@
         os_family: linux
         cpu_cores: "{{ vlab_cpu_cores }}"
         ram: "{{ vlab_ram_mb }}"
+        machine_type: "{{ vlab_machine_type | default(omit, true) }}"
         state: present
       loop: "{{ range(1, vlab_node_count + 1) | list }}"
 
@@ -230,7 +239,7 @@
           description: VergeOS installer ISO
           media: cdrom
           media_source: "{{ installer_iso_key | int }}"
-          interface: ahci
+          interface: "{{ vlab_cdrom_interface }}"
         status_code: [200, 201]
       loop: "{{ cdrom_lookup.results }}"
       loop_control:
@@ -290,6 +299,7 @@
         user_data: "{{ lookup('template', 'user-data-node2.sh.j2') }}"
         state: present
       no_log: true    # user_data contains the admin password
+      when: vlab_node_count >= 2
 
     - name: Attach scale-out seed to node-3 via cloud-init (nocloud/CIDATA)
       vergeio.vergeos.cloud_init:
@@ -298,6 +308,7 @@
         user_data: "{{ lookup('template', 'user-data-node3.sh.j2') }}"
         state: present
       no_log: true    # user_data contains the admin password
+      when: vlab_node_count >= 3
 
     # ------------------------------------------------------------ power
     - name: Power on selected nodes
