@@ -25,9 +25,19 @@ options:
     description:
       - The desired state of the virtual machine.
       - C(present) ensures the VM exists with the specified configuration.
-      - C(absent) ensures the VM is deleted.
-      - C(running) ensures the VM exists and is powered on.
-      - C(stopped) ensures the VM exists and is powered off.
+      - C(absent) ensures the VM is deleted. The platform refuses to delete a
+        RUNNING VM - the API answers
+        C(Virtual Machine must be stopped to delete) - so set O(state=stopped)
+        first. This module deliberately does not stop it for you, because an
+        C(absent) that powered off a running workload to remove it would be a
+        far worse default than a refusal.
+      - C(running) ensures the VM exists and is powered on, creating it first
+        if it is absent.
+      - >-
+        C(stopped) powers off a VM that already exists. Unlike O(state=running)
+        it does NOT create a missing VM - it fails with
+        C(VM '<name>' does not exist). The asymmetry is deliberate: creating a
+        machine in order to report it as stopped is rarely what was meant.
     type: str
     choices: [ present, absent, running, stopped ]
     default: present

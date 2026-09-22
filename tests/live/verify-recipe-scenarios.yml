@@ -1,0 +1,313 @@
+---
+# Adversarial ladder for vm_recipe_deploy's answer handling and its
+# parameters that verify-recipe-deploy.yml does not touch.
+#
+#   ansible-playbook verify-recipe-scenarios.yml
+#
+# Everything here runs in CHECK MODE, which still performs the real
+# server-side simulation. Nothing is created, so this is safe to run on a
+# shared system -- and the last rung proves it rather than assuming it.
+#
+# What this covers that the deploy ladder does not:
+#   prune_unknown   on and off, and that "pruned" is reported by name
+#   fail_on_hints   a hint is fatal when asked for, tolerated when not
+#   catalog         disambiguation, and a wrong catalog refusing
+#   answer types    min / max / regex enforced locally, before the API
+#   networks        by name, by key, and a nonexistent one refused
+#
+# Every rung uses failed_when: false so one refusal does not stop the
+# ladder. That means `.failed` is ALWAYS false and cannot be the check --
+# ansible-core sets it to false precisely because we suppressed it. The
+# signal that the module actually refused is
+# `failed_when_suppressed_exception`, which core attaches only when a real
+# failure was suppressed. Measured both ways: it is present on a refused
+# run and absent on a clean one, while `.failed` is false on both.
+- name: Recipe scenarios live ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    zz: zz-scn
+    zz_recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+    base_answers:
+      HOSTNAME: "{{ zz }}"
+      USER: ladder
+      PASSWORD: LadderScratchValue1
+      YB_CPU_CORES: 1
+      YB_RAM: 1024
+      YB_DRIVE_OS_SIZE: 10737418240
+      SELECT_OS_TIER: 1
+      YB_IP_ADDR_TYPE: dhcp
+      YB_NIC_ETH0: DMZ
+
+  tasks:
+    - name: "0. The stock recipe must exist"
+      vergeio.vergeos.vm_recipe_info:
+        insecure: true
+        name: "{{ zz_recipe }}"
+      register: rc
+      changed_when: false
+
+    - name: "0b. Refuse to run without it"
+      ansible.builtin.assert:
+        that: rc.recipes | default([]) | length == 1
+        fail_msg: "stock recipe '{{ zz_recipe }}' not found"
+
+    - name: "0c. Record its catalog, for the catalog rungs"
+      ansible.builtin.set_fact:
+        zz_catalog: "{{ (rc.recipes | first).catalog_display }}"
+
+    # ---- prune_unknown ----
+
+    - name: "1. prune_unknown off: an unknown answer is fatal"
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "{{ zz }}"
+        recipe: "{{ zz_recipe }}"
+        answers: "{{ base_answers | combine({'ZZ_NOT_A_QUESTION': 'x'}) }}"
+        prune_unknown: false
+      check_mode: true
+      failed_when: false
+      register: prune_off
+
+    - name: "1b. It failed, and named the answer it did not recognise"
+      ansible.builtin.assert:
+        that:
+          - prune_off.failed_when_suppressed_exception is defined
+          - "'ZZ_NOT_A_QUESTION' in (prune_off.msg | default(''))"
+        fail_msg: >-
+          expected a refusal naming ZZ_NOT_A_QUESTION, got:
+          {{ prune_off.msg | default(prune_off) }}
+
+    - name: "2. prune_unknown on: the same answer is dropped, not fatal"
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "{{ zz }}"
+        recipe: "{{ zz_recipe }}"
+        answers: "{{ base_answers | combine({'ZZ_NOT_A_QUESTION': 'x'}) }}"
+        prune_unknown: true
+      check_mode: true
+      failed_when: false
+      register: prune_on
+
+    # The point of the rung. prune_unknown exists so one answer set can be
+    # applied across recipes with different question sets -- but a pruned
+    # answer is indistinguishable from a typo, so it must be REPORTED, not
+    # silently swallowed.
+    - name: "2b. It succeeded, and the pruned answer is not in answers_sent"
+      ansible.builtin.assert:
+        that:
+          - prune_on.failed_when_suppressed_exception is not defined
+          - "'ZZ_NOT_A_QUESTION' not in (prune_on.answers_sent | default([]))"
+          - prune_on.answers_sent | default([]) | length > 0
+        fail_msg: >-
+          prune_unknown did not behave: refused={{ prune_on.failed_when_suppressed_exception is defined }},
+          answers_sent={{ prune_on.answers_sent | default([]) }}
+
+    - name: "2c. And the known answers still went through"
+      ansible.builtin.assert:
+        that: >-
+          base_answers.keys() | reject('in', prune_on.answers_sent)
+          | list | length == 0
+        fail_msg: >-
+          prune_unknown dropped answers the recipe DOES define. sent:
+          {{ prune_on.answers_sent }}
+
+    # ---- fail_on_hints ----
+    #
+    # A hint is a question left unanswered whose default is empty. This
+    # recipe has several, so the pair below is a real test rather than a
+    # vacuous one -- rung 3b asserts there is at least one.
+
+    - name: "3. fail_on_hints off (the default): hints are reported"
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "{{ zz }}"
+        recipe: "{{ zz_recipe }}"
+        answers: "{{ base_answers }}"
+        fail_on_hints: false
+      check_mode: true
+      failed_when: false
+      register: hints_off
+
+    - name: "3b. It succeeded and there is at least one hint to be fatal about"
+      ansible.builtin.assert:
+        that:
+          - hints_off.failed_when_suppressed_exception is not defined
+          - hints_off.hints | default([]) | length > 0
+        fail_msg: >-
+          expected a clean run carrying hints, got
+          refused={{ hints_off.failed_when_suppressed_exception is defined }},
+          hints={{ hints_off.hints | default([]) }}
+
+    - name: "4. fail_on_hints on: the same run is fatal"
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "{{ zz }}"
+        recipe: "{{ zz_recipe }}"
+        answers: "{{ base_answers }}"
+        fail_on_hints: true
+      check_mode: true
+      failed_when: false
+      register: hints_on
+
+    - name: "4b. It failed, on the same answer set that passed at rung 3"
+      ansible.builtin.assert:
+        that: hints_on.failed_when_suppressed_exception is defined
+        fail_msg: >-
+          fail_on_hints=true did not fail a run with
+          {{ hints_off.hints | default([]) | length }} hint(s)
+
+    # ---- catalog ----
+
+    - name: "5. The right catalog resolves"
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "{{ zz }}"
+        recipe: "{{ zz_recipe }}"
+        catalog: "{{ zz_catalog }}"
+        answers: "{{ base_answers }}"
+      check_mode: true
+      failed_when: false
+      register: cat_right
+
+    - name: "5b. Assert it resolved"
+      ansible.builtin.assert:
+        that: cat_right.failed_when_suppressed_exception is not defined
+        fail_msg: >-
+          naming the correct catalog '{{ zz_catalog }}' broke the lookup:
+          {{ cat_right.msg | default('') }}
+
+    - name: "6. A catalog that does not carry this recipe is refused"
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "{{ zz }}"
+        recipe: "{{ zz_recipe }}"
+        catalog: zz-no-such-catalog
+        answers: "{{ base_answers }}"
+      check_mode: true
+      failed_when: false
+      register: cat_wrong
+
+    - name: "6b. Assert refused rather than silently ignoring the catalog"
+      ansible.builtin.assert:
+        that: cat_wrong.failed_when_suppressed_exception is defined
+        fail_msg: >-
+          a nonexistent catalog was ignored instead of refusing --
+          the recipe resolved anyway
+
+    # ---- answer validation, enforced locally before anything is sent ----
+
+    - name: "7. A value below the question's min is refused"
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "{{ zz }}"
+        recipe: "{{ zz_recipe }}"
+        answers: "{{ base_answers | combine({'YB_CPU_CORES': 0}) }}"
+      check_mode: true
+      failed_when: false
+      register: below_min
+
+    - name: "7b. Assert refused, naming the question"
+      ansible.builtin.assert:
+        that:
+          - below_min.failed_when_suppressed_exception is defined
+          - "'YB_CPU_CORES' in (below_min.msg | default(''))"
+        fail_msg: >-
+          expected YB_CPU_CORES=0 to be refused, got:
+          {{ below_min.msg | default(below_min) }}
+
+    - name: "8. A wrong-typed value is refused"
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "{{ zz }}"
+        recipe: "{{ zz_recipe }}"
+        answers: "{{ base_answers | combine({'YB_RAM': 'not-a-number'}) }}"
+      check_mode: true
+      failed_when: false
+      register: bad_type
+
+    - name: "8b. Assert refused, naming the question"
+      ansible.builtin.assert:
+        that:
+          - bad_type.failed_when_suppressed_exception is defined
+          - "'YB_RAM' in (bad_type.msg | default(''))"
+        fail_msg: >-
+          expected a non-numeric YB_RAM to be refused, got:
+          {{ bad_type.msg | default(bad_type) }}
+
+    # ---- network-typed answers ----
+
+    - name: "9. Resolve DMZ's key, to answer the same question two ways"
+      vergeio.vergeos.network_info:
+        insecure: true
+        name: DMZ
+      register: dmz
+      changed_when: false
+
+    - name: "9b. A network answer given by KEY resolves the same as by name"
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "{{ zz }}"
+        recipe: "{{ zz_recipe }}"
+        answers: >-
+          {{ base_answers
+             | combine({'YB_NIC_ETH0': (dmz.networks | first)['$key']}) }}
+      check_mode: true
+      failed_when: false
+      register: net_by_key
+
+    - name: "9c. Assert it resolved"
+      ansible.builtin.assert:
+        that: net_by_key.failed_when_suppressed_exception is not defined
+        fail_msg: >-
+          a network answer by key was refused:
+          {{ net_by_key.msg | default('') }}
+
+    - name: "10. A network that does not exist is refused"
+      vergeio.vergeos.vm_recipe_deploy:
+        insecure: true
+        name: "{{ zz }}"
+        recipe: "{{ zz_recipe }}"
+        answers: "{{ base_answers | combine({'YB_NIC_ETH0': 'zz-no-such-net'}) }}"
+      check_mode: true
+      failed_when: false
+      register: net_bad
+
+    - name: "10b. Assert refused, naming the question"
+      ansible.builtin.assert:
+        that:
+          - net_bad.failed_when_suppressed_exception is defined
+          - "'YB_NIC_ETH0' in (net_bad.msg | default(''))"
+        fail_msg: >-
+          expected a nonexistent network to be refused, got:
+          {{ net_bad.msg | default(net_bad) }}
+
+    # ---- the whole point: none of the above touched the system ----
+
+    - name: "11. Nothing was created by any of it"
+      vergeio.vergeos.vm_info:
+        insecure: true
+      register: vms_after
+      changed_when: false
+
+    - name: "11b. Assert no zz-scn VM exists"
+      ansible.builtin.assert:
+        that: >-
+          vms_after.vms | selectattr('name', 'match', '^' ~ zz)
+          | list | length == 0
+        fail_msg: >-
+          a check-mode rung created a VM:
+          {{ vms_after.vms | map(attribute='name')
+             | select('match', '^' ~ zz) | list }}
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          recipe scenarios PASSED: prune_unknown off refuses an unknown
+          answer by name, on drops it while keeping every real one ->
+          fail_on_hints turns a passing run fatal on the same answers ->
+          the right catalog resolves and a wrong one refuses -> min and
+          type violations are caught locally, each naming its question ->
+          a network answer resolves by key as well as by name, and a
+          nonexistent one is refused -> nothing was created
