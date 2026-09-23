@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Recipe deployment.** `vm_recipe_deploy`, `vm_recipe_info`, `vm_drive_info` and `vm_nic_info`, plus the `vm_from_recipe` role. A recipe deploy is asynchronous -- the platform returns a VM key long before the VM can boot -- so the role waits for drives to finish importing and asserts post-conditions on the VM itself rather than on a deploy log. Answers are validated against the recipe's own published questions before anything is sent, so a bad answer is a refusal rather than a half-built VM.
+- **`meta/runtime.yml` action group `recipe`**, so connection details can be set once with `module_defaults`. Without an action group the idiomatic `group/vergeio.vergeos.recipe` syntax fails outright rather than being ignored.
+- **`docs/SDK-COMPATIBILITY.md`** -- the collection verified against released `pyvergeos==1.2.7` and `origin/dev` (22 commits ahead): 15 live ladders, identical task counts, `failed=0` on both.
+
+### Fixed
+
+- **`vm_recipe_deploy`: a one-character answer masked the digits in the module's own error messages.** `answers` is `no_log`, and ansible-core masks a `no_log` value by plain substring replacement anywhere in the return data -- integers included -- so the ordinary answer `YB_CPU_CORES: 1` turned *"the recipe requires at least 512"* into *"requires at least 5\*\*\*\*\*\*\*\*2"*. The module now stops masking the answers the recipe's question *types* say are not credentials, once those types are known. The invocation log, which is the path that matters for credential leakage, has already happened fully masked by then.
+
+### Documentation
+
+- **`vm`: `state` semantics corrected.** `absent` will not delete a *running* VM -- the platform refuses with *"Virtual Machine must be stopped to delete"*, and the module deliberately does not stop it for you, because an `absent` that powered off a running workload in order to remove it would be a far worse default than a refusal. `stopped` does **not** create a missing VM while `running` does. Both verified against VergeOS 26.1.8; neither was previously documented.
+
 ## [2.0.1] - 2026-09-21
 
 ### Added

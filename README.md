@@ -69,6 +69,32 @@ Configure and Run Playbook
 ansible-playbook examples/snapshot_workflow.yml
 ```
 
+## Roles
+
+| Role | What it does | Example |
+|---|---|---|
+| `vm_from_recipe` | Deploys a VM from a VergeOS recipe and waits until it is genuinely usable -- drives imported, NICs attached, and optionally the guest proven to have booted | `examples/vm_from_recipe_role.yml` |
+
+## Recipe modules
+
+| Module | What it does |
+|---|---|
+| `vm_recipe_deploy` | Deploys a VM from a recipe. Validates answers against the recipe's own published questions before sending anything, so a bad answer is a refusal rather than a half-built VM |
+| `vm_recipe_info` | Lists recipes, and optionally the questions a recipe accepts -- use it to discover what to answer |
+| `vm_drive_info` | A VM's drives, with optional IO counters. The counters are how you tell a booted guest from one sitting at "no bootable device" |
+| `vm_nic_info` | A VM's NICs, and separately those attached to **no** network -- a recipe whose network question was left unanswered produces exactly that, and it otherwise passes every check |
+
+Connection details can be set once for all four with `module_defaults`:
+
+```yaml
+- hosts: localhost
+  module_defaults:
+    group/vergeio.vergeos.recipe:
+      host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+      username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+```
+
 ## Dynamic Inventory
 
 The collection includes a dynamic inventory plugin (`vergeos_vms`) that queries one or more VergeOS sites for VMs.
