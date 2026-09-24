@@ -6,6 +6,9 @@ shadowing, injection-shaped strings and duplicate rows. Several of these
 found real defects; each such test names the defect in its docstring.
 """
 
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
 import pytest
 
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (

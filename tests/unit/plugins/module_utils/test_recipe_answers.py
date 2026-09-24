@@ -1,5 +1,8 @@
 """Unit tests for the recipe answer resolver (pure functions, no API)."""
 
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
 import pytest
 
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (

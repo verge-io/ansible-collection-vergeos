@@ -1,5 +1,8 @@
 """Unit tests for the vm_recipe_info module."""
 
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
 import pytest
 from unittest.mock import MagicMock, patch
 

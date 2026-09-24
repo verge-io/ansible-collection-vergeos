@@ -6,6 +6,9 @@ protocol and MagicMock auto-provides ``keys``, so a mocked row silently
 decodes empty and every field comparison compares nothing.
 """
 
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
 import pytest
 
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vm_recipes import (

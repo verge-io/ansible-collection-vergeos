@@ -1,3 +1,6 @@
+
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
 """Unit tests for the vm_recipe_deploy module.
 
 exit_json and fail_json are wired to raise SystemExit the way the real
