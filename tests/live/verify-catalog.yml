@@ -1,0 +1,345 @@
+---
+# Live-verify ladder for the catalog module (VergeOS 26.1.8). Uses a
+# zz- scratch catalog in the writable 'Local' repository; the stock
+# Marketplace/Verge.io catalogs are never touched. Cleanup always runs.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook verify-catalog.yml
+
+- name: Catalog live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    cat: zz-golden-images
+    # Apostrophe on purpose -- see rung 9.
+    cat_quoted: "zz-o'brien images"
+    # Braces on purpose -- see rung 10. The neighbour is the name the
+    # platform's brace-stripping collapses this to.
+    cat_braced: "zz-br{x}ace-cat"
+    cat_neighbour: "zz-brace-cat"
+
+  tasks:
+    - name: Ladder body
+      block:
+        - name: Cleanup first — scratch catalog must not pre-exist
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            state: absent
+
+        - name: "1. Create in Local, private"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            publishing_scope: private
+            state: present
+          register: created
+
+        - name: "2. Identical re-run must converge"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            publishing_scope: private
+            state: present
+          register: rerun
+
+        - name: "Create verdicts: made once, string key, converged"
+          ansible.builtin.assert:
+            that:
+              - created is changed
+              - created.catalog.publishing_scope == 'private'
+              - created.catalog.key | length >= 40
+              - created.catalog.repository_name == 'Local'
+              - rerun is not changed
+            fail_msg: "unexpected create results: {{ created }} / {{ rerun }}"
+
+        - name: "3. Check-mode tenant grant must not touch the system"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            publishing_scope: tenant
+            state: present
+          check_mode: true
+          register: preview
+
+        - name: Converged re-run proves the preview changed nothing
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            publishing_scope: private
+            state: present
+          register: still_private
+
+        - name: "Preview verdicts"
+          ansible.builtin.assert:
+            that:
+              - preview is changed
+              - still_private is not changed
+            fail_msg: "check mode leaked: {{ still_private }}"
+
+        - name: "4. Grant to tenants (publishing_scope: tenant)"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            publishing_scope: tenant
+            state: present
+          register: granted
+
+        - name: "5. Grant re-run must converge"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            publishing_scope: tenant
+            state: present
+          register: granted_again
+
+        - name: "Grant verdicts (name-only match, single repo)"
+          ansible.builtin.assert:
+            that:
+              - granted is changed
+              - granted.catalog.publishing_scope == 'tenant'
+              - granted_again is not changed
+            fail_msg: "unexpected grant results: {{ granted }}"
+
+        - name: "6. Disable without touching scope"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            enabled: false
+            state: present
+          register: disabled
+
+        - name: "7. Scope-only re-run must preserve enabled=false"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            publishing_scope: tenant
+            state: present
+          register: scope_only
+
+        - name: "Enabled-preservation verdicts"
+          ansible.builtin.assert:
+            that:
+              - disabled is changed
+              - not disabled.catalog.enabled
+              - scope_only is not changed
+              - not scope_only.catalog.enabled
+            fail_msg: >-
+              enabled was not preserved:
+              {{ disabled }} / {{ scope_only }}
+
+        - name: "8. Creating without a repository must be refused"
+          block:
+            - name: Present on a nonexistent catalog, no repository
+              vergeio.vergeos.catalog:
+                name: zz-no-repo-given
+                state: present
+
+            - name: Unreachable — the refusal did not fire
+              ansible.builtin.fail:
+                msg: create without repository was accepted
+          rescue:
+            - name: Confirm the refusal
+              ansible.builtin.assert:
+                that:
+                  - "'repository is required' in (ansible_failed_result.msg | default(''))"
+                fail_msg: "wrong failure: {{ ansible_failed_result | default({}) }}"
+
+        # The name below contains an apostrophe on purpose. This module used
+        # to build its own OData filter with SQL-style escaping ("'" -> "''"),
+        # which VergeOS 26.1.8 rejects with ValidationError "Invalid
+        # argument" -- so a catalog named like this could not be looked up,
+        # created, converged or deleted. Every rung below failed before the
+        # fix; the absent-on-missing rung is the telling one, because a
+        # no-op is the one thing that should never be able to fail.
+        - name: "9. A name containing an apostrophe is a lookup, not a crash"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_quoted }}"
+            state: absent
+          register: quoted_missing
+
+        - name: "9b. Absent on a missing awkward name is a converged no-op"
+          ansible.builtin.assert:
+            that: quoted_missing is not changed
+            fail_msg: >-
+              absent on a nonexistent catalog named {{ cat_quoted }} was not
+              a no-op: {{ quoted_missing }}
+
+        - name: "9c. Create it"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_quoted }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            publishing_scope: private
+            state: present
+          register: quoted_created
+
+        - name: "9d. Re-run converges rather than creating a duplicate"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_quoted }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            publishing_scope: private
+            state: present
+          register: quoted_again
+
+        - name: "9e. Verdicts for the awkward name"
+          ansible.builtin.assert:
+            that:
+              - quoted_created is changed
+              - quoted_created.catalog.name == cat_quoted
+              - quoted_again is not changed
+            fail_msg: >-
+              apostrophe round-trip failed:
+              {{ quoted_created }} / {{ quoted_again }}
+
+        - name: "9f. Delete it again"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_quoted }}"
+            state: absent
+          register: quoted_deleted
+
+        - name: "9g. It really went"
+          ansible.builtin.assert:
+            that: quoted_deleted is changed
+            fail_msg: "the awkward-named catalog survived deletion"
+
+        # pyVergeOS#100: quote_value() did not escape '{', so VergeOS read
+        # the brace as a substitution token and a server-side
+        # "name eq '...'" lookup for the braced name matched the NEIGHBOUR
+        # instead. Measured through this very module before the fix:
+        # creating the braced catalog reported changed=false (it matched the
+        # neighbour and created nothing), and deleting it reported
+        # changed=true having destroyed the neighbour. Filed as a platform
+        # parser defect and closed as client-side under-quoting
+        # (verge-io/engineering#20); fixed in pyvergeos 1.2.8, one patch
+        # above this collection's floor. The module matches client-side,
+        # which is immune on every supported version. This is the guard.
+        - name: "10. A neighbour whose name differs only by a brace token"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_neighbour }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            state: present
+          register: neighbour_made
+
+        - name: "10b. Creating the braced name must CREATE, not adopt"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_braced }}"
+            repository: Local
+            description: catalog ladder scratch (zz- disposable)
+            state: present
+          register: braced_made
+
+        - name: "10c. Both exist and both were real creations"
+          ansible.builtin.assert:
+            that:
+              - neighbour_made is changed
+              - braced_made is changed
+              - braced_made.catalog.name == cat_braced
+            fail_msg: >-
+              the braced name was collapsed onto the neighbour:
+              {{ braced_made }}
+
+        # Read back over plain REST, deliberately NOT through this module or
+        # the SDK. If both the write and the read went through the same
+        # name-matching code, a matching bug would cancel itself out and the
+        # rung would pass while the platform held something else entirely.
+        - name: "10d. Read both back from the platform"
+          ansible.builtin.uri:
+            url: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4/catalogs?fields=name"
+            url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+            url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+            force_basic_auth: true
+            validate_certs: false
+            return_content: true
+          register: cat_rows
+          changed_when: false
+          no_log: true
+
+        - name: "10e. Assert they are two distinct rows"
+          vars:
+            names: "{{ cat_rows.json | map(attribute='name') | list }}"
+          ansible.builtin.assert:
+            that:
+              - cat_braced in names
+              - cat_neighbour in names
+            fail_msg: "expected both names to exist, got {{ names }}"
+
+        - name: "10f. Deleting the braced one must not touch the neighbour"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_braced }}"
+            state: absent
+          register: braced_gone
+
+        - name: "10g. Re-read"
+          ansible.builtin.uri:
+            url: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4/catalogs?fields=name"
+            url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+            url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+            force_basic_auth: true
+            validate_certs: false
+            return_content: true
+          register: cat_rows_after
+          changed_when: false
+          no_log: true
+
+        - name: "10h. The neighbour survived"
+          vars:
+            names: "{{ cat_rows_after.json | map(attribute='name') | list }}"
+          ansible.builtin.assert:
+            that:
+              - braced_gone is changed
+              - cat_braced not in names
+              - cat_neighbour in names
+            fail_msg: >-
+              deleting '{{ cat_braced }}' took the wrong catalog with it.
+              remaining: {{ names }}
+
+        - name: "10i. Remove the neighbour"
+          vergeio.vergeos.catalog:
+            name: "{{ cat_neighbour }}"
+            state: absent
+
+        - name: "11. Delete"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            state: absent
+          register: deleted
+
+        - name: "12. Delete again — converged"
+          vergeio.vergeos.catalog:
+            name: "{{ cat }}"
+            state: absent
+          register: deleted_again
+
+        - name: "Deletion verdicts"
+          ansible.builtin.assert:
+            that:
+              - deleted is changed
+              - deleted_again is not changed
+            fail_msg: "unexpected deletion results"
+
+      rescue:
+        - name: Cleanup after failure — no scratch catalog may survive
+          vergeio.vergeos.catalog:
+            name: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ cat }}"
+            - "{{ cat_quoted }}"
+            - "{{ cat_braced }}"
+            - "{{ cat_neighbour }}"
+          failed_when: false
+
+        - name: Ladder failed
+          ansible.builtin.fail:
+            msg: "rung failed: {{ ansible_failed_result | default({}) }}"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          catalog ladder PASSED: create -> converge -> check-mode ->
+          tenant grant -> converge -> enabled preserved -> no-repo
+          refusal -> a name containing an apostrophe round-trips
+          (absent no-op, create, converge, delete) -> a name differing
+          from its neighbour only by a {brace} token creates, reads back
+          and deletes WITHOUT touching the neighbour -> delete x2,
+          zero leftovers

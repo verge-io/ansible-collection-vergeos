@@ -75,7 +75,7 @@ def _argument_spec_options(mod):
 # is only as good as its coverage. 'vm' is deliberately ABSENT -- adding it is
 # what found #87 (machine_subtype, bios_type and network are not VM fields),
 # and it goes in once that is fixed.
-MAPPED_MODULES = ['network', 'nic', 'drive', 'user']
+MAPPED_MODULES = ['network', 'nic', 'drive', 'user', 'catalog']
 
 
 class TestDocumentationMatchesArgumentSpec:
@@ -115,6 +115,12 @@ class TestEveryDiffedFieldIsFetched:
                 "network diffs %r but never fetches it" % api_field)
         assert network.UPLINK_API_FIELD in network.COMPARISON_FIELDS
 
+    def test_catalog(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import catalog
+        for api_field in catalog.UPDATE_FIELD_MAP.values():
+            assert api_field in catalog.COMPARISON_FIELDS, (
+                "catalog diffs %r but never fetches it" % api_field)
+
 
 class TestCreateAndUpdatePathsAgree:
     """#18's subtlest failure: dns_servers was correct on create and silently
@@ -137,6 +143,30 @@ class TestCreateAndUpdatePathsAgree:
         for param in set(network.UPDATE_FIELD_MAP) | set(network.CREATE_PARAM_MAP):
             assert param in spec, (
                 "network maps %r to an API field but does not accept it as an "
+                "option -- the mapping is dead code" % param)
+
+    def test_catalog_update_is_a_subset_of_create(self):
+        """Unlike network, catalog's two paths are deliberately different:
+        name and repository are the catalog's identity, not settings. What
+        must hold is that nothing is updatable that cannot be created, which
+        would be a parameter with no way to reach its initial value."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import catalog
+        create = set(catalog.CREATE_PARAM_MAP)
+        update = set(catalog.UPDATE_FIELD_MAP)
+        assert update <= create, (
+            "catalog can update parameters it cannot create: %s"
+            % sorted(update - create))
+        assert create - update == set(catalog.IDENTITY_PARAMS), (
+            "the create-only parameters should be exactly the identity ones. "
+            "create-only=%s IDENTITY_PARAMS=%s"
+            % (sorted(create - update), sorted(catalog.IDENTITY_PARAMS)))
+
+    def test_catalog_mapped_parameters_are_all_real_options(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import catalog
+        spec = _argument_spec_options(catalog)
+        for param in set(catalog.CREATE_PARAM_MAP) | set(catalog.UPDATE_FIELD_MAP):
+            assert param in spec, (
+                "catalog maps %r to an API field but does not accept it as an "
                 "option -- the mapping is dead code" % param)
 
     def test_nic_mapped_parameters_are_all_real_options(self):
@@ -170,6 +200,12 @@ class TestNoKnownBadFieldNamesComeBack:
             'full_name': 'the API field is displayname',
             'user_password': 'the API field is password',
         },
+        # catalog needs no renames: all five parameters are real columns on
+        # the live table (checked on 26.1.8). The entry is empty rather than
+        # absent so the parametrised test below covers it and fails loudly if
+        # someone adds catalog to MAPPED_MODULES' sibling maps without
+        # thinking about which names the API actually uses.
+        'catalog': {},
     }
 
     @pytest.mark.parametrize('name', MAPPED_MODULES)

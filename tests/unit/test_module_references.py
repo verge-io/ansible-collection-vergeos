@@ -27,7 +27,6 @@ import pytest
 # must name the issue that removes it.
 FUTURE = {
     'api_key': 'arrives with #30',
-    'catalog': 'arrives with #32',
 }
 
 _REFERENCE = re.compile(r'vergeio\.vergeos\.(\w+)')
