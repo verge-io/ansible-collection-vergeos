@@ -64,6 +64,7 @@ precisely because nothing read that table.
 | Ladder | Covers |
 |---|---|
 | `verify-field-contract.yml` | the compare-and-map contract for `network`, `nic`, `drive`, `user` (#75) |
+| `verify-catalog.yml` | `catalog` create/converge/scope/delete, plus the apostrophe and `{brace}` name guards (#32) |
 | `verify-recipe-deploy.yml` | `vm_recipe_deploy` end to end |
 | `verify-recipe-matrix.yml` | every recipe on the system, simulated |
 | `verify-recipe-real.yml` | real deployments — boot proved, DHCP confirmed, torn down |
@@ -87,15 +88,16 @@ Helpers, not run directly:
 
 ### Not here yet
 
-`verify-recipe-custom.yml`, `verify-recipe-edges.yml` and
-`verify-recipe-fuzz.yml` call `vergeio.vergeos.catalog` and
-`vergeio.vergeos.api_key`, which arrive with #32 and #30. Those three ladders
-are excluded from `ansible-lint` until then — see `.ansible-lint`, and
+`verify-recipe-edges.yml` calls `vergeio.vergeos.api_key`, which arrives with
+#30, so it is still excluded from `ansible-lint` — see `.ansible-lint`, and
 `tests/unit/test_module_references.py`, which audits every
 `vergeio.vergeos.*` reference against a self-expiring allowlist.
 
+`verify-recipe-custom.yml` and `verify-recipe-fuzz.yml` came off that list
+when `catalog` landed with #32.
+
 The remaining ladders from the port (`verify-vm-clone`, `verify-vm-export`,
-`verify-nas-modules`, `verify-snapshot-profile`, `verify-api-key` and others)
+`verify-nas-modules`, `verify-snapshot-profile` and others)
 land with their modules — see the tracking issue #57.
 
 ## Adding one
