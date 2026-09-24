@@ -154,6 +154,71 @@ def test_every_client_call_exists_on_the_real_sdk(path):
         % (os.path.relpath(path, _root()), '\n  '.join(problems)))
 
 
+# Modules whose update path passes a dict of keywords with ``**``.
+#
+# The AST walk above sees ``client.nas_volumes.update(key, **changes)`` and
+# finds no keywords at all, so it cannot check it. That blind spot is not
+# theoretical: it is how ``nas_volume`` came to send ``maxsize=`` to an
+# update() that has no such parameter, raising TypeError on every resize.
+#
+# Following ``**changes`` back through the code would be the broad fix, and
+# the broad fix is the one that gets muted. The narrow one that is always
+# right: a module that builds those keywords from a declared map must declare
+# it, and every value in it is checked against the real signature here.
+#
+#   module -> (VergeClient attribute, method, map attribute on the module)
+UPDATE_KWARG_MAPS = {
+    'nas_volume': ('nas_volumes', 'update', 'UPDATE_KWARG_MAP'),
+    'nas_nfs_share': ('nfs_shares', 'update', 'UPDATE_KWARG_MAP'),
+    'vm_export': ('volume_vm_exports', 'update', 'UPDATE_KWARG_MAP'),
+}
+
+
+@pytest.mark.parametrize('name', sorted(UPDATE_KWARG_MAPS))
+def test_declared_update_keywords_exist_on_the_real_sdk(name):
+    attribute, method, map_name = UPDATE_KWARG_MAPS[name]
+    mod = importlib.import_module(
+        'ansible_collections.vergeio.vergeos.plugins.modules.%s' % name)
+    managers = _client_managers()
+    signature = inspect.signature(getattr(managers[attribute], method))
+
+    unknown = sorted(keyword for keyword in getattr(mod, map_name).values()
+                     if keyword not in signature.parameters)
+    assert not unknown, (
+        '%s.%s maps parameters to %s keywords that %s.%s() does not accept: '
+        '%s (it takes %s)'
+        % (name, map_name, attribute, managers[attribute].__name__, method,
+           unknown, sorted(signature.parameters)))
+
+
+def test_every_module_with_a_kwarg_map_is_registered():
+    """A map nothing checks is a map that can drift back to the bug."""
+    unregistered = []
+    for path in _MODULE_FILES:
+        base = os.path.basename(path)[:-3]
+        if base.startswith('__') or 'modules' not in path:
+            continue
+        mod = importlib.import_module(
+            'ansible_collections.vergeio.vergeos.plugins.modules.%s' % base)
+        if hasattr(mod, 'UPDATE_KWARG_MAP') and base not in UPDATE_KWARG_MAPS:
+            unregistered.append(base)
+    assert not unregistered, (
+        'these modules declare UPDATE_KWARG_MAP but are not in '
+        'UPDATE_KWARG_MAPS, so nothing checks it: %s' % unregistered)
+
+
+def test_the_kwarg_guard_can_actually_fail():
+    """The exact call nas_volume used to make, against the real SDK."""
+    managers = _client_managers()
+    signature = inspect.signature(managers['nas_volumes'].update)
+    assert 'maxsize' not in signature.parameters, (
+        'pyvergeos has grown a maxsize parameter on NASVolumeManager.update; '
+        "nas_volume's resize path needs revisiting")
+    assert 'size_gb' in signature.parameters
+    assert 'preferred_tier' not in signature.parameters
+    assert 'tier' in signature.parameters
+
+
 def test_the_guard_can_actually_fail():
     """A guard that cannot fail is decoration.
 

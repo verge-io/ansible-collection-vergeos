@@ -76,7 +76,8 @@ def _argument_spec_options(mod):
 # found #87 (machine_subtype, bios_type and network are not VM fields), and it
 # joins now that #87 is fixed. Every module with a field map is covered.
 MAPPED_MODULES = ['network', 'nic', 'drive', 'user', 'catalog', 'api_key',
-                  'group', 'vnet_rule', 'vm']
+                  'group', 'vnet_rule', 'vm', 'nas_volume', 'nas_nfs_share',
+                  'vm_export']
 
 
 class TestDocumentationMatchesArgumentSpec:
@@ -146,6 +147,48 @@ class TestEveryDiffedFieldIsFetched:
         for api_field in api_key.UPDATE_FIELD_MAP.values():
             assert api_field in api_key.COMPARISON_FIELDS, (
                 "api_key diffs %r but never fetches it" % api_field)
+
+    def test_nas_volume(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            nas_volume,
+        )
+        for api_field in nas_volume.UPDATE_FIELD_MAP.values():
+            assert api_field in nas_volume.COMPARISON_FIELDS, (
+                "nas_volume diffs %r but never fetches it" % api_field)
+        for column in nas_volume.COMPARISON_FIELDS:
+            assert column in nas_volume.VOLUME_FIELDS, (
+                'nas_volume compares %r but does not fetch it' % column)
+
+    def test_nas_volume_asks_for_the_key_by_name(self):
+        """`fields=all` on the volumes table does not include $key -- it
+        returns `id` instead. A projection that forgot it would leave every
+        update and delete targeting None."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            nas_volume,
+        )
+        assert '$key' in nas_volume.VOLUME_FIELDS
+
+    def test_nas_nfs_share(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            nas_nfs_share,
+        )
+        for api_field in nas_nfs_share.UPDATE_FIELD_MAP.values():
+            assert api_field in nas_nfs_share.COMPARISON_FIELDS, (
+                "nas_nfs_share diffs %r but never fetches it" % api_field)
+        for column in nas_nfs_share.COMPARISON_FIELDS:
+            assert column in nas_nfs_share.SHARE_FIELDS, (
+                'nas_nfs_share compares %r but does not fetch it' % column)
+
+    def test_vm_export(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            vm_export,
+        )
+        for api_field in vm_export.UPDATE_FIELD_MAP.values():
+            assert api_field in vm_export.COMPARISON_FIELDS, (
+                "vm_export diffs %r but never fetches it" % api_field)
+        for column in vm_export.COMPARISON_FIELDS:
+            assert column in vm_export.EXPORT_FIELDS, (
+                'vm_export compares %r but does not fetch it' % column)
 
     def test_api_key_fetches_every_column_it_returns(self):
         """find_keys() asks for LIST_FIELDS explicitly rather than trusting
@@ -334,6 +377,106 @@ class TestCreateAndUpdatePathsAgree:
                 "catalog maps %r to an API field but does not accept it as an "
                 "option -- the mapping is dead code" % param)
 
+    def test_nas_volume_update_is_a_subset_of_create(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            nas_volume,
+        )
+        create = set(nas_volume.CREATE_PARAM_MAP)
+        update = set(nas_volume.UPDATE_FIELD_MAP)
+        assert update <= create
+        assert create - update == set(nas_volume.IDENTITY_PARAMS)
+
+    def test_nas_volume_mapped_parameters_are_all_real_options(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            nas_volume,
+        )
+        spec = _argument_spec_options(nas_volume)
+        for param in set(nas_volume.CREATE_PARAM_MAP) \
+                | set(nas_volume.UPDATE_FIELD_MAP):
+            assert param in spec, (
+                'nas_volume maps %r to an API field but does not accept it '
+                'as an option -- the mapping is dead code' % param)
+
+    def test_nas_volume_columns_and_sdk_keywords_are_kept_apart(self):
+        """The resize bug in one assertion.
+
+        `maxsize` is the column and `size_gb` is the SDK keyword; `tier` is
+        the option and `preferred_tier` is the column. Sending either of the
+        column names to update() raises TypeError, and sending either of the
+        keywords to the API silently discards it. One dict for both jobs is
+        what the two maps exist to prevent.
+        """
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            nas_volume,
+        )
+        assert nas_volume.UPDATE_FIELD_MAP['size_gb'] == 'maxsize'
+        assert nas_volume.UPDATE_KWARG_MAP['size_gb'] == 'size_gb'
+        assert nas_volume.UPDATE_FIELD_MAP['tier'] == 'preferred_tier'
+        assert nas_volume.UPDATE_KWARG_MAP['tier'] == 'tier'
+        assert set(nas_volume.UPDATE_FIELD_MAP) == set(
+            nas_volume.UPDATE_KWARG_MAP), (
+            'every mapped parameter needs both a column to read and a keyword '
+            'to write')
+
+    def test_nas_nfs_share_update_is_a_subset_of_create(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            nas_nfs_share,
+        )
+        create = set(nas_nfs_share.CREATE_PARAM_MAP)
+        update = set(nas_nfs_share.UPDATE_FIELD_MAP)
+        assert update <= create
+        assert create - update == set(nas_nfs_share.IDENTITY_PARAMS)
+
+    def test_nas_nfs_share_mapped_parameters_are_all_real_options(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            nas_nfs_share,
+        )
+        spec = _argument_spec_options(nas_nfs_share)
+        for param in set(nas_nfs_share.CREATE_PARAM_MAP) \
+                | set(nas_nfs_share.UPDATE_FIELD_MAP):
+            assert param in spec, (
+                'nas_nfs_share maps %r to an API field but does not accept it '
+                'as an option -- the mapping is dead code' % param)
+
+    def test_nas_nfs_share_async_is_read_from_the_column_not_the_option(self):
+        """The ninth instance of #75's class, caught before merge.
+
+        `async` is a Python keyword, so the option and the SDK keyword are
+        both `async_mode` -- but the COLUMN is `async`. The module used one
+        dict for both, so it asked a live share row for `async_mode`, got
+        None, and compared bool(None) with the parameter. Setting
+        async_mode=true meant changed=true and a PUT on every single run.
+        """
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            nas_nfs_share,
+        )
+        assert nas_nfs_share.UPDATE_FIELD_MAP['async_mode'] == 'async'
+        assert nas_nfs_share.UPDATE_KWARG_MAP['async_mode'] == 'async_mode'
+        assert nas_nfs_share.UPDATE_FIELD_MAP['insecure_ports'] == 'insecure'
+        assert nas_nfs_share.UPDATE_KWARG_MAP['insecure_ports'] == 'insecure'
+        assert set(nas_nfs_share.UPDATE_FIELD_MAP) == set(
+            nas_nfs_share.UPDATE_KWARG_MAP)
+
+    def test_vm_export_update_is_a_subset_of_create(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            vm_export,
+        )
+        create = set(vm_export.CREATE_PARAM_MAP)
+        update = set(vm_export.UPDATE_FIELD_MAP)
+        assert update <= create
+        assert create - update == set(vm_export.IDENTITY_PARAMS)
+
+    def test_vm_export_mapped_parameters_are_all_real_options(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            vm_export,
+        )
+        spec = _argument_spec_options(vm_export)
+        for param in set(vm_export.CREATE_PARAM_MAP) \
+                | set(vm_export.UPDATE_FIELD_MAP):
+            assert param in spec, (
+                'vm_export maps %r to an API field but does not accept it as '
+                'an option -- the mapping is dead code' % param)
+
     def test_nic_mapped_parameters_are_all_real_options(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import nic
         spec = _argument_spec_options(nic)
@@ -384,6 +527,20 @@ class TestNoKnownBadFieldNamesComeBack:
                           'the read side compared against nothing and the '
                           'group never converged',
         },
+        'nas_volume': {
+            'size_gb': 'the column is maxsize, and it holds BYTES',
+            'tier': 'issue #8 all over again on the volumes table -- the '
+                    'column is preferred_tier, and it is stored as a string',
+        },
+        'nas_nfs_share': {
+            'async_mode': 'the column is async; async_mode is the option and '
+                          'the SDK keyword, because async is a Python keyword',
+            'insecure_ports': 'the column is insecure; the option is renamed '
+                              'to avoid the connection option of that name',
+        },
+        # vm_export needs no renames: quiesced, create_current and max_exports
+        # are all real columns on a live volume_vm_exports row (26.1.8).
+        'vm_export': {},
         # api_key needs no renames on the write path either -- but its READ
         # path does: the API spells the last-login pair lastlogin_*, and that
         # mapping lives in module_utils/api_keys.py so the info module cannot
