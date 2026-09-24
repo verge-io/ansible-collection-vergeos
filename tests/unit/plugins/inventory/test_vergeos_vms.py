@@ -7,21 +7,10 @@ import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 
 
-@pytest.fixture(autouse=True)
-def mock_pyvergeos():
-    """Mock pyvergeos SDK for all tests"""
-    mock_exceptions = MagicMock()
-    mock_exceptions.NotFoundError = Exception
-    mock_exceptions.AuthenticationError = Exception
-    mock_exceptions.ValidationError = Exception
-    mock_exceptions.APIError = Exception
-    mock_exceptions.VergeConnectionError = Exception
-
-    with patch.dict('sys.modules', {
-        'pyvergeos': MagicMock(),
-        'pyvergeos.exceptions': mock_exceptions,
-    }):
-        yield
+# `mock_pyvergeos` now lives in tests/unit/conftest.py, which stubs the SDK
+# only when it is genuinely absent and gives the stub real exception
+# classes. The local copy replaced pyvergeos.exceptions with a MagicMock,
+# which made every NotFoundError un-raisable. See issue #66.
 
 
 @pytest.fixture
@@ -188,16 +177,25 @@ class TestFetchSite:
     """Tests for _fetch_site method"""
 
     @patch('ansible_collections.vergeio.vergeos.plugins.inventory.vergeos_vms.VergeClient')
-    def test_successful_fetch(self, mock_client_class, inventory_module):
+    def test_successful_fetch(self, mock_client_class, inventory_module, make_resource):
         """Test successful site fetch"""
         # Setup mock VM
-        mock_vm = MagicMock()
-        mock_vm.__iter__ = lambda self: iter({'$key': 1, 'name': 'test-vm', 'status': 'running'}.items())
-        mock_vm.get_tags.return_value = [{'tag_name': 'prod', 'tag_key': 1}]
+        mock_vm_state = {'$key': 1, 'name': 'test-vm', 'status': 'running'}
+        mock_vm = make_resource(mock_vm_state)
         mock_vm.nics.list.return_value = []
 
         mock_client = MagicMock()
         mock_client.vms.list.return_value = [mock_vm]
+
+        # The plugin does not call vm.get_tags(). It resolves tags in two
+        # passes: client.tags.list() for the id -> name map, then a raw
+        # 'tag_members' request for the memberships, matching
+        # member='vms/<$key>'. This test mocked get_tags() -- a method the
+        # plugin has never called on this path -- so _tags was always []
+        # and the assertion could not pass. Mock what is actually used.
+        mock_client.tags.list.return_value = [make_resource({'$key': 1, 'name': 'prod'})]
+        mock_client._request.return_value = [{'tag': 1, 'member': 'vms/1'}]
+
         mock_client_class.return_value = mock_client
 
         site_config = {

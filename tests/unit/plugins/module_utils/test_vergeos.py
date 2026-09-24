@@ -3,6 +3,7 @@
 
 """Unit tests for module_utils/vergeos.py"""
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -29,6 +30,7 @@ class TestGetVergeosClient:
             host='vergeos.example.com',
             username='admin',
             password='secret',
+            token=None,
             verify_ssl=True
         )
 
@@ -52,6 +54,7 @@ class TestGetVergeosClient:
             host='vergeos.example.com',
             username='admin',
             password='secret',
+            token=None,
             verify_ssl=True
         )
 
@@ -75,6 +78,7 @@ class TestGetVergeosClient:
             host='vergeos.example.com',
             username='admin',
             password='secret',
+            token=None,
             verify_ssl=True
         )
 
@@ -98,15 +102,21 @@ class TestGetVergeosClient:
             host='vergeos.example.com',
             username='admin',
             password='secret',
+            token=None,
             verify_ssl=False
         )
 
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', False)
     @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', False)
     def test_fails_when_sdk_not_installed(self):
         """Test that module fails when pyvergeos is not installed"""
         from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import get_vergeos_client
 
         mock_module = MagicMock()
+        # The real fail_json raises SystemExit. A bare MagicMock returns, so
+        # without this the function ran on past the guard and tried to build a
+        # client -- which is how this test came to make a live HTTPS request.
+        mock_module.fail_json.side_effect = SystemExit(1)
         mock_module.params = {
             'host': 'vergeos.example.com',
             'username': 'admin',
@@ -114,7 +124,8 @@ class TestGetVergeosClient:
             'insecure': False
         }
 
-        get_vergeos_client(mock_module)
+        with pytest.raises(SystemExit):
+            get_vergeos_client(mock_module)
 
         mock_module.fail_json.assert_called_once()
         assert 'pyvergeos' in mock_module.fail_json.call_args[1]['msg']
