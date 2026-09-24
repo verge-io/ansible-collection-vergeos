@@ -58,6 +58,7 @@ networks:
       dnslist: "8.8.8.8,8.8.4.4"
       dhcp_enabled: true
       running: true
+      status: "running"
 '''
 
 from ansible.module_utils.basic import AnsibleModule
@@ -103,7 +104,16 @@ def main():
     # is fixed on pyvergeos dev, where both forms return the full record, but
     # the list form is correct on every version the collection supports
     # (requirements.txt allows >= 1.0.1).
-    all_fields = ['all']
+    # 'all' expands server-side to the vnet's own columns only, which never
+    # includes a traversal -- so it drops 'running' and 'status', which
+    # pyvergeos requests as aliased joins in its DEFAULT field list
+    # (pyvergeos/resources/networks.py). Asking for them by bare name does
+    # not work either; they are not field names. Request the joins
+    # alongside 'all' so an _info module can still answer "is it up?".
+    # See ansible-collection-vergeos#25.
+    all_fields = ['all',
+                  'machine#status#running as running',
+                  'machine#status#status as status']
 
     try:
         if name:
