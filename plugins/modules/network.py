@@ -104,6 +104,30 @@ options:
       - DNS domain name handed to DHCP clients on this network.
     type: str
     version_added: "2.1.0"
+  interface_network:
+    description:
+      - >-
+        Name of the physical vnet (a switch) this network reaches the fabric
+        through. Maps to the API's C(interface_vnet), which stores the
+        target's key; give the name and the module resolves it.
+      - >-
+        Without an uplink a vnet is attached to nothing. A VLAN-tagged network
+        with no C(interface_network) is an isolated layer 2 that carries the
+        tag onto nothing, and the module will report success creating one.
+        C(layer2_type) and C(vlan_id) describe the tag; this describes what
+        the tag is carried on. Neither is useful without the other.
+      - Set to an empty string to detach the network from its uplink.
+    type: str
+    version_added: "2.1.0"
+  rate_limit:
+    description:
+      - Bandwidth cap for the network, in B(mbytes per second) - not bits, not bytes.
+      - >-
+        C(0) means explicitly uncapped and is applied like any other value.
+        Omitting the parameter leaves whatever is already configured alone.
+        The two are not the same thing.
+    type: int
+    version_added: "2.1.0"
   mtu:
     description:
       - MTU for the network.
@@ -140,7 +164,10 @@ EXAMPLES = r'''
       - "8.8.8.8"
       - "8.8.4.4"
 
-- name: Create a VLAN-tagged external network
+# layer2_type and vlan_id describe the TAG; interface_network describes what
+# the tag is carried on. Without an uplink this network is an isolated layer 2
+# that carries VLAN 100 onto nothing -- and the module still reports success.
+- name: Create a VLAN-tagged external network on the physical fabric
   vergeio.vergeos.network:
     host: "192.168.1.100"
     username: "admin"
@@ -150,8 +177,29 @@ EXAMPLES = r'''
     network_type: external
     layer2_type: vlan
     vlan_id: 100
+    interface_network: "ext1 Switch"
     network: "192.168.100.0/24"
     ip_address: "192.168.100.1"
+
+- name: Cap a network at 100 MB/s and move it to a different uplink
+  vergeio.vergeos.network:
+    host: "192.168.1.100"
+    username: "admin"
+    password: "password"
+    name: "vlan-100"
+    state: present
+    rate_limit: 100
+    interface_network: "ext2 Switch"
+
+- name: Remove the bandwidth cap and detach from the fabric
+  vergeio.vergeos.network:
+    host: "192.168.1.100"
+    username: "admin"
+    password: "password"
+    name: "vlan-100"
+    state: present
+    rate_limit: 0
+    interface_network: ""
 
 - name: Delete a network
   vergeio.vergeos.network:
@@ -240,6 +288,7 @@ CREATE_PARAM_MAP = {
     'domain': 'domain',
     'mtu': 'mtu',
     'on_power_loss': 'on_power_loss',
+    'rate_limit': 'rate_limit',
 }
 
 # Module parameter -> raw VergeOS API field.
@@ -263,13 +312,21 @@ UPDATE_FIELD_MAP = {
     'domain': 'domain',
     'mtu': 'mtu',
     'on_power_loss': 'on_power_loss',
+    'rate_limit': 'rate_limit',
 }
+
+# interface_network is handled outside the maps above because resolving it
+# needs the client: operators give a vnet NAME, the API stores that vnet's
+# key. See resolve_interface_vnet().
+UPLINK_PARAM = 'interface_network'
+UPLINK_API_FIELD = 'interface_vnet'
 
 
 # Fields the module must fetch in order to diff correctly. The SDK's default
 # field set omits some of these (dnslist in particular), and a field that was
 # never fetched reads as None, so the comparison never matches.
-COMPARISON_FIELDS = ['$key', 'name'] + sorted(set(UPDATE_FIELD_MAP.values()))
+COMPARISON_FIELDS = (['$key', 'name', UPLINK_API_FIELD]
+                     + sorted(set(UPDATE_FIELD_MAP.values())))
 
 
 def normalize_value(param, value):
@@ -280,7 +337,37 @@ def normalize_value(param, value):
     return value
 
 
-def build_network_data(module):
+def resolve_interface_vnet(module, client):
+    """Resolve the uplink parameter to what the API stores.
+
+    Returns one of:
+      None -- the parameter was not supplied; leave the uplink alone
+      ''   -- an empty string was supplied; detach from any uplink
+      int  -- the $key of the named vnet
+
+    Operators think in vnet names; the API stores the target's key. A vnet
+    reaches the physical fabric through this field, so a network created
+    without one is attached to nothing regardless of how correct every other
+    field looks (issue #60).
+    """
+    name = module.params.get(UPLINK_PARAM)
+    if name is None:
+        return None
+    if name == '':
+        return ''
+
+    try:
+        uplink = client.networks.get(name=name)
+    except NotFoundError:
+        module.fail_json(
+            msg="Uplink network '%s' not found. %s must name an existing "
+                "vnet -- typically a 'physical' one, which is what carries a "
+                "network onto the fabric." % (name, UPLINK_PARAM)
+        )
+    return dict(uplink).get('$key')
+
+
+def build_network_data(module, uplink_key=None):
     """Build SDK create() kwargs from module params"""
     network_data = {
         'name': module.params['name'],
@@ -290,12 +377,15 @@ def build_network_data(module):
         if module.params.get(param) is not None:
             network_data[sdk_arg] = module.params[param]
 
+    if uplink_key is not None:
+        network_data[UPLINK_API_FIELD] = uplink_key
+
     return network_data
 
 
 def create_network(module, client):
     """Create a new network using SDK"""
-    network_data = build_network_data(module)
+    network_data = build_network_data(module, resolve_interface_vnet(module, client))
 
     if module.check_mode:
         return True, network_data
@@ -316,6 +406,15 @@ def update_network(module, client, network):
         desired = normalize_value(param, module.params[param])
         if network_dict.get(api_field) != desired:
             update_data[api_field] = desired
+            changed = True
+
+    uplink_key = resolve_interface_vnet(module, client)
+    if uplink_key is not None:
+        # The stored value may come back as a string key; compare as strings
+        # so a converged uplink does not read as a change on every run.
+        current = network_dict.get(UPLINK_API_FIELD)
+        if str(current or '') != str(uplink_key or ''):
+            update_data[UPLINK_API_FIELD] = uplink_key
             changed = True
 
     if not changed:
@@ -356,6 +455,8 @@ def main():
         dns_servers=dict(type='list', elements='str'),
         domain=dict(type='str'),
         mtu=dict(type='int'),
+        interface_network=dict(type='str'),
+        rate_limit=dict(type='int'),
         on_power_loss=dict(type='str',
                            choices=['power_on', 'last_state', 'leave_off']),
     )
