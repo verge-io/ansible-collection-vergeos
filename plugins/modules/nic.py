@@ -171,6 +171,22 @@ def get_nic(client, vm, target_network):
         return None
 
 
+# Module parameter -> raw VergeOS API field, for the update path.
+#
+# update_nic() PUTs these keys verbatim, so every value must be a real field
+# on the machine_nics resource. The API accepts unknown fields with HTTP 200
+# and discards them, which is how #8, #10 and #18 all shipped unnoticed.
+# tests/live/verify-field-contract.yml asserts this against a live system and
+# tests/unit/plugins/modules/test_field_contracts.py asserts the shape of it
+# offline. See issue #75.
+UPDATE_FIELD_MAP = {
+    'network': 'vnet',
+    'enabled': 'enabled',
+    'nic_type': 'interface',
+    'mac_address': 'macaddress',
+}
+
+
 def normalize_mac(mac):
     """Fold a MAC to the form the VergeOS API stores: lowercase, colons.
 
@@ -221,19 +237,19 @@ def update_nic(module, client, nic, target_network):
     # Check if network needs to be updated (SDK may use 'vnet' or 'network')
     current_network = nic_dict.get('vnet') or nic_dict.get('network')
     if current_network != target_network_key:
-        update_data['vnet'] = target_network_key
+        update_data[UPDATE_FIELD_MAP['network']] = target_network_key
         changed = True
 
     # Check enabled
     if module.params.get('enabled') is not None:
         if nic_dict.get('enabled') != module.params['enabled']:
-            update_data['enabled'] = module.params['enabled']
+            update_data[UPDATE_FIELD_MAP['enabled']] = module.params['enabled']
             changed = True
 
     # Check interface type
     if module.params.get('nic_type') is not None:
         if nic_dict.get('interface') != module.params['nic_type']:
-            update_data['interface'] = module.params['nic_type']
+            update_data[UPDATE_FIELD_MAP['nic_type']] = module.params['nic_type']
             changed = True
 
     # Check MAC address (SDK uses 'mac_address' or 'macaddress').
@@ -244,7 +260,7 @@ def update_nic(module, client, nic, target_network):
                                     or nic_dict.get('macaddress'))
         desired_mac = normalize_mac(module.params['mac_address'])
         if current_mac != desired_mac:
-            update_data['macaddress'] = desired_mac
+            update_data[UPDATE_FIELD_MAP['mac_address']] = desired_mac
             changed = True
 
     if not changed:
