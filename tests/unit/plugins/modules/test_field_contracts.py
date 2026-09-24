@@ -76,7 +76,7 @@ def _argument_spec_options(mod):
 # what found #87 (machine_subtype, bios_type and network are not VM fields),
 # and it goes in once that is fixed.
 MAPPED_MODULES = ['network', 'nic', 'drive', 'user', 'catalog', 'api_key',
-                  'group']
+                  'group', 'vnet_rule']
 
 
 class TestDocumentationMatchesArgumentSpec:
@@ -115,6 +115,13 @@ class TestEveryDiffedFieldIsFetched:
             assert api_field in network.COMPARISON_FIELDS, (
                 "network diffs %r but never fetches it" % api_field)
         assert network.UPLINK_API_FIELD in network.COMPARISON_FIELDS
+
+    def test_vnet_rule(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vnet_rule
+        for api_field in vnet_rule.UPDATE_FIELD_MAP.values():
+            assert api_field in vnet_rule.COMPARISON_FIELDS, (
+                "vnet_rule diffs %r but never fetches it" % api_field)
+        assert vnet_rule.ORDER_API_FIELD in vnet_rule.COMPARISON_FIELDS
 
     def test_group(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import group
@@ -169,6 +176,51 @@ class TestCreateAndUpdatePathsAgree:
             assert param in spec, (
                 "network maps %r to an API field but does not accept it as an "
                 "option -- the mapping is dead code" % param)
+
+    def test_vnet_rule_update_is_a_subset_of_create(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vnet_rule
+        create = set(vnet_rule.CREATE_PARAM_MAP)
+        update = set(vnet_rule.UPDATE_FIELD_MAP)
+        assert update <= create
+        assert create - update == set(vnet_rule.IDENTITY_PARAMS)
+
+    def test_vnet_rule_mapped_parameters_are_all_real_options(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vnet_rule
+        spec = _argument_spec_options(vnet_rule)
+        for param in set(vnet_rule.CREATE_PARAM_MAP) | set(vnet_rule.UPDATE_FIELD_MAP):
+            assert param in spec, (
+                "vnet_rule maps %r to an API field but does not accept it as "
+                "an option -- the mapping is dead code" % param)
+
+    def test_vnet_rule_order_reaches_orderid_on_both_paths(self):
+        """The one asymmetry-shaped thing in this module that is NOT a bug.
+
+        The column is `orderid`. create() passes `order=` and lets the SDK
+        write body['orderid']; update() passes `orderid=` straight through,
+        because update is a raw kwargs passthrough. Both correct, by different
+        routes -- which is precisely the shape that invites someone to "fix"
+        one of them into a silent no-op. Both halves are pinned here.
+        """
+        import inspect
+        import re
+        from pyvergeos.resources.rules import NetworkRuleManager
+        from ansible_collections.vergeio.vergeos.plugins.modules import vnet_rule
+
+        assert vnet_rule.ORDER_API_FIELD == 'orderid'
+        assert 'order' not in vnet_rule.UPDATE_FIELD_MAP
+        assert 'order' not in vnet_rule.CREATE_PARAM_MAP
+
+        # create(): the SDK takes `order` and must still be translating it.
+        assert 'order' in inspect.signature(NetworkRuleManager.create).parameters
+        create_source = inspect.getsource(NetworkRuleManager.create)
+        assert 'body["orderid"] = order' in create_source, (
+            "pyvergeos no longer maps create(order=) to orderid; vnet_rule's "
+            "create path now writes a column that does not exist")
+
+        # update(): the module must send the raw column name itself.
+        module_source = open(vnet_rule.__file__).read()
+        assert re.search(r"changes\['orderid'\]", module_source), (
+            "vnet_rule's update path no longer sends orderid")
 
     def test_group_update_is_a_subset_of_create(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import group
@@ -272,6 +324,12 @@ class TestNoKnownBadFieldNamesComeBack:
         'user': {
             'full_name': 'the API field is displayname',
             'user_password': 'the API field is password',
+        },
+        'vnet_rule': {
+            'rule_action': "the API column is action; 'action' cannot be an "
+                           'Ansible option name without confusion',
+            'order': 'the API column is orderid -- and the two paths reach it '
+                     'differently, which is why it is not in the map at all',
         },
         'group': {
             'identifier': 'the API column is id -- there is no identifier '
