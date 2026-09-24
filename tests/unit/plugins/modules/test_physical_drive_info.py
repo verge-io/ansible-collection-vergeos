@@ -35,10 +35,20 @@ def captured_rows():
 
 
 def make_row(data):
+    """A mock SDK resource that dict() converts and that exposes .key.
+
+    MagicMock's auto-created keys() makes dict(mock) return {} -- see
+    create_mock_resource in conftest (issue #66). Wire the mapping protocol
+    the same way, and set .key from $key the way ResourceObject does.
+    """
     obj = MagicMock()
-    obj.keys.return_value = list(data.keys())
-    obj.__getitem__.side_effect = lambda k: data[k]
+    obj.keys.side_effect = lambda: list(data.keys())
+    obj.__getitem__.side_effect = data.__getitem__
     obj.__iter__.side_effect = lambda: iter(data)
+    for key, value in data.items():
+        setattr(obj, key, value)
+    if '$key' in data:
+        obj.key = data['$key']
     return obj
 
 
@@ -66,19 +76,31 @@ def base_params(**overrides):
     return params
 
 
-def make_client(rows=None):
+def make_client(rows=None, nodes=None):
     """Two drives from the captured fixture, one per node.
 
     The captured rows carry no node -- there is no node column -- so the join
     the module asks for is added here, which is exactly what the live API does
     when the projection names it.
+
+    ``nodes`` defaults to one entry per distinct node_name in ``rows``, so
+    resolve_one can turn a node name into a key the way the live module does.
     """
     if rows is None:
         captured = captured_rows()
         rows = [dict(captured[0], node_name='node1'),
                 dict(captured[1], node_name='node2')]
+    if nodes is None:
+        seen = []
+        nodes = []
+        for row in rows:
+            name = row.get('node_name')
+            if name and name not in seen:
+                seen.append(name)
+                nodes.append({'$key': len(seen), 'name': name})
     client = MagicMock()
     client.physical_drives.list.return_value = [make_row(r) for r in rows]
+    client.nodes.list.return_value = [make_row(n) for n in nodes]
     return client
 
 
@@ -139,24 +161,50 @@ class TestTheProjection:
 
 
 class TestTheNodeFilter:
-    def test_filtering_by_node_returns_that_node_s_drives(self):
+    def test_filtering_by_node_scopes_through_the_sdk(self):
+        """node: must construct PhysicalDriveManager(client, node_key=...),
+        not filter the unscoped fleet client-side. client.physical_drives is
+        unscoped only; the pyVergeOS#143 fix lives on the constructor."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            physical_drive_info as mod,
+        )
         client = make_client()
+        scoped = MagicMock()
+        scoped.list.return_value = [
+            make_row(dict(captured_rows()[1], node_name='node2')),
+        ]
 
-        module = make_module(base_params(node='node2'))
-        run_main(module, client)
+        with patch.object(mod, 'PhysicalDriveManager', return_value=scoped) as ctor:
+            module = make_module(base_params(node='node2'))
+            run_main(module, client)
+
+        ctor.assert_called_once()
+        assert ctor.call_args[0][0] is client
+        assert ctor.call_args[1]['node_key'] == 2
+        scoped.list.assert_called_once_with(fields=mod.DRIVE_FIELDS)
+        client.physical_drives.list.assert_not_called()
 
         drives = module.exit_json.call_args[1]['drives']
         assert len(drives) == 1
         assert drives[0]['node_name'] == 'node2'
 
     def test_a_node_filter_used_to_match_nothing_at_all(self):
-        """The bug, pinned. `location` is the slot ("nvme0"), so no node name
-        is ever a substring of it -- the old filter returned an empty list on
-        every system, and "0 drives, none failing" reads as good news."""
+        """The old bug, pinned. `location` is the slot ("nvme0"), so no node
+        name is ever a substring of it -- matching on location returned an
+        empty list on every system, and "0 drives, none failing" read as good
+        news. Scoping now goes through the SDK by node key."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            physical_drive_info as mod,
+        )
         client = make_client()
+        scoped = MagicMock()
+        scoped.list.return_value = [
+            make_row(dict(captured_rows()[0], node_name='node1')),
+        ]
 
-        module = make_module(base_params(node='node1'))
-        run_main(module, client)
+        with patch.object(mod, 'PhysicalDriveManager', return_value=scoped):
+            module = make_module(base_params(node='node1'))
+            run_main(module, client)
 
         drives = module.exit_json.call_args[1]['drives']
         assert drives, 'the node filter matched nothing'
@@ -164,15 +212,17 @@ class TestTheNodeFilter:
             'this test is only meaningful while location does NOT contain '
             'the node name')
 
-    def test_an_unknown_node_warns_instead_of_reporting_silence(self):
+    def test_an_unknown_node_fails_instead_of_reporting_silence(self):
+        """A typo must not read as "0 drives, none failing"."""
         client = make_client()
-
         module = make_module(base_params(node='node9'))
         run_main(module, client)
 
-        assert module.exit_json.call_args[1]['drives'] == []
-        module.warn.assert_called_once()
-        assert 'node9' in module.warn.call_args[0][0]
+        module.fail_json.assert_called_once()
+        msg = module.fail_json.call_args[1]['msg']
+        assert 'node9' in msg
+        assert 'Unexpected error' not in msg
+        client.physical_drives.list.assert_not_called()
 
     def test_no_node_filter_reports_every_drive(self):
         client = make_client()
@@ -181,6 +231,7 @@ class TestTheNodeFilter:
         run_main(module, client)
 
         assert len(module.exit_json.call_args[1]['drives']) == 2
+        client.physical_drives.list.assert_called_once()
 
 
 class TestSeverityFloor:

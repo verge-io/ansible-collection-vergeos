@@ -147,20 +147,23 @@
           matched nothing on every system -- and "0 drives, none failing"
           reads as good news.
 
-    - name: "9. An unknown node returns nothing, and says so"
+    - name: "9. An unknown node fails instead of reporting silence"
       vergeio.vergeos.physical_drive_info:
         node: zz-no-such-node
       register: ghost
       changed_when: false
+      ignore_errors: true
 
-    - name: "Verify: silence is reported, not implied"
+    - name: "Verify: a typo fails loudly rather than reading as healthy"
       ansible.builtin.assert:
         that:
-          - ghost.drives | length == 0
-          - ghost.warnings | default([]) | length > 0
+          - ghost is failed
+          - "'zz-no-such-node' in ghost.msg"
+          - "'Unexpected error' not in ghost.msg"
+          - ghost.drives is not defined
         fail_msg: >-
-          an unknown node produced an empty report with no warning, which is
-          indistinguishable from a healthy cluster. Got {{ ghost }}
+          an unknown node must fail (so a typo cannot read as "0 drives,
+          none failing"). Got {{ ghost }}
 
     - name: "10. A severity floor never hides worse news"
       vergeio.vergeos.physical_drive_info:
@@ -228,6 +231,6 @@
           there is still no node column, so the join is still needed -> the
           join resolves real node names -> the module sees every drive and
           names its node -> the node filter selects instead of returning
-          nothing -> an unknown node warns -> the severity floor matches the
+          nothing -> an unknown node fails -> the severity floor matches the
           counts -> the role agrees with the module -> promoting a flag
           re-triages. Nothing was created, so there is nothing to clean up.
