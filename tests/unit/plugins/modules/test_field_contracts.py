@@ -75,7 +75,8 @@ def _argument_spec_options(mod):
 # is only as good as its coverage. 'vm' is deliberately ABSENT -- adding it is
 # what found #87 (machine_subtype, bios_type and network are not VM fields),
 # and it goes in once that is fixed.
-MAPPED_MODULES = ['network', 'nic', 'drive', 'user', 'catalog', 'api_key']
+MAPPED_MODULES = ['network', 'nic', 'drive', 'user', 'catalog', 'api_key',
+                  'group']
 
 
 class TestDocumentationMatchesArgumentSpec:
@@ -114,6 +115,12 @@ class TestEveryDiffedFieldIsFetched:
             assert api_field in network.COMPARISON_FIELDS, (
                 "network diffs %r but never fetches it" % api_field)
         assert network.UPLINK_API_FIELD in network.COMPARISON_FIELDS
+
+    def test_group(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import group
+        for api_field in group.UPDATE_FIELD_MAP.values():
+            assert api_field in group.COMPARISON_FIELDS, (
+                "group diffs %r but never fetches it" % api_field)
 
     def test_catalog(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import catalog
@@ -162,6 +169,35 @@ class TestCreateAndUpdatePathsAgree:
             assert param in spec, (
                 "network maps %r to an API field but does not accept it as an "
                 "option -- the mapping is dead code" % param)
+
+    def test_group_update_is_a_subset_of_create(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import group
+        create = set(group.CREATE_PARAM_MAP)
+        update = set(group.UPDATE_FIELD_MAP)
+        assert update <= create
+        assert create - update == set(group.IDENTITY_PARAMS)
+
+    def test_group_mapped_parameters_are_all_real_options(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import group
+        spec = _argument_spec_options(group)
+        for param in set(group.CREATE_PARAM_MAP) | set(group.UPDATE_FIELD_MAP):
+            assert param in spec, (
+                "group maps %r to an API field but does not accept it as an "
+                "option -- the mapping is dead code" % param)
+
+    def test_group_identifier_is_not_compared_under_its_parameter_name(self):
+        """The sixth recurrence, caught before merge.
+
+        There is no `identifier` column on a group; the value is stored in
+        `id`. The SDK aliases the keyword on WRITE, so setting it works and
+        the value lands -- which is what made it invisible. Reading is where
+        it broke: dict(row).get('identifier') is always None, so the group
+        reported changed=True on every run, forever.
+        """
+        from ansible_collections.vergeio.vergeos.plugins.modules import group
+        assert group.UPDATE_FIELD_MAP['identifier'] == 'id'
+        assert 'identifier' not in group.COMPARISON_FIELDS
+        assert 'id' in group.COMPARISON_FIELDS
 
     def test_catalog_update_is_a_subset_of_create(self):
         """Unlike network, catalog's two paths are deliberately different:
@@ -236,6 +272,12 @@ class TestNoKnownBadFieldNamesComeBack:
         'user': {
             'full_name': 'the API field is displayname',
             'user_password': 'the API field is password',
+        },
+        'group': {
+            'identifier': 'the API column is id -- there is no identifier '
+                          'column, and the SDK aliases it only on WRITE, so '
+                          'the read side compared against nothing and the '
+                          'group never converged',
         },
         # api_key needs no renames on the write path either -- but its READ
         # path does: the API spells the last-login pair lastlogin_*, and that
