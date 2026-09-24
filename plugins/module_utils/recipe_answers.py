@@ -99,7 +99,7 @@ def describe_options(name, question, options):
     if opts is None:
         return ""
     if not opts:
-        return (" — NO valid options exist on this system (table %r%s); "
+        return (", NO valid options exist on this system (table %r%s); "
                 "create one first"
                 % (question.get("table") or "?",
                    ", filter " + repr(question["filter"])
@@ -107,7 +107,7 @@ def describe_options(name, question, options):
     shown = ", ".join(
         "%s=%s" % (o.get("$key"), o.get("$display") or o.get("name") or o.get("$key"))
         for o in opts[:8])
-    return " — valid: %s%s" % (shown, " ..." if len(opts) > 8 else "")
+    return ", valid: %s%s" % (shown, " ..." if len(opts) > 8 else "")
 
 
 def _declared(bound):
@@ -335,7 +335,7 @@ def resolve_answers(questions, answers, vnets=None, options=None,
             # key 3, a different network entirely.
             if vnet_seen.get(value, 0) > 1:
                 errors.append(
-                    "network name %r is ambiguous — %d networks share it; "
+                    "network name %r is ambiguous, %d networks share it; "
                     "give the vnet key instead (answer %r)"
                     % (value, vnet_seen[value], name))
                 continue

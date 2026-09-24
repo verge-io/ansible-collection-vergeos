@@ -1,53 +1,102 @@
 ---
-# Example playbook: deploy a bootable VM from a recipe using the
-# vm_from_recipe role.
+# Deploy a bootable VM from a recipe, using the vm_from_recipe role.
 #
-# Unlike examples/deploy_from_recipe.yml, which calls the modules directly and
-# returns as soon as the deploy is accepted, this waits for the OS image to
-# finish importing and then proves the guest actually boots.
+# examples/deploy_from_recipe.yml calls the modules directly and returns the
+# moment the platform accepts the deploy. That is fine when you just want to
+# fire it off, but the deploy is asynchronous: the VM row appears while its
+# OS image is still downloading, so what you get back cannot boot yet.
 #
-#   ansible-playbook examples/vm_from_recipe_role.yml           # deploy
+# This role is for when you need the next step in your playbook to be able to
+# rely on the VM. It waits for the image import to finish, checks that what
+# the recipe built is actually complete, powers the VM on and then proves the
+# guest booted by watching for guest disk writes.
+#
 #   ansible-playbook examples/vm_from_recipe_role.yml --check   # preflight
+#   ansible-playbook examples/vm_from_recipe_role.yml           # build it
 #
+# Budget several minutes. The first deploy of a given distro also pulls that
+# distro's cloud image over the network, which is usually the slow part.
 - name: Deploy a bootable VergeOS VM from a recipe
   hosts: localhost
   gather_facts: false
 
+  vars:
+    recipe_name: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+    vm_name: "web-01"
+
+    # The network the guest lands on, by name. Answer it deliberately. The
+    # recipe's own default builds a new internal network, which leaves you
+    # with a NIC attached to nothing.
+    recipe_network: "External"
+
+    guest_user: "ops"
+    guest_password: "{{ vault_guest_password | default('change-me') }}"
+
+  pre_tasks:
+    # Storage tier numbering is per system, so it gets discovered rather than
+    # written in. Systems with a single tier are common, and a playbook that
+    # hardcodes tier 4 fails on all of them. resolve_options returns the
+    # tiers that are genuinely valid here.
+    #
+    # Pass storage_tier on the command line to override the choice.
+    - name: Ask the recipe which storage tiers this system has
+      vergeio.vergeos.vm_recipe_info:
+        name: "{{ recipe_name }}"
+        questions: true
+        resolve_options: true
+      register: recipe
+
+    - name: Choose a storage tier that exists on this system
+      ansible.builtin.set_fact:
+        storage_tier: >-
+          {{ storage_tier
+             | default(recipe.options.SELECT_OS_TIER
+                       | map(attribute='$key') | first) }}
+
   roles:
     - role: vergeio.vergeos.vm_from_recipe
       vars:
-        # Connection defaults to VERGEOS_HOST / _USERNAME / _PASSWORD /
-        # _INSECURE, so it is left out here.
-        vm_from_recipe_name: "web-01"
-        vm_from_recipe_recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+        # Connection defaults to VERGEOS_HOST, VERGEOS_USERNAME,
+        # VERGEOS_PASSWORD and VERGEOS_INSECURE, so it is left out here.
+        vm_from_recipe_name: "{{ vm_name }}"
+        vm_from_recipe_recipe: "{{ recipe_name }}"
 
         vm_from_recipe_answers:
-          HOSTNAME: "web-01"
-          USER: "ops"
-          # Keep real credentials in a vault, not here.
-          PASSWORD: "{{ vault_guest_password | default('change-me') }}"
+          HOSTNAME: "{{ vm_name }}"
+          USER: "{{ guest_user }}"
+          PASSWORD: "{{ guest_password }}"
           YB_CPU_CORES: 2
           YB_RAM: 4096                   # MB
-          YB_DRIVE_OS_SIZE: 53687091200  # BYTES, not GB
+          YB_DRIVE_OS_SIZE: 53687091200  # BYTES, not GB. This is 50 GB.
           YB_IP_ADDR_TYPE: dhcp
-          # Answer this explicitly. Its default creates a brand-new internal
-          # network, and a VM whose NIC is attached to nothing passes every
-          # check except the role's NIC assertion.
-          YB_NIC_ETH0: "External"
-          # Optional with an empty default, and an empty storage tier makes the
-          # recipe's own OS-drive step fail partway through the deploy.
-          SELECT_OS_TIER: 4
+          YB_NIC_ETH0: "{{ recipe_network }}"
+          SELECT_OS_TIER: "{{ storage_tier }}"
 
-        # Make an unanswered question with an empty default fatal rather than
-        # a reported hint.
-        vm_from_recipe_fail_on_hints: true
+        # About vm_from_recipe_fail_on_hints, which is left off here.
+        #
+        # A hint is an unanswered question whose default is empty. Turning
+        # this on makes any hint fatal. That sounds like the safe choice and
+        # it is genuinely useful in CI, but be aware of what it means against
+        # the stock recipes: they carry several questions that are optional,
+        # have empty defaults and are perfectly fine left empty, such as
+        # SSH_KEY, SELECT_CREATE_UEFI, YB_CLUSTER, and the gateway and
+        # nameserver questions when you are using DHCP.
+        #
+        # So switching it on without also answering every one of those turns
+        # a working deploy into a failing one. Run the playbook once, read
+        # the hints the deploy reports, answer the ones that genuinely matter
+        # to you, and only then turn this on.
+        vm_from_recipe_fail_on_hints: false
 
-        # Power on and prove the guest boots. Both cost time, so both are
-        # opt-in; see the role README for the caveat on power_on.
+        # Both of these cost time, so both are opt in. power_on is also worth
+        # reading about in the role README before you use it on the
+        # convergence path, because it goes through the vm module and will
+        # re-enable a VM somebody deliberately disabled.
         vm_from_recipe_power_on: true
         vm_from_recipe_verify_boot: true
 
-        # A first deploy pulls the cloud image over the guest network, so it is
-        # slow. Raise this if the mirror is slow rather than stuck -- the role
-        # reports the platform's own download percentage when it gives up.
+        # A first deploy pulls the cloud image over the guest network, so it
+        # is slow. Raise this when the mirror is slow rather than stuck. The
+        # role reports the platform's own download percentage when it gives
+        # up, so you can tell the difference.
         vm_from_recipe_wait_timeout: 1800

@@ -114,11 +114,33 @@ author:
 '''
 
 EXAMPLES = r'''
+# Connection options are omitted throughout. They fall back to VERGEOS_HOST,
+# VERGEOS_USERNAME, VERGEOS_PASSWORD and VERGEOS_INSECURE.
+
+# Recipe question names are not guessable, and the valid values for some of
+# them depend on the system you are pointed at, so ask before you answer.
+# resolve_options turns table backed questions into the values that are
+# genuinely valid here.
+- name: Find out what a recipe wants to know
+  vergeio.vergeos.vm_recipe_info:
+    name: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+    questions: true
+    resolve_options: true
+  register: recipe
+
+# Two answers are worth singling out.
+#
+# YB_NIC_ETH0 is answered explicitly because the recipe's own default builds
+# a brand new internal network, which leaves the VM with a NIC attached to
+# nothing while every other check still passes.
+#
+# SELECT_OS_TIER is optional with an empty default, and an empty value fails
+# partway through building the VM, so it has to be answered. Do not write a
+# tier number in by hand: tier numbering is per system and plenty of systems
+# have only tier 1, so a playbook with tier 4 in it fails everywhere else
+# with "is not a valid choice". Take the tier from the lookup above.
 - name: Deploy a VM from a stock recipe
   vergeio.vergeos.vm_recipe_deploy:
-    host: "vergeos.example.com"
-    username: "admin"
-    password: "secret"
     name: "web-01"
     recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
     answers:
@@ -126,38 +148,66 @@ EXAMPLES = r'''
       USER: "ops"
       PASSWORD: "{{ vault_guest_password }}"
       YB_CPU_CORES: 2
-      YB_RAM: 4096
+      YB_RAM: 4096                   # MB
+      YB_DRIVE_OS_SIZE: 53687091200  # BYTES, not GB. This is 50 GB.
+      YB_IP_ADDR_TYPE: dhcp
       YB_NIC_ETH0: "External"
-      SELECT_OS_TIER: 4
+      SELECT_OS_TIER: >-
+        {{ recipe.options.SELECT_OS_TIER | map(attribute='$key') | first }}
   register: deployed
 
 - name: Show what was built
   ansible.builtin.debug:
     msg: "VM key {{ deployed.vm_key }}"
 
-- name: Preflight only - validate answers and simulate, create nothing
+# Check mode validates the answer set and then runs the platform's own
+# simulation of the whole deploy, so it is a real preflight rather than a
+# guess. Note that HOSTNAME, USER and PASSWORD are required by this recipe,
+# and leaving any of them out fails validation before the simulation is
+# reached at all.
+- name: Preflight only, validate answers and simulate, create nothing
   vergeio.vergeos.vm_recipe_deploy:
-    host: "vergeos.example.com"
-    username: "admin"
-    password: "secret"
     name: "web-02"
     recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
     answers:
       HOSTNAME: "web-02"
-      SELECT_OS_TIER: 4
+      USER: "ops"
+      PASSWORD: "{{ vault_guest_password }}"
+      YB_NIC_ETH0: "External"
+      SELECT_OS_TIER: >-
+        {{ recipe.options.SELECT_OS_TIER | map(attribute='$key') | first }}
   check_mode: true
   register: preflight
 
+# fail_on_hints turns every unanswered question with an empty default into an
+# error. It is a useful gate in CI, but it asks more of you than it looks:
+# the stock recipes carry several questions that are optional, have empty
+# defaults and are perfectly fine left alone, so you have to answer all of
+# them before this will let a deploy through.
+#
+# One of them has a sharp edge. YB_NIC_ETH0_INTERNAL_GATEWAY is a network
+# type question, so an empty string is rejected with "network '' not found"
+# and it has to name a real network, even when you are not creating an
+# internal network at all. Answering the question is what satisfies the
+# check, and the value goes unused on this path.
 - name: Refuse to proceed if any question was left with an empty default
   vergeio.vergeos.vm_recipe_deploy:
-    host: "vergeos.example.com"
-    username: "admin"
-    password: "secret"
     name: "web-03"
     recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
     answers:
       HOSTNAME: "web-03"
-      SELECT_OS_TIER: 4
+      USER: "ops"
+      PASSWORD: "{{ vault_guest_password }}"
+      YB_IP_ADDR_TYPE: dhcp
+      YB_NIC_ETH0: "External"
+      SELECT_OS_TIER: >-
+        {{ recipe.options.SELECT_OS_TIER | map(attribute='$key') | first }}
+      SSH_KEY: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+      SELECT_CREATE_UEFI: false
+      YB_CLUSTER: 1
+      YB_NIC_ETH0_GW: ""
+      YB_NIC_ETH0_NS: ""
+      YB_NIC_ETH0_INTERNAL_GATEWAY: "External"
     fail_on_hints: true
 '''
 
