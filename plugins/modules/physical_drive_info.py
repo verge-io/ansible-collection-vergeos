@@ -22,6 +22,8 @@ options:
   node:
     description:
       - Report only drives on this node. Matched exactly by node name.
+      - Resolved to a node key and scoped through the SDK (pyVergeOS#143);
+        an unknown name fails rather than returning an empty (and silent) list.
     type: str
   severity:
     description:
@@ -176,6 +178,7 @@ counts:
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     get_vergeos_client,
+    resolve_one,
     sdk_error_handler,
     vergeos_argument_spec,
     HAS_PYVERGEOS,
@@ -193,6 +196,7 @@ if HAS_PYVERGEOS:
         APIError,
         VergeConnectionError,
     )
+    from pyvergeos.resources.physical_drives import PhysicalDriveManager
 
 # Ordered least to most urgent, so `severity:` can mean "this and above".
 LADDER = ('ok', 'info', 'warning', 'critical')
@@ -206,9 +210,11 @@ LADDER = ('ok', 'info', 'warning', 'critical')
 # system both drives came back with location "nvme0" and path "/dev/nvme0n1";
 # the serial and the node are the only things that tell them apart.
 #
-# The SDK's own node scoping does not work either: PhysicalDriveManager builds
-# `filter="node eq <key>"`, and that column does not exist, so it returns an
-# empty list rather than an error. Reported as pyVergeOS#143.
+# Node scoping itself goes through the SDK: PhysicalDriveManager(client,
+# node_key=...) walks nodes.machine -> machine_drives -> parent_drive (the
+# pyVergeOS#143 fix). `client.physical_drives` is the unscoped manager only,
+# so a node filter constructs a scoped manager rather than filtering the
+# fleet client-side.
 NODE_FIELD = 'parent_drive#machine#name as node_name'
 
 DRIVE_FIELDS = [
@@ -253,28 +259,26 @@ def main():
     client = get_vergeos_client(module)
 
     try:
+        if params.get('node'):
+            # Resolve the name to a node key, then ask the SDK for that node's
+            # drives. client.physical_drives is always unscoped; scoping is a
+            # PhysicalDriveManager(client, node_key=...) construction (the
+            # pyVergeOS#143 fix). resolve_one fails loudly on an unknown name
+            # -- "0 drives, none failing" must not be how a typo reads.
+            node = resolve_one(
+                module, client.nodes, params['node'], 'node',
+                fields=['$key', 'name'],
+            )
+            drives = PhysicalDriveManager(
+                client, node_key=int(node.key),
+            ).list(fields=DRIVE_FIELDS)
+        else:
+            drives = client.physical_drives.list(fields=DRIVE_FIELDS)
+
         rows = [classify(dict(d),
                          critical_flags=params.get('critical_flags'),
                          warning_flags=params.get('warning_flags'))
-                for d in client.physical_drives.list(fields=DRIVE_FIELDS)]
-
-        if params.get('node'):
-            # Matched on the node name the join supplies, exactly.
-            #
-            # The previous version matched `node in location` -- but location
-            # is the device slot ("nvme0"), not the node, so no node name was
-            # ever a substring of it and `node:` returned an empty list on
-            # every system. A health check that silently reports no drives is
-            # worse than one that errors: "0 drives, none failing" reads as
-            # good news.
-            wanted = params['node']
-            rows = [r for r in rows if str(r.get('node_name') or '') == wanted]
-            if not rows:
-                module.warn(
-                    "no drives matched node '%s'. Known nodes: %s"
-                    % (wanted, sorted({str(dict(d).get('node_name'))
-                                       for d in client.physical_drives.list(
-                                           fields=['$key', NODE_FIELD])})))
+                for d in drives]
 
         module.exit_json(
             changed=False,
