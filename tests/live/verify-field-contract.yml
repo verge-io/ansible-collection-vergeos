@@ -314,3 +314,148 @@
         <<: *nic_auth
         name: "{{ net }}"
         state: absent
+
+
+# ── vm ───────────────────────────────────────────────────────────────────────
+#
+# The last module to join the guard, and the one that needed #87 fixed first:
+# machine_subtype, bios_type and network were not columns on a VM at all. The
+# first two properties matter more here than anywhere else, because a VM has
+# 74 columns and three of the options were landing in none of them.
+- name: "Field contract -- vm"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vm_n: zz-contract-vm
+    # MUST match vm.UPDATE_FIELD_MAP.values(). snapshot_profile is present:
+    # it is a real column, just not one the default projection returns.
+    vm_api_fields:
+      - description
+      - enabled
+      - os_family
+      - cpu_cores
+      - ram
+      - machine_type
+      - uefi
+      - boot_order
+      - snapshot_profile
+    api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    auth: &vm_auth
+      host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+      username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true, true) }}"
+
+  tasks:
+    - name: Clean start
+      vergeio.vergeos.vm:
+        <<: *vm_auth
+        name: "{{ vm_n }}"
+        state: absent
+
+    - name: Create a VM exercising every mapped parameter
+      vergeio.vergeos.vm:
+        <<: *vm_auth
+        name: "{{ vm_n }}"
+        state: present
+        description: field-contract scratch (zz- disposable)
+        enabled: true
+        os_family: linux
+        cpu_cores: 2
+        ram: 2048
+        machine_type: q35
+        bios_type: uefi
+        boot_order: cdn
+      register: made
+
+    # Read over plain REST with the full column set. Going through vm_info
+    # would prove nothing about which columns exist -- it would only prove the
+    # module and the read agree with each other.
+    - name: Read every column back
+      ansible.builtin.uri:
+        url: "{{ api_base }}/vms?fields=all"
+        url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+        url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+      register: vm_rows
+      changed_when: false
+
+    - name: Note the row
+      ansible.builtin.set_fact:
+        vm_row: "{{ vm_rows.json | selectattr('name', 'equalto', vm_n)
+                    | first }}"
+
+    - name: "PROPERTY 1 -- every API field the module sends exists on the VM"
+      ansible.builtin.assert:
+        that: item in vm_row
+        fail_msg: >-
+          The vm module sends '{{ item }}', which is not a column on a VM.
+          The API accepts unknown fields with HTTP 200 and discards them --
+          that is issue #87, and this is the assertion that catches it.
+        quiet: true
+      loop: "{{ vm_api_fields }}"
+
+    - name: "PROPERTY 1b -- the three names from #87 are NOT sent"
+      ansible.builtin.assert:
+        that:
+          - "'machine_subtype' not in vm_row"
+          - "'bios_type' not in vm_row"
+        fail_msg: >-
+          A VM now has a machine_subtype or bios_type column, so #87's
+          resolution needs revisiting: {{ vm_row.keys() | list | sort }}
+
+    - name: "PROPERTY 2 -- every value round-trips to what was asked for"
+      ansible.builtin.assert:
+        that:
+          - vm_row.description == 'field-contract scratch (zz- disposable)'
+          - vm_row.enabled | bool
+          - vm_row.os_family == 'linux'
+          - vm_row.cpu_cores | int == 2
+          - vm_row.ram | int == 2048
+          # 'q35' is stored expanded, which machine_type_matches() knows
+          - vm_row.machine_type is match('^pc-q35-')
+          # bios_type: uefi is the boolean uefi -- the whole of #87's
+          # silent-misconfiguration half
+          - vm_row.uefi | bool
+          - vm_row.boot_order == 'cdn'
+        fail_msg: "a value did not persist: {{ vm_row }}"
+
+    - name: Re-apply the identical definition
+      vergeio.vergeos.vm:
+        <<: *vm_auth
+        name: "{{ vm_n }}"
+        state: present
+        description: field-contract scratch (zz- disposable)
+        enabled: true
+        os_family: linux
+        cpu_cores: 2
+        ram: 2048
+        machine_type: q35
+        bios_type: uefi
+        boot_order: cdn
+      register: again
+
+    - name: "PROPERTY 3 -- a second apply reports no change"
+      ansible.builtin.assert:
+        that:
+          - made is changed
+          - again is not changed
+        fail_msg: >-
+          The VM did not converge. Before #87 this reported changed=true
+          forever, because three of the parameters compared against columns
+          that do not exist. made={{ made.changed }} again={{ again.changed }}
+
+    - name: RESULT
+      ansible.builtin.debug:
+        msg: >-
+          vm field contract PASSED: {{ vm_api_fields | length }} API fields
+          all exist, all round-trip, and a second apply is a no-op
+          (bios_type -> uefi, boot_order a string, machine_type expanded)
+
+    - name: Teardown
+      vergeio.vergeos.vm:
+        <<: *vm_auth
+        name: "{{ vm_n }}"
+        state: absent

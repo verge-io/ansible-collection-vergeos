@@ -64,6 +64,7 @@ precisely because nothing read that table.
 | Ladder | Covers |
 |---|---|
 | `verify-field-contract.yml` | the compare-and-map contract for `network`, `nic`, `drive`, `user` (#75) |
+| `verify-vm-clone.yml` | `vm_clone` — clone from a snapshot, idempotent on the clone name (#42) |
 | `verify-snapshot-profile.yml` | `snapshot_profile` — profiles and their periods (#39) |
 | `verify-protect.yml` | the `protect` role: tag a VM, get it enrolled (#39) |
 | `verify-vnet-rule.yml` | `vnet_rule` / `vnet_apply` — firewall rules and the explicit apply (#44, #19) |
@@ -105,9 +106,8 @@ and `.ansible-lint` now has no `exclude_paths` at all.
 `vergeio.vergeos.*` reference in the repository, against an allowlist that is
 now empty.
 
-The remaining ladders from the port (`verify-vm-clone`, `verify-vm-export`,
-`verify-nas-modules`, `verify-snapshot-profile` and others) land with their
-modules — see the tracking issue #57.
+The remaining ladders from the port (`verify-vm-export`, `verify-nas-modules`
+and others) land with their modules — see the tracking issue #57.
 
 ## Adding one
 
