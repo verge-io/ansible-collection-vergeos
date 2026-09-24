@@ -64,6 +64,22 @@ def test_role_floor_matches_the_collection_floor(role):
 
 
 @pytest.mark.parametrize('role', _roles(), ids=_ROLE_IDS)
+def test_role_has_a_readme(role):
+    """Five of the six roles shipped with one and the sixth did not, which is
+    the kind of gap nothing notices until someone goes looking for the docs.
+
+    argument_specs.yml says what the knobs ARE. A README is where the reason
+    for the defaults lives -- and for drive_health the reasoning (why vSAN IO
+    errors outrank SMART, why a rebuilding drive is reported separately) is
+    the part that makes the output actionable.
+    """
+    path = os.path.join(role, 'README.md')
+    name = os.path.basename(role)
+    assert os.path.exists(path), '%s has no README.md' % name
+    assert os.path.getsize(path) > 200, '%s/README.md is a stub' % name
+
+
+@pytest.mark.parametrize('role', _roles(), ids=_ROLE_IDS)
 def test_role_documents_its_arguments(role):
     """A role with no argument_specs accepts anything and validates nothing,
     including a misspelled variable name, which then silently takes its

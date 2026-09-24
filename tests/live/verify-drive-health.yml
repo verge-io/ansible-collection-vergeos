@@ -1,0 +1,233 @@
+---
+# Live ladder for physical_drive_info and the drive_health role.
+#
+#   set -a; . ~/.config/vergeos/env; set +a
+#   ansible-playbook verify-drive-health.yml
+#
+# READ-ONLY. This ladder creates nothing and touches no drive, so it has no
+# teardown and cannot leave anything behind. That is unusual here and worth
+# saying: the module it verifies is read-only by design, because pulling a
+# drive is the one action in this collection that cannot be undone.
+#
+# What it cannot do, and why the gaps are stated rather than papered over:
+#
+#   - It cannot make a drive fail. Every drive on a healthy system is `ok`, so
+#     the severity LADDER above `ok` is exercised by unit tests against
+#     captured rows, not here. What IS proved here is the part unit tests
+#     cannot reach: that every flag the triage reads is a real column on a
+#     live row, so a failing drive would actually be seen.
+#   - It cannot prove the reasons strings are right for a failing drive, for
+#     the same reason.
+- name: Drive health live ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    api: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    # Every flag the triage reads. Kept in step with the code by
+    # tests/unit/plugins/modules/test_physical_drive_info.py.
+    triage_flags:
+      - realloc_sectors_warn
+      - current_pending_sector_warn
+      - offline_uncorrectable_warn
+      - wear_level_warn
+      - temp_warn
+      - hours_warn
+    # The vSAN counters that outrank every SMART flag.
+    vsan_fields:
+      - vsan_read_errors
+      - vsan_write_errors
+      - vsan_repairing
+      - vsan_last_error
+
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+      return_content: true
+
+  tasks:
+    # --- Property 1: every field the triage reads is a real column ---------
+    - name: "1. Read the drive rows back over plain REST"
+      ansible.builtin.uri:
+        url: "{{ api }}/machine_drive_phys?fields=all"
+      register: raw
+      changed_when: false
+
+    - name: "2. Every triage flag exists on a live drive row"
+      vars:
+        columns: "{{ raw.json | first | dict2items | map(attribute='key')
+                     | list }}"
+      ansible.builtin.assert:
+        that:
+          - raw.json | length > 0
+          - triage_flags | difference(columns) | length == 0
+          - vsan_fields | difference(columns) | length == 0
+        fail_msg: >-
+          these are not columns on a physical drive:
+          {{ (triage_flags + vsan_fields) | difference(columns) }}.
+          A flag that does not exist reads as None for every drive, so every
+          drive passes -- which in THIS module means a failing drive reported
+          as healthy.
+
+    - name: "3. There is still no node column, so the join is still needed"
+      vars:
+        columns: "{{ raw.json | first | dict2items | map(attribute='key')
+                     | list }}"
+      ansible.builtin.assert:
+        that: "'node' not in columns"
+        fail_msg: >-
+          a `node` column has appeared on machine_drive_phys. The module joins
+          through parent_drive#machine#name because there was none; revisit
+          that, and pyVergeOS#143 with it.
+
+    - name: "4. The node join resolves to real node names"
+      ansible.builtin.uri:
+        url: "{{ api }}/machine_drive_phys?fields=$key,serial,location,parent_drive%23machine%23name%20as%20node_name"
+      register: joined
+      changed_when: false
+
+    - name: "5. ...and nodes, unlike locations, tell drives apart"
+      vars:
+        nodes: "{{ joined.json | map(attribute='node_name') | list }}"
+        locations: "{{ joined.json | map(attribute='location') | list }}"
+      ansible.builtin.assert:
+        that:
+          - nodes | select('string') | list | length == joined.json | length
+          - nodes | reject('none') | list | length == joined.json | length
+        fail_msg: >-
+          the node join returned nothing for some drives: {{ joined.json }}.
+          Without it a replacement list cannot say which machine to walk to;
+          locations here are {{ locations }}, which on identical hardware
+          repeat across nodes.
+
+    # --- the module ------------------------------------------------------
+    - name: "6. Scan every drive"
+      vergeio.vergeos.physical_drive_info:
+      register: scan
+      changed_when: false
+
+    - name: "7. The module sees every drive the API does, and names its node"
+      ansible.builtin.assert:
+        that:
+          - scan.drives | length == raw.json | length
+          - scan.drives | selectattr('node_name', 'defined') | list | length
+            == scan.drives | length
+          - scan.drives | map(attribute='node_name') | select('none') | list
+            | length == 0
+          - scan.counts.ok + scan.counts.info + scan.counts.warning
+            + scan.counts.critical == scan.drives | length
+        fail_msg: >-
+          the module and the API disagree about the drives, or a drive came
+          back without a node: {{ scan.drives }}
+
+    - name: "8. Filtering by a real node returns that node's drives"
+      vergeio.vergeos.physical_drive_info:
+        node: "{{ (joined.json | first).node_name }}"
+      register: node_scan
+      changed_when: false
+
+    - name: "Verify: the node filter selects rather than returning nothing"
+      vars:
+        wanted: "{{ (joined.json | first).node_name }}"
+        expected: "{{ joined.json | selectattr('node_name', 'equalto',
+                      (joined.json | first).node_name) | list | length }}"
+      ansible.builtin.assert:
+        that:
+          - node_scan.drives | length | int == expected | int
+          - node_scan.drives | length > 0
+          - node_scan.drives | map(attribute='node_name') | unique | list
+            == [wanted]
+        fail_msg: >-
+          the node filter returned {{ node_scan.drives | length }} drive(s)
+          for '{{ wanted }}', expected {{ expected }}. It used to match
+          `node in location`, and location is the slot ("nvme0"), so it
+          matched nothing on every system -- and "0 drives, none failing"
+          reads as good news.
+
+    - name: "9. An unknown node returns nothing, and says so"
+      vergeio.vergeos.physical_drive_info:
+        node: zz-no-such-node
+      register: ghost
+      changed_when: false
+
+    - name: "Verify: silence is reported, not implied"
+      ansible.builtin.assert:
+        that:
+          - ghost.drives | length == 0
+          - ghost.warnings | default([]) | length > 0
+        fail_msg: >-
+          an unknown node produced an empty report with no warning, which is
+          indistinguishable from a healthy cluster. Got {{ ghost }}
+
+    - name: "10. A severity floor never hides worse news"
+      vergeio.vergeos.physical_drive_info:
+        severity: critical
+      register: crit
+      changed_when: false
+
+    - name: "Verify: the floor is a subset, and matches the counts"
+      ansible.builtin.assert:
+        that:
+          - crit.drives | length == scan.counts.critical
+          - crit.drives | length <= scan.drives | length
+        fail_msg: >-
+          severity: critical returned {{ crit.drives | length }} but the full
+          scan counted {{ scan.counts.critical }} critical drive(s)
+
+    # --- the role --------------------------------------------------------
+    - name: "11. Run the role in its default (reporting) mode"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.drive_health
+
+    - name: "Verify: the role reported without failing the play"
+      ansible.builtin.assert:
+        that:
+          - drive_health_scan.drives | length == scan.drives | length
+          - drive_health_scan.counts == scan.counts
+        fail_msg: >-
+          the role and a direct module call disagree:
+          {{ drive_health_scan.counts }} vs {{ scan.counts }}
+
+    - name: "12. The critical gate fires only when something is critical"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.drive_health
+      vars:
+        drive_health_fail_on_critical: true
+      when: scan.counts.critical | int == 0
+
+    - name: "13. Promoting a flag re-triages without re-reading anything"
+      vergeio.vergeos.physical_drive_info:
+        critical_flags:
+          - realloc_sectors_warn
+          - current_pending_sector_warn
+          - offline_uncorrectable_warn
+          - wear_level_warn
+        warning_flags:
+          - temp_warn
+      register: promoted
+      changed_when: false
+
+    - name: "Verify: the policy is the caller's, and it moves drives"
+      ansible.builtin.assert:
+        that:
+          - promoted.drives | length == scan.drives | length
+          - promoted.counts.critical | int >= scan.counts.critical | int
+          - promoted.counts.warning | int <= scan.counts.warning | int
+        fail_msg: >-
+          promoting wear_level_warn to critical should move drives up the
+          ladder, never down or out. was {{ scan.counts }},
+          now {{ promoted.counts }}
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          drive health ladder PASSED: every triage flag is a real column ->
+          there is still no node column, so the join is still needed -> the
+          join resolves real node names -> the module sees every drive and
+          names its node -> the node filter selects instead of returning
+          nothing -> an unknown node warns -> the severity floor matches the
+          counts -> the role agrees with the module -> promoting a flag
+          re-triages. Nothing was created, so there is nothing to clean up.
