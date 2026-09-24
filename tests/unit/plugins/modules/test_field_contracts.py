@@ -75,7 +75,7 @@ def _argument_spec_options(mod):
 # is only as good as its coverage. 'vm' is deliberately ABSENT -- adding it is
 # what found #87 (machine_subtype, bios_type and network are not VM fields),
 # and it goes in once that is fixed.
-MAPPED_MODULES = ['network', 'nic', 'drive', 'user', 'catalog']
+MAPPED_MODULES = ['network', 'nic', 'drive', 'user', 'catalog', 'api_key']
 
 
 class TestDocumentationMatchesArgumentSpec:
@@ -121,6 +121,24 @@ class TestEveryDiffedFieldIsFetched:
             assert api_field in catalog.COMPARISON_FIELDS, (
                 "catalog diffs %r but never fetches it" % api_field)
 
+    def test_api_key(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import api_key
+        for api_field in api_key.UPDATE_FIELD_MAP.values():
+            assert api_field in api_key.COMPARISON_FIELDS, (
+                "api_key diffs %r but never fetches it" % api_field)
+
+    def test_api_key_fetches_every_column_it_returns(self):
+        """find_keys() asks for LIST_FIELDS explicitly rather than trusting
+        the SDK's default projection. If the two lists ever disagree, the
+        module returns None for a documented field and -- worse -- matches on
+        a user_name it never fetched, so every run creates another key."""
+        from ansible_collections.vergeio.vergeos.plugins.module_utils import (
+            api_keys as shared,
+        )
+        for column in shared.RESULT_FIELD_MAP.values():
+            assert column in shared.LIST_FIELDS, (
+                "api_keys returns %r but does not fetch it" % column)
+
 
 class TestCreateAndUpdatePathsAgree:
     """#18's subtlest failure: dns_servers was correct on create and silently
@@ -161,6 +179,25 @@ class TestCreateAndUpdatePathsAgree:
             "create-only=%s IDENTITY_PARAMS=%s"
             % (sorted(create - update), sorted(catalog.IDENTITY_PARAMS)))
 
+    def test_api_key_update_is_a_subset_of_create(self):
+        """user and name are the key's identity: a different pair is a
+        different key, which is a create plus a revoke."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import api_key
+        create = set(api_key.CREATE_PARAM_MAP)
+        update = set(api_key.UPDATE_FIELD_MAP)
+        assert update <= create, (
+            "api_key can update parameters it cannot create: %s"
+            % sorted(update - create))
+        assert create - update == set(api_key.IDENTITY_PARAMS)
+
+    def test_api_key_mapped_parameters_are_all_real_options(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import api_key
+        spec = _argument_spec_options(api_key)
+        for param in set(api_key.CREATE_PARAM_MAP) | set(api_key.UPDATE_FIELD_MAP):
+            assert param in spec, (
+                "api_key maps %r to an API field but does not accept it as an "
+                "option -- the mapping is dead code" % param)
+
     def test_catalog_mapped_parameters_are_all_real_options(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import catalog
         spec = _argument_spec_options(catalog)
@@ -200,6 +237,11 @@ class TestNoKnownBadFieldNamesComeBack:
             'full_name': 'the API field is displayname',
             'user_password': 'the API field is password',
         },
+        # api_key needs no renames on the write path either -- but its READ
+        # path does: the API spells the last-login pair lastlogin_*, and that
+        # mapping lives in module_utils/api_keys.py so the info module cannot
+        # drift from it.
+        'api_key': {},
         # catalog needs no renames: all five parameters are real columns on
         # the live table (checked on 26.1.8). The entry is empty rather than
         # absent so the parametrised test below covers it and fails loudly if

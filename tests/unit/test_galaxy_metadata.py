@@ -80,3 +80,50 @@ def test_version_is_not_a_prerelease_placeholder():
     version = str(_galaxy()['version'])
     assert version.count('.') == 2, "version %r is not X.Y.Z" % version
     assert not version.startswith('0.'), "version %r looks unset" % version
+
+
+# Directories that tooling creates inside the working tree. None is in git, and
+# ansible-galaxy does not read .gitignore -- so each one ships in the artifact
+# unless build_ignore names it.
+_TOOL_ARTIFACTS = {
+    '.ansible': 'ansible-lint writes a full copy of the collection here',
+    'tests/output': "ansible-test's results and coverage data",
+    '.pytest_cache': "pytest's run cache",
+    '__pycache__': 'compiled bytecode',
+    '.probe': 'local scratch',
+}
+
+
+@pytest.mark.parametrize('path', sorted(_TOOL_ARTIFACTS))
+def test_tool_artifacts_are_excluded_from_the_build(path):
+    """#15's defect, generalised.
+
+    #15 shipped the whole test tree because `tests/` with a trailing slash
+    matches nothing under fnmatch. The same outcome arrives a second way: a
+    directory that is gitignored, absent from build_ignore, and created by
+    tooling rather than by hand.
+
+    `.ansible` is the live example. ansible-lint writes
+    .ansible/collections/ansible_collections/vergeio/vergeos -- the collection
+    inside itself -- so `lint && build` produced an artifact containing a
+    nested duplicate of every file. CI never saw it, because the build job
+    checks out fresh and never lints. It only happens locally, which is to say
+    to whoever is about to publish.
+    """
+    ignore = _galaxy().get('build_ignore') or []
+    assert path in ignore, (
+        "build_ignore does not exclude %r (%s). ansible-galaxy ignores "
+        ".gitignore, so this ships in the artifact whenever the build runs "
+        "from a working tree rather than a clean clone."
+        % (path, _TOOL_ARTIFACTS[path]))
+
+
+def test_build_ignore_entries_have_no_trailing_slash():
+    """The #15 defect itself: build_ignore is fnmatched against paths relative
+    to the collection root, and no path ever ends in '/', so an entry that does
+    matches nothing and fails silently."""
+    ignore = _galaxy().get('build_ignore') or []
+    slashed = [entry for entry in ignore if entry.endswith('/')]
+    assert not slashed, (
+        "these build_ignore entries end in '/' and therefore match nothing: "
+        "%s -- drop the slash (issue #15)" % slashed)

@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  author: VergeIO
+  description: >-
+    Zero-downtime API key rotation for VergeOS. Creates a new key
+    generation, proves it authenticates with a live Bearer request,
+    and only then revokes the older generations.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.15"
+  galaxy_tags:
+    - vergeos
+    - security
+    - credentials
+dependencies: []

@@ -48,3 +48,12 @@ build_ignore:
   - .pytest_cache
   - .github
   - .ansible-lint
+  # ansible-lint creates .ansible/collections/ansible_collections/vergeio/
+  # vergeos -- a full copy of the collection inside itself. Build after
+  # linting without this entry and the artifact contains a nested duplicate
+  # of every file it already ships. CI never saw it because the build job
+  # checks out fresh and never lints; it only happens to someone working
+  # locally, which is to say to a maintainer about to publish.
+  - .ansible
+  # ansible-test's output, same story.
+  - tests/output
