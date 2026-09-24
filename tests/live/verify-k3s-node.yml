@@ -1,0 +1,342 @@
+---
+# Live ladder for the k3s_node role.
+#
+# Boots a real VM from the golden template. The k3s install itself
+# happens in-guest and needs internet access; this ladder verifies the
+# DEPLOYMENT -- clone, cloud-init, NIC, boot, adoption -- and does not
+# wait for the cluster to converge. Proving a node reached Ready is a
+# longer, flakier test and belongs in a cluster ladder, not here.
+#
+#   ansible-playbook verify-k3s-node.yml -e k3s_template=debian13-golden
+- name: K3s node live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    k3s_vm: zz-k3s
+    k3s_template: debian13-golden
+    server_spec:
+      role: server
+      hostname: zz-k3s
+      token: zz-not-a-real-token
+      disable: [traefik]
+  tasks:
+    - name: "0. The golden template must exist"
+      vergeio.vergeos.vm_info:
+        insecure: true
+        name: "{{ k3s_template }}"
+      register: tmpl
+      changed_when: false
+
+    - name: "0b. Refuse to run without it"
+      ansible.builtin.assert:
+        that: tmpl.vms | length == 1
+        fail_msg: >-
+          template '{{ k3s_template }}' not found. Build one first with
+          the image_pipeline role, or pass -e k3s_template=<name>.
+
+    - name: "0c. The template needs a 'golden' snapshot to clone from"
+      vergeio.vergeos.vm_snapshot:
+        insecure: true
+        vm_name: "{{ k3s_template }}"
+        operation: list
+      register: tmpl_snaps
+      changed_when: false
+
+    - name: "0d. Create it if it is missing"
+      vergeio.vergeos.vm_snapshot:
+        insecure: true
+        vm_name: "{{ k3s_template }}"
+        snapshot_name: golden
+        operation: create
+      when: >-
+        'golden' not in (tmpl_snaps.snapshots | default([])
+                         | map(attribute='name') | list)
+
+    - name: "0e. Clean leftovers"
+      vergeio.vergeos.vm:
+        insecure: true
+        name: "{{ k3s_vm }}"
+        state: absent
+
+    - name: "1. A spec with no role is refused"
+      block:
+        - name: "1a. Call with an empty spec"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.k3s_node
+          vars:
+            k3s_node_name: "{{ k3s_vm }}"
+            k3s_node_template: "{{ k3s_template }}"
+            k3s_node_spec: {}
+        - name: "1b. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "a spec with no role was accepted"
+      rescue:
+        - name: "1c. Refused, as it should be"
+          ansible.builtin.debug:
+            msg: "spec with no role refused"
+
+    - name: "2. An agent with nowhere to join is refused"
+      block:
+        - name: "2a. Call with role=agent and no server_url"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.k3s_node
+          vars:
+            k3s_node_name: "{{ k3s_vm }}"
+            k3s_node_template: "{{ k3s_template }}"
+            k3s_node_spec:
+              role: agent
+              token: zz-not-a-real-token
+        - name: "2b. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "an agent with no server_url was accepted"
+      rescue:
+        - name: "2c. Refused, as it should be"
+          ansible.builtin.debug:
+            msg: "agent with no server_url refused"
+
+    - name: "2d. Neither refusal created anything"
+      vergeio.vergeos.vm_info:
+        insecure: true
+        name: "{{ k3s_vm }}"
+      register: after_refusal
+      changed_when: false
+
+    - name: "2e. Assert side-effect free"
+      ansible.builtin.assert:
+        that: after_refusal.vms | length == 0
+        fail_msg: "a refused run left a VM behind"
+
+    - name: "3. Deploy a server node"
+      block:
+        - name: "3a. Run the role"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.k3s_node
+          vars:
+            k3s_node_name: "{{ k3s_vm }}"
+            k3s_node_template: "{{ k3s_template }}"
+            k3s_node_network: External
+            k3s_node_spec: "{{ server_spec }}"
+
+        - name: "3b. It reported a clone of a server"
+          ansible.builtin.assert:
+            that:
+              - k3s_node_result.cloned | bool
+              - k3s_node_result.role == 'server'
+            fail_msg: "unexpected result: {{ k3s_node_result }}"
+
+        - name: "3c. The VM exists and is running"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ k3s_vm }}"
+          register: k3s_info
+          changed_when: false
+
+        - name: "3d. Assert running with the declared specs"
+          ansible.builtin.assert:
+            that:
+              - k3s_info.vms | length == 1
+              - (k3s_info.vms | first).running
+              - (k3s_info.vms | first).cpu_cores == 2
+              - (k3s_info.vms | first).ram == 2048
+            fail_msg: "node VM wrong: {{ k3s_info.vms }}"
+
+        - name: "3e. It has a NIC on the cluster network"
+          vergeio.vergeos.vm_nic_info:
+            insecure: true
+            vm: "{{ k3s_vm }}"
+          register: k3s_nics
+          changed_when: false
+
+        - name: "3f. Assert exactly one NIC"
+          ansible.builtin.assert:
+            that: k3s_nics.nics | default([]) | length == 1
+            fail_msg: >-
+              expected one NIC, got
+              {{ k3s_nics.nics | default([]) | map(attribute='name') | list }}
+
+        - name: "3g. Read the cloud-init back from the platform"
+          ansible.builtin.include_tasks: read-cloudinit.yml
+          vars:
+            ci_vm: "{{ k3s_vm }}"
+
+        - name: "3h. Assert the datasource"
+          ansible.builtin.assert:
+            that: ci_datasource == 'nocloud'
+            fail_msg: "cloud-init not configured: {{ ci_datasource }}"
+
+        # The ported rung stopped at the datasource. A VM with an EMPTY
+        # user-data has datasource 'nocloud' too -- and that is what the
+        # role produced under --check, because a skipped render still
+        # registers an empty stdout.
+        - name: "3i. The document that arrived is the one we rendered"
+          ansible.builtin.assert:
+            that:
+              - ci_user_data | length > 0
+              - ci_user_data.startswith('#cloud-config')
+              - "'get.k3s.io' in ci_user_data"
+              - "'sh -s - server' in ci_user_data"
+              - "'--disable traefik' in ci_user_data"
+              - "'K3S_URL' not in ci_user_data"
+            fail_msg: >-
+              the cloud-init document is not the rendered k3s install.
+              Got {{ ci_user_data | length }} bytes.
+
+        - name: "3j. It is valid YAML with one install command"
+          ansible.builtin.assert:
+            that:
+              - (ci_user_data | from_yaml).hostname == k3s_vm
+              - (ci_user_data | from_yaml).runcmd | length == 1
+            fail_msg: >-
+              the document parses to something cloud-init cannot act on:
+              {{ (ci_user_data | from_yaml).keys() | list }}
+
+        # The token has to be IN the user-data -- that is the whole point of
+        # it -- and nowhere a casual reader of the VM would find it.
+        - name: "3k. The token reached the guest config"
+          ansible.builtin.assert:
+            that: "'zz-not-a-real-token' in ci_user_data"
+            fail_msg: >-
+              the node was deployed without its cluster token, so it can
+              never join anything
+
+        - name: "3l. ...and leaked into no readable VM field"
+          ansible.builtin.assert:
+            that: >-
+              'zz-not-a-real-token' not in
+              ((k3s_info.vms | first).description | default('') ~
+               (k3s_info.vms | first).note | default('') ~
+               (k3s_info.vms | first).advanced | default(''))
+            fail_msg: "the cluster token leaked into a readable field"
+
+        - name: "4. Adoption -- a second run must not clone again"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.k3s_node
+          vars:
+            k3s_node_name: "{{ k3s_vm }}"
+            k3s_node_template: "{{ k3s_template }}"
+            k3s_node_network: External
+            k3s_node_spec: "{{ server_spec }}"
+
+        - name: "4b. Reported as already existing"
+          ansible.builtin.assert:
+            that: not (k3s_node_result.cloned | bool)
+            fail_msg: "the second run cloned a second VM"
+
+        - name: "4c. Still exactly one VM by that name"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ k3s_vm }}"
+          register: k3s_again
+          changed_when: false
+
+        - name: "4d. Assert no duplicate"
+          ansible.builtin.assert:
+            that: k3s_again.vms | length == 1
+            fail_msg: "a duplicate node was created"
+
+        # The renderer is a pure function on the controller, so --check
+        # should show the cloud-init it would apply rather than skipping.
+        # It used to be skipped -- and a skipped command still registers an
+        # EMPTY stdout, so the role attached an empty document and every
+        # task reported success.
+        - name: "6. Check mode still renders"
+          when: true
+          check_mode: true
+          block:
+            - name: "6a. Dry-run against a name that is free"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.k3s_node
+              vars:
+                k3s_node_name: "{{ k3s_vm }}-dry"
+                k3s_node_template: "{{ k3s_template }}"
+                k3s_node_spec: "{{ server_spec }}"
+
+        - name: "6b. It rendered a real document"
+          ansible.builtin.assert:
+            that:
+              - k3s_node_userdata.stdout | length > 0
+              - "'get.k3s.io' in k3s_node_userdata.stdout"
+            fail_msg: >-
+              check mode produced no rendered cloud-init, so a --check run
+              cannot show what it would apply
+          no_log: true
+
+        - name: "6b-2. And reported honestly that it deployed nothing"
+          ansible.builtin.assert:
+            that:
+              - not (k3s_node_result.deployed | bool)
+              - not (k3s_node_result.cloned | bool)
+            fail_msg: >-
+              a check-mode run reported {{ k3s_node_result }}. vm_clone
+              reports a clone it WOULD make, so keying off that alone says
+              'cloned' for a VM nobody created.
+
+        - name: "6c. And built nothing"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ k3s_vm }}-dry"
+          register: dry
+          changed_when: false
+
+        - name: "6d. Assert check mode created no VM"
+          ansible.builtin.assert:
+            that: dry.vms | length == 0
+            fail_msg: "check mode deployed a node for real"
+
+      rescue:
+        - name: Record the failure
+          ansible.builtin.set_fact:
+            ladder_failed: true
+        - name: Re-raise
+          ansible.builtin.fail:
+            msg: "k3s_node ladder FAILED -- see the task above"
+
+      always:
+        - name: "5. Stop the node"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ k3s_vm }}"
+            state: stopped
+          failed_when: false
+
+        - name: "5b. Delete it"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ k3s_vm }}"
+            state: absent
+
+        - name: "5c. Confirm zero leftovers"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ k3s_vm }}"
+          register: leftover
+          changed_when: false
+
+        - name: "5e. Remove any dry-run VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ k3s_vm }}-dry"
+            state: absent
+
+        - name: "5d. Assert clean"
+          ansible.builtin.assert:
+            that: leftover.vms | length == 0
+            fail_msg: "node VM left behind"
+
+    - name: Stop if the ladder failed
+      ansible.builtin.fail:
+        msg: "k3s_node ladder FAILED"
+      when: ladder_failed | default(false)
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          k3s_node ladder PASSED: a spec with no role refused -> an agent
+          with no server_url refused -> both refusals side-effect free -> a
+          server node clones, boots with the declared specs, gets one NIC
+          and a nocloud cloud-init document -> and that document, read back
+          from the platform, is the k3s install we rendered, parses as YAML,
+          carries the cluster token, and carries no K3S_URL a server should
+          not have -> the token leaked into no readable VM field -> a second
+          run adopts rather than cloning again -> check mode renders but
+          builds nothing -> zero leftovers

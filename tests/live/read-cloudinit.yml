@@ -1,0 +1,50 @@
+---
+# Read a VM's cloud-init datasource and the /user-data document it was
+# actually given, straight from the platform.
+#
+# Set `ci_vm` before including. Sets `ci_datasource` and `ci_user_data`.
+#
+# This replaces a call to docs/repro/d1-d6/readback.py, which does not exist
+# in this repository -- the same defect as #32 and #44, and the third and
+# fourth ladder to arrive carrying it. The guard in
+# tests/unit/test_live_ladders.py caught both on import.
+#
+# It also reads more than those rungs did. They asserted the datasource was
+# 'nocloud' and stopped, so a VM configured with an EMPTY or a wrong
+# user-data passed. The document is what the role exists to deliver.
+- name: Read the VM's cloud-init back
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "-c"
+      - |
+        import json, os, sys, urllib3
+        urllib3.disable_warnings()
+        from pyvergeos import VergeClient
+        c = VergeClient(host=os.environ['VERGEOS_HOST'],
+                        username=os.environ['VERGEOS_USERNAME'],
+                        password=os.environ['VERGEOS_PASSWORD'],
+                        verify_ssl=False)
+        name = sys.argv[1]
+        rows = c._request('GET', 'vms',
+                          params={'fields': '$key,name,cloudinit_datasource'})
+        vm = [r for r in rows if r.get('name') == name]
+        if not vm:
+            raise SystemExit("no VM named %r" % name)
+        key = int(vm[0]['$key'])
+        body = ''
+        for row in (dict(f) for f in c.cloudinit_files.list_for_vm(key)):
+            if row.get('name') == '/user-data':
+                body = c.cloudinit_files.get_content(int(row['$key']))
+        print(json.dumps({'datasource': vm[0].get('cloudinit_datasource'),
+                          'user_data': body}))
+      - "{{ ci_vm }}"
+  register: ci_raw
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Parse it
+  ansible.builtin.set_fact:
+    ci_datasource: "{{ (ci_raw.stdout | from_json).datasource }}"
+    ci_user_data: "{{ (ci_raw.stdout | from_json).user_data }}"

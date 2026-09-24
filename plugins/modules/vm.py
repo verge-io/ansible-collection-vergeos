@@ -259,8 +259,35 @@ COMPARISON_FIELDS = tuple(sorted(set(UPDATE_FIELD_MAP.values())))
 # snapshot_profile is deliberately absent: it is read separately, by key, in
 # current_snapshot_profile(), because it is not in the default projection
 # either and the comparison needs its own call.
+#
+# The power state, and the only spelling of it that works.
+#
+# `state: running` on a VM that was already running FAILED:
+#
+#     API error: Error starting machine: Machine is already running
+#     with status 'running'
+#
+# power_on_vm() guards on dict(vm)['status'] / ['running'] -- and this
+# module fetches an explicit field list, which does not carry either, so the
+# guard was never true and the module powered on a running VM every time.
+# The same hole made `state: stopped` report changed forever.
+#
+# Measured on 26.1.8, asking for the power state four ways:
+#
+#     fields=...,running,status                 both silently dropped
+#     fields=most                               absent
+#     fields=all                                absent
+#     status#running as running                 silently dropped
+#     machine#status#running as running         WORKS
+#
+# The SDK's DEFAULT projection does carry them, which is why vm_info reports
+# power state correctly and this module could not -- the moment a module
+# names its fields, it owns every one it reads.
+POWER_FIELDS = ['machine#status#running as running',
+                'machine#status#status as status']
+
 VM_FIELDS = ['$key', 'name'] + sorted(
-    set(COMPARISON_FIELDS) - {'snapshot_profile'})
+    set(COMPARISON_FIELDS) - {'snapshot_profile'}) + POWER_FIELDS
 
 
 def bios_to_uefi(value):
