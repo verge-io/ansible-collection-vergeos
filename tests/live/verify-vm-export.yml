@@ -1,0 +1,318 @@
+---
+# Live ladder for the vm_export module.
+#
+#   set -a; . ~/.config/vergeos/env; set +a
+#   ansible-playbook verify-vm-export.yml -e nas_service=<name>
+#
+# The ported version of this ladder shelled out to `scratch_vol.py` to make
+# its scratch volume -- a helper that is not in this repository, the same
+# defect as #32 and #44. It has a module now: nas_volume arrives in the same
+# change, which is why these two were batched. The fixture is a module call.
+#
+# See verify-nas-modules.yml for why nas_service has to be named rather than
+# discovered.
+- name: VM export live ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    api: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    vol: zz-export-vol
+    vm: zz-export-vm
+    export_api_fields:
+      - create_current
+      - max_exports
+      - quiesced
+
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+      return_content: true
+
+  tasks:
+    - name: "0. Which NAS services exist?"
+      ansible.builtin.uri:
+        url: "{{ api }}/vm_services?fields=$key,name"
+      register: services
+      changed_when: false
+
+    - name: "0a. A NAS service must be named"
+      ansible.builtin.assert:
+        that: ["nas_service is defined"]
+        fail_msg: >-
+          Pass -e nas_service=<name>. Candidates on this system:
+          {{ services.json | map(attribute='name') | list }} -- note that one
+          of them is the cluster's own Services VM, which is not a NAS.
+
+    - name: "0b. Clear leftovers from an earlier run"
+      block:
+        - name: "0b-i. Export config"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            state: absent
+          failed_when: false
+        - name: "0b-ii. Scratch VM"
+          vergeio.vergeos.vm:
+            name: "{{ vm }}"
+            state: absent
+          failed_when: false
+        - name: "0b-iii. Scratch volume"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            state: absent
+          failed_when: false
+
+    - name: "VM export ladder (cleanup runs even on failure)"
+      block:
+        - name: "1. Scratch NAS volume for the exports to land on"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            service: "{{ nas_service }}"
+            size_gb: 20
+            tier: 1
+            description: "scratch, vm_export ladder"
+            state: present
+
+        - name: "2. Scratch VM to export"
+          vergeio.vergeos.vm:
+            name: "{{ vm }}"
+            cpu_cores: 1
+            ram: 1024
+            state: present
+
+        - name: "2b. Give it a 1 GB disk so the export moves real data"
+          vergeio.vergeos.drive:
+            vm_name: "{{ vm }}"
+            name: "{{ vm }}-disk"
+            size: 1
+            state: present
+
+        - name: "3. Export configuration, keeping 2 generations"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            max_exports: 2
+            state: present
+          register: cfg
+
+        - name: "3b. Read the configuration row back over plain REST"
+          ansible.builtin.uri:
+            url: "{{ api }}/volume_vm_exports?fields=$key,volume,status,{{ export_api_fields | join(',') }}"
+          register: cfg_row
+          changed_when: false
+
+        - name: "Verify: every diffed column is real, and the values landed"
+          vars:
+            row: "{{ cfg_row.json | first }}"
+          ansible.builtin.assert:
+            that:
+              - cfg.changed
+              - cfg_row.json | length == 1
+              - export_api_fields | difference(row.keys() | list) | length == 0
+              - row.max_exports | int == 2
+              - row.quiesced | bool
+              - row.create_current | bool
+            fail_msg: >-
+              export configuration did not land: {{ cfg_row.json }}
+
+        - name: "4. Re-run unchanged"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            max_exports: 2
+            state: present
+          register: cfg2
+
+        - name: "Verify: configuration is idempotent"
+          ansible.builtin.assert:
+            that: [not cfg2.changed]
+            fail_msg: "export config is not idempotent: {{ cfg2 }}"
+
+        - name: "5. Drift the retention, then settle it"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            max_exports: 3
+            state: present
+          register: cfg_drift
+
+        - name: "5b. Apply the same retention again"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            max_exports: 3
+            state: present
+          register: cfg_settled
+
+        - name: "Verify: retention drift is corrected once"
+          ansible.builtin.assert:
+            that:
+              - cfg_drift.changed
+              - not cfg_settled.changed
+            fail_msg: >-
+              max_exports drift: first={{ cfg_drift.changed }}
+              second={{ cfg_settled.changed }}
+
+        - name: "6. Run an export of the scratch VM and wait for it"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            max_exports: 3
+            start: true
+            export_name: zz-ladder-run
+            vms: ["{{ vm }}"]
+          register: run
+
+        - name: "Verify: the export ran, and the module says so"
+          ansible.builtin.assert:
+            that:
+              - run.changed
+              - "'export finished' in run.actions"
+              - run.export.status != 'error'
+            fail_msg: "export did not finish cleanly: {{ run }}"
+
+        # Read the run's own statistics row over plain REST. The module reads
+        # the same table, so this is not independent of the module -- but it
+        # IS independent of the module's reporting: `actions` saying "export
+        # finished" is the module's opinion, while export_success and errors
+        # are the platform's record of what happened to each VM.
+        - name: "6b. Read the statistics row back"
+          ansible.builtin.uri:
+            url: "{{ api }}/volume_vm_export_stats?fields=file_name,virtual_machines,export_success,errors,size_bytes"
+          register: stats
+          changed_when: false
+
+        - name: "Verify: one VM exported, no errors, real bytes written"
+          vars:
+            row: "{{ stats.json | selectattr('file_name', 'equalto',
+                     'zz-ladder-run') | first }}"
+          ansible.builtin.assert:
+            that:
+              - row.virtual_machines | int == 1
+              - row.export_success | int == 1
+              - row.errors | int == 0
+              - row.size_bytes | int > 0
+              - run.last_export.file_name == 'zz-ladder-run'
+            fail_msg: >-
+              the export reported success but the platform's own record
+              disagrees: {{ row }}
+
+        - name: "7. Check mode starts nothing"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            max_exports: 3
+            start: true
+            export_name: zz-should-not-exist
+            vms: ["{{ vm }}"]
+          check_mode: true
+          register: dry
+
+        - name: "7b. Read the statistics table again"
+          ansible.builtin.uri:
+            url: "{{ api }}/volume_vm_export_stats?fields=file_name"
+          register: stats_after
+          changed_when: false
+
+        - name: "Verify: check mode wrote nothing"
+          ansible.builtin.assert:
+            that:
+              - dry.changed
+              - "'zz-should-not-exist' not in
+                 (stats_after.json | map(attribute='file_name') | list)"
+            fail_msg: >-
+              check mode started a real export:
+              {{ stats_after.json | map(attribute='file_name') | list }}
+
+        # block/rescue, not failed_when: false. `failed_when: false` sets
+        # ghost.failed to false whether the module refused or not, so an
+        # assertion on it passes for the wrong reason -- or, as here, fails
+        # for one.
+        - name: "8. A VM that does not exist is refused before anything runs"
+          block:
+            - name: "8a. Ask for a VM that is not there"
+              vergeio.vergeos.vm_export:
+                volume: "{{ vol }}"
+                start: true
+                vms: [zz-no-such-vm]
+              register: ghost
+            - name: "8b. Reaching here means it was accepted"
+              ansible.builtin.fail:
+                msg: "an unknown VM name was not refused"
+          rescue:
+            - name: "8c. Refused, and the message names the VM"
+              ansible.builtin.assert:
+                that: "'zz-no-such-vm' in ansible_failed_result.msg"
+                fail_msg: >-
+                  refused, but not for the right reason:
+                  {{ ansible_failed_result.msg }}
+
+      rescue:
+        - name: "Record that the ladder failed, so cleanup can still run"
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+      always:
+        - name: "9. Remove the export configuration"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            state: absent
+          failed_when: false
+
+        - name: "10. Remove it again -- absent is idempotent"
+          vergeio.vergeos.vm_export:
+            volume: "{{ vol }}"
+            state: absent
+          register: cfg_gone
+          failed_when: false
+
+        - name: "11. Delete the scratch VM"
+          vergeio.vergeos.vm:
+            name: "{{ vm }}"
+            state: absent
+
+        # Strict on purpose: a leaked scratch volume is 20 GB of tier 1 and
+        # survived a whole run of the ported ladder once already.
+        - name: "12. Delete the scratch volume"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            state: absent
+
+        - name: "13. Re-read every table this ladder wrote to"
+          ansible.builtin.uri:
+            url: "{{ api }}/{{ item }}"
+          register: leftovers
+          changed_when: false
+          loop:
+            - volumes?fields=name
+            - volume_vm_exports?fields=$key
+            - vms?fields=name
+
+        - name: "14. Zero leftovers"
+          ansible.builtin.assert:
+            that:
+              - not cfg_gone.changed
+              - vol not in (leftovers.results[0].json
+                            | map(attribute='name') | list)
+              - leftovers.results[1].json | length == 0
+              - vm not in (leftovers.results[2].json
+                           | map(attribute='name') | list)
+            fail_msg: >-
+              leftovers:
+              volumes={{ leftovers.results[0].json
+                         | map(attribute='name') | list }},
+              export configs={{ leftovers.results[1].json | length }},
+              vms={{ leftovers.results[2].json
+                     | map(attribute='name') | list
+                     | select('match', '^zz-') | list }}
+
+        - name: "15. Fail the run if the ladder failed before cleanup"
+          ansible.builtin.fail:
+            msg: "ladder FAILED -- see the first failed task above; cleanup ran"
+          when: ladder_failed | default(false)
+
+        - name: PASSED
+          ansible.builtin.debug:
+            msg: >-
+              vm_export ladder PASSED: scratch volume and VM -> export config
+              lands and is idempotent -> retention drift settles -> a real
+              export runs, and the platform's own statistics row confirms one
+              VM, zero errors and real bytes -> check mode starts nothing ->
+              an unknown VM is refused -> teardown, zero leftovers

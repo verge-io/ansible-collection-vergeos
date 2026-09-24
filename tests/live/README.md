@@ -64,6 +64,8 @@ precisely because nothing read that table.
 | Ladder | Covers |
 |---|---|
 | `verify-field-contract.yml` | the compare-and-map contract for `network`, `nic`, `drive`, `user` (#75) |
+| `verify-nas-modules.yml` | `nas_volume` / `nas_nfs_share` — volumes, NFS exports, and the two convergence bugs they shipped with (#35) |
+| `verify-vm-export.yml` | `vm_export` — configuration, a real export run, and the platform's own statistics row (#43) |
 | `verify-vm-clone.yml` | `vm_clone` — clone from a snapshot, idempotent on the clone name (#42) |
 | `verify-snapshot-profile.yml` | `snapshot_profile` — profiles and their periods (#39) |
 | `verify-protect.yml` | the `protect` role: tag a VM, get it enrolled (#39) |
@@ -106,8 +108,16 @@ and `.ansible-lint` now has no `exclude_paths` at all.
 `vergeio.vergeos.*` reference in the repository, against an allowlist that is
 now empty.
 
-The remaining ladders from the port (`verify-vm-export`, `verify-nas-modules`
-and others) land with their modules — see the tracking issue #57.
+The remaining ladders from the port land with their modules — see the
+tracking issue #57. `verify-nas-modules.yml` and `verify-vm-export.yml` landed
+together, because the export ladder needs a scratch NAS volume and the ported
+version made one by shelling out to a `scratch_vol.py` that is not in this
+repository. With `nas_volume` in the same change, the fixture is a module call.
+
+Both need a NAS service named with `-e nas_service=<name>`. It cannot be
+discovered: NAS services are rows in `vm_services`, and so is the cluster's own
+Services VM, with no column separating them. Both ladders print the candidates
+rather than guessing.
 
 ## Adding one
 
