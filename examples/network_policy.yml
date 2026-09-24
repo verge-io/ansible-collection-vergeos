@@ -1,0 +1,47 @@
+---
+# Declare firewall rules for one or more networks, stage them all, then
+# apply once per network.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/network_policy.yml
+#
+# Rules are staged with apply: false and applied ONCE at the end of each
+# network, so a half-written policy is never live. Adding a rule is not the
+# same as it taking effect -- vnet_apply is what makes it real, and the role
+# calls it only when something is actually pending.
+- name: Network firewall policy
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    network_policy_networks:
+      - network: External
+        # exact: true PURGES rules on this network that are not declared
+        # here. Off by default -- a partial policy that silently deleted
+        # everything it did not mention would be destructive. The platform's
+        # own system rules are refused regardless of this setting.
+        exact: false
+        rules:
+          - name: allow-https
+            direction: incoming
+            rule_action: accept
+            protocol: tcp
+            destination_ports: "443"
+
+          - name: allow-ssh-from-jump
+            direction: incoming
+            rule_action: accept
+            protocol: tcp
+            source_ip: 192.0.2.10
+            destination_ports: "22"
+            log: true
+
+          - name: drop-telnet
+            direction: incoming
+            rule_action: drop
+            protocol: tcp
+            destination_ports: "23"
+
+  roles:
+    - role: vergeio.vergeos.network_policy

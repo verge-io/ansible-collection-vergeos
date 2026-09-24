@@ -13,9 +13,15 @@ rotted twice already:
        helper that does not exist here. The ladder had passed on the port
        branch, where it did. Two rungs died on a missing file after nine
        rungs of real assertions had already run.
+  #44  verify-vnet-rule.yml invoked the same kind of missing helper as a BARE
+       name -- argv: [..., scratch_net.py, ...] -- which the check written for
+       #32 did not see, while it caught the identical reference in
+       verify-network-policy.yml four lines of YAML away. A guard that catches
+       one spelling of a defect and not the other is worse than none: it reads
+       as coverage. Both spellings are checked now.
 
-Neither was catchable by ansible-lint: a README is not a playbook, and lint
-does not resolve the argv of a command task. Both are catchable by reading
+None of these was catchable by ansible-lint: a README is not a playbook, and
+lint does not resolve the argv of a command task. All are catchable by reading
 the directory, which is what this file does.
 """
 
@@ -67,9 +73,15 @@ def test_the_readme_names_no_ladder_that_is_missing():
         "Either the file was never ported or the name drifted." % ghosts)
 
 
-# A path built from playbook_dir is a real filesystem reference, and the only
-# kind a ladder uses. Anything else in a ladder is a module argument.
+# A path built from playbook_dir is a real filesystem reference...
 _PLAYBOOK_DIR_PATH = re.compile(r'\{\{\s*playbook_dir\s*\}\}(/[^"\'\s\]]+)')
+
+# ...but it is not the only spelling: a bare script name in an argv list is a
+# repo-relative reference too, and that is the one #44 slipped through on.
+_SCRIPT_NAME = re.compile(r'[\w./-]+\.(?:py|sh)\b')
+
+# Paths that are deliberately outside this repository.
+_NOT_OURS = ('/usr/', '/bin/', '/etc/', '/tmp/', 'python')
 
 
 def _playbook_files():
@@ -87,11 +99,22 @@ def test_playbook_dir_references_resolve(path):
     """
     with open(path) as fh:
         body = fh.read()
+    # Comments are prose. They name files by their repo path
+    # ("module_utils/rbac.py") as shorthand, which is not a reference the
+    # playbook resolves and not this test's business -- scanning them turns a
+    # useful guard into one that has to be argued with.
+    executable = '\n'.join(line for line in body.splitlines()
+                           if not line.lstrip().startswith('#'))
+
+    candidates = list(_PLAYBOOK_DIR_PATH.findall(body))
+    candidates += [name for name in _SCRIPT_NAME.findall(executable)
+                   if not any(skip in name for skip in _NOT_OURS)]
+
     dangling = []
-    for suffix in _PLAYBOOK_DIR_PATH.findall(body):
-        target = os.path.normpath(os.path.join(_live_dir(), suffix.lstrip('/')))
+    for ref in candidates:
+        target = os.path.normpath(os.path.join(_live_dir(), ref.lstrip('/')))
         if not os.path.exists(target):
-            dangling.append(suffix)
+            dangling.append(ref)
     assert not dangling, (
         "%s references files that do not exist in this repository: %s"
         % (os.path.basename(path), sorted(set(dangling))))
