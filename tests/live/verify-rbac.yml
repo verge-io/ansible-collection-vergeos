@@ -1,0 +1,385 @@
+---
+# Live-verify ladder for the group / group_info / permission modules and the
+# rbac role (VergeOS 26.1.8), issue #34.
+#
+# Scratch only: zz- groups and zz- users, all removed at the end.
+#
+# One timing rule runs through this file. Deleting a GROUP arms a platform
+# defect for a few seconds: a group created inside that window can never take
+# members and never recovers. See module_utils/rbac.py. So every group delete
+# is followed by a settle pause before the next group create.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook verify-rbac.yml
+
+- name: RBAC live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    grp: zz-rbac-operators
+    nested: zz-rbac-nested
+    alice: zz-rbac-alice
+    bob: zz-rbac-bob
+    oidc_id: "0a1b2c3d-4e5f-6789-abcd-ef0123456789"
+    settle: 7          # > the 6s the platform needs after a group delete
+    api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    api_auth: &api_auth
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+
+  tasks:
+    - name: Ladder body
+      block:
+        - name: "0a. Cleanup first — no scratch group may pre-exist"
+          vergeio.vergeos.group:
+            name: "{{ item }}"
+            state: absent
+          loop: ["{{ grp }}", "{{ nested }}"]
+
+        # Unconditional on purpose. It is tempting to pause only `when:
+        # precleanup is changed`, but that is a reaction to a result and
+        # ansible-lint rightly calls it a handler in disguise -- and more to
+        # the point, a conditional that silently does not fire produces a
+        # group that can never take members, four rungs later, with no hint
+        # of why. Seven seconds is cheaper than that.
+        - name: "0b. Let the platform settle after any group delete"
+          ansible.builtin.pause:
+            seconds: "{{ settle }}"
+
+        - name: "0c. Two scratch users"
+          vergeio.vergeos.user:
+            name: "{{ item }}"
+            user_password: "Zz-Ladder-9931!"
+            state: present
+          loop: ["{{ alice }}", "{{ bob }}"]
+
+        # ── the group itself ────────────────────────────────────────────────
+        - name: "1. Create the group, with an SSO identifier"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            description: rbac ladder scratch (zz- disposable)
+            identifier: "{{ oidc_id }}"
+            state: present
+          register: g1
+
+        - name: "2. Re-apply identical — THIS is the defect that was found"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            description: rbac ladder scratch (zz- disposable)
+            identifier: "{{ oidc_id }}"
+            state: present
+          register: g2
+
+        - name: "3. And a third time"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            description: rbac ladder scratch (zz- disposable)
+            identifier: "{{ oidc_id }}"
+            state: present
+          register: g3
+
+        - name: "4. Read the raw row: the identifier lives in `id`"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/groups?fields=all"
+            <<: *api_auth
+            return_content: true
+          register: raw_groups
+          changed_when: false
+
+        - name: "5. Created once, converged twice, stored where we think"
+          vars:
+            row: "{{ raw_groups.json | selectattr('name', 'equalto', grp)
+                     | first }}"
+          ansible.builtin.assert:
+            that:
+              - g1 is changed
+              - g2 is not changed
+              - g3 is not changed
+              - row.id == oidc_id
+              - "'identifier' not in row"
+            fail_msg: >-
+              g1={{ g1.changed }} g2={{ g2.changed }} g3={{ g3.changed }}
+              row={{ row }}
+
+        - name: "6. A real change is still detected"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            description: changed by the ladder
+            state: present
+          register: g4
+
+        - name: "7. …and converges after it"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            description: changed by the ladder
+            state: present
+          register: g5
+
+        - name: "8. Change verdicts"
+          ansible.builtin.assert:
+            that:
+              - g4 is changed
+              - "'description' in g4.changed_fields"
+              - g5 is not changed
+            fail_msg: "g4={{ g4 }} g5={{ g5 }}"
+
+        # ── membership ──────────────────────────────────────────────────────
+        - name: "9. Add both users"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            users: ["{{ alice }}", "{{ bob }}"]
+            state: present
+          register: m1
+
+        - name: "10. Re-apply — converged"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            users: ["{{ alice }}", "{{ bob }}"]
+            state: present
+          register: m2
+
+        - name: "11. A shorter list is ADDITIVE by default"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            users: ["{{ alice }}"]
+            state: present
+          register: m3
+
+        - name: "12. exact_members is what removes"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            users: ["{{ alice }}"]
+            exact_members: true
+            state: present
+          register: m4
+
+        - name: "13. Membership verdicts"
+          ansible.builtin.assert:
+            that:
+              - m1 is changed
+              - m2 is not changed
+              - m3 is not changed
+              - m3.members.users | sort == [alice, bob] | sort
+              - m4 is changed
+              - m4.members.users == [alice]
+            fail_msg: >-
+              m1={{ m1.changed }} m2={{ m2.changed }} m3={{ m3.members }}
+              m4={{ m4.members }}
+
+        - name: "14. Nest a group inside the group"
+          vergeio.vergeos.group:
+            name: "{{ nested }}"
+            description: rbac ladder nested (zz- disposable)
+            state: present
+
+        - name: "15. Add it as a member"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            groups: ["{{ nested }}"]
+            state: present
+          register: n1
+
+        - name: "16. Re-apply — converged, and the user is untouched"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            groups: ["{{ nested }}"]
+            state: present
+          register: n2
+
+        - name: "17. A nested group is not confused with a user"
+          ansible.builtin.assert:
+            that:
+              - n1 is changed
+              - n2 is not changed
+              - n2.members.groups == [nested]
+              - n2.members.users == [alice]
+            fail_msg: "n1={{ n1.changed }} n2={{ n2.members }}"
+
+        - name: "18. Adding a user that does not exist is refused by name"
+          vergeio.vergeos.group:
+            name: "{{ grp }}"
+            users: [zz-rbac-nobody]
+            state: present
+          register: bad_member
+          ignore_errors: true   # noqa: ignore-errors -- the failure IS the assertion
+
+        # ── permissions ─────────────────────────────────────────────────────
+        - name: "19. Grant the group rights on vms"
+          vergeio.vergeos.permission:
+            group: "{{ grp }}"
+            table: vms
+            rights: [list, read, create, modify]
+            state: present
+          register: p1
+
+        - name: "20. Re-apply — converged"
+          vergeio.vergeos.permission:
+            group: "{{ grp }}"
+            table: vms
+            rights: [list, read, create, modify]
+            state: present
+          register: p2
+
+        - name: "21. Narrow the rights"
+          vergeio.vergeos.permission:
+            group: "{{ grp }}"
+            table: vms
+            rights: [list, read]
+            state: present
+          register: p3
+
+        - name: "22. Read the raw permission row back"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/permissions?fields=all"
+            <<: *api_auth
+            return_content: true
+          register: raw_perms
+          changed_when: false
+
+        # Matched on `identity`, not `identity_display`. The display column is
+        # not reliably the principal's name -- on this system one row carries
+        # the integer 1 there -- and a permission points at an IDENTITY, which
+        # is the thing both users and groups carry.
+        - name: "23. The row stores the BARE right names, and only two are set"
+          vars:
+            grp_identity: "{{ (raw_groups.json
+                               | selectattr('name', 'equalto', grp)
+                               | first).identity | string }}"
+            mine: "{{ raw_perms.json
+                      | selectattr('identity', 'equalto', grp_identity)
+                      | selectattr('table', 'equalto', 'vms')
+                      | selectattr('row', 'equalto', 0) | list }}"
+          ansible.builtin.assert:
+            that:
+              - p1 is changed
+              - p2 is not changed
+              - p3 is changed
+              - mine | length == 1
+              - mine[0].list and mine[0].read
+              - not mine[0].create
+              - not mine[0].modify
+              - not mine[0].delete
+            fail_msg: >-
+              p1={{ p1.changed }} p2={{ p2.changed }} p3={{ p3.changed }}
+              row={{ mine }}
+
+        - name: "24. A table grant and a row grant are different permissions"
+          vergeio.vergeos.permission:
+            group: "{{ grp }}"
+            table: vms
+            row: 1
+            rights: [list, read, modify]
+            state: present
+          register: p4
+
+        - name: "25. The table-level grant is still exactly as it was"
+          vergeio.vergeos.permission:
+            group: "{{ grp }}"
+            table: vms
+            rights: [list, read]
+            state: present
+          register: p5
+
+        - name: "26. Scoping verdicts"
+          ansible.builtin.assert:
+            that:
+              - p4 is changed
+              - p5 is not changed
+            fail_msg: "p4={{ p4.changed }} p5={{ p5.changed }}"
+
+        - name: "27. Revoke both"
+          vergeio.vergeos.permission:
+            group: "{{ grp }}"
+            table: vms
+            row: "{{ item }}"
+            state: absent
+          loop: [0, 1]
+          register: p6
+
+        - name: "28. Revoking again is converged"
+          vergeio.vergeos.permission:
+            group: "{{ grp }}"
+            table: vms
+            state: absent
+          register: p7
+
+        - name: "29. Revoke verdicts"
+          ansible.builtin.assert:
+            that:
+              - p6.results | map(attribute='changed') | list == [true, true]
+              - p7 is not changed
+            fail_msg: "p6={{ p6.results | map(attribute='changed') | list }} p7={{ p7.changed }}"
+
+        - name: "30. group_info reports membership and rights"
+          vergeio.vergeos.group_info:
+            members: true
+            permissions: true
+          register: info
+
+        - name: "31. The scratch group is in there, with what we left it"
+          vars:
+            mine: "{{ info.groups | selectattr('name', 'equalto', grp)
+                      | first }}"
+          ansible.builtin.assert:
+            that:
+              - mine.members.users == [alice]
+              - mine.members.groups == [nested]
+              - bad_member.failed | default(false)
+              - "'zz-rbac-nobody' in bad_member.msg"
+            fail_msg: "info={{ mine }} bad_member={{ bad_member }}"
+
+        - name: PASSED
+          ansible.builtin.debug:
+            msg: >-
+              rbac ladder PASSED: group create → converge ×2 with an SSO
+              identifier (stored in `id`, not `identifier`) → a real change is
+              still seen → members added additively → exact_members removes →
+              a nested group is not confused with a user → an unknown member
+              is refused by name → rights granted, converged, narrowed →
+              table and row grants kept distinct → revoked → converged →
+              group_info agrees
+
+      always:
+        - name: "Teardown: revoke anything left"
+          vergeio.vergeos.permission:
+            group: "{{ grp }}"
+            table: "{{ item.table }}"
+            row: "{{ item.row }}"
+            state: absent
+          loop:
+            - {table: vms, row: 0}
+            - {table: vms, row: 1}
+          failed_when: false
+
+        - name: "Teardown: groups"
+          vergeio.vergeos.group:
+            name: "{{ item }}"
+            state: absent
+          loop: ["{{ grp }}", "{{ nested }}"]
+          failed_when: false
+
+        - name: "Teardown: users"
+          vergeio.vergeos.user:
+            name: "{{ item }}"
+            state: absent
+          loop: ["{{ alice }}", "{{ bob }}"]
+          failed_when: false
+
+        - name: "Teardown: prove zero leftovers"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/groups?fields=name"
+            <<: *api_auth
+            return_content: true
+          register: groups_after
+          changed_when: false
+
+        - name: "Teardown: assert clean"
+          ansible.builtin.assert:
+            that:
+              - grp not in (groups_after.json | map(attribute='name') | list)
+              - nested not in (groups_after.json | map(attribute='name') | list)
+            fail_msg: "scratch groups survived: {{ groups_after.json }}"
