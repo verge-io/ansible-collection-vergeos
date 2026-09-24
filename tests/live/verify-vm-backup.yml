@@ -1,0 +1,312 @@
+---
+# Live ladder for the vm_backup role.
+#
+#   set -a; . ~/.config/vergeos/env; set +a
+#   ansible-playbook verify-vm-backup.yml -e nas_service=<a NAS service>
+#
+# Creates a scratch snapshot profile, export volume, NFS share and export
+# configuration. Everything is zz-* and is torn down in the always: block.
+#
+# Rung 5 exists because the ported version of this ladder did not have it.
+# It asserted that an empty allowed_hosts SKIPPED the share task and called
+# that "not silently widened" -- which is true and beside the point. Skipping
+# does not revoke. Measured: apply with a host listed, re-apply with the list
+# emptied, and the platform still exports the volume to that host while the
+# role's summary says "NFS (no share)". The check that would have caught it is
+# the one nothing did: read the share back.
+- name: Vm backup live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    profile: zz-backup-profile
+    volume: zz-backup-vol
+    share: zz-backup-share
+    allowed_host: "192.0.2.10"        # TEST-NET-1, per RFC 5737
+    # Play-level so every include_role below inherits them; the blocks
+    # then override only the one field under test.
+    vm_backup_nas_service: "{{ nas_service | default('') }}"
+    vm_backup_volume: zz-backup-vol
+    vm_backup_volume_size_gb: 10
+    vm_backup_volume_tier: 1
+    vm_backup_snapshot_profile:
+      name: zz-backup-profile
+      periods:
+        - name: Daily
+          frequency: daily
+          retention: 604800
+          hour: 2
+          quiesce: true
+    vm_backup_nfs_share:
+      name: zz-backup-share
+      allowed_hosts: ["192.0.2.10"]
+      data_access: ro
+      state: present
+    vm_backup_export:
+      max_exports: 2
+      quiesced: true
+      run_now: false
+      vms: []
+  tasks:
+    - name: "0. Preflight: a NAS service must be named"
+      ansible.builtin.assert:
+        that: nas_service is defined
+        fail_msg: "Pass -e nas_service=<name of a NAS service>"
+
+    - name: Ladder
+      block:
+        - name: "1a. Apply the whole policy"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_backup
+
+        - name: "1b. All four layers reported a change on first run"
+          ansible.builtin.assert:
+            that:
+              - vm_backup_profile_result.changed
+              - vm_backup_volume_result.changed
+              - vm_backup_share_result.changed
+              - vm_backup_export_result.changed
+            fail_msg: "first run did not create all four layers"
+
+        - name: "2. Re-run unchanged -- must be idempotent"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_backup
+
+        - name: "2b. Nothing changed the second time"
+          ansible.builtin.assert:
+            that:
+              - not vm_backup_profile_result.changed
+              - not vm_backup_volume_result.changed
+              - not vm_backup_share_result.changed
+              - not vm_backup_export_result.changed
+            fail_msg: >-
+              vm_backup is not idempotent:
+              profile={{ vm_backup_profile_result.changed }}
+              volume={{ vm_backup_volume_result.changed }}
+              share={{ vm_backup_share_result.changed }}
+              export={{ vm_backup_export_result.changed }}
+
+        - name: "3. Drift the retention, and watch it get corrected"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_backup
+          vars:
+            vm_backup_export:
+              max_exports: 4
+              quiesced: true
+              run_now: false
+              vms: []
+
+        - name: "3b. Only the export layer moved"
+          ansible.builtin.assert:
+            that:
+              - vm_backup_export_result.changed
+              - not vm_backup_volume_result.changed
+            fail_msg: "drift correction touched more than the export config"
+
+        - name: "4. An empty allowed_hosts creates no share"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_backup
+          vars:
+            vm_backup_nfs_share:
+              name: zz-backup-share
+              allowed_hosts: []
+              data_access: ro
+              state: present
+
+        - name: "4b. The share task was skipped, not silently widened"
+          ansible.builtin.assert:
+            that: vm_backup_share_result is skipped
+            fail_msg: >-
+              an empty allowed_hosts must not create a share;
+              got {{ vm_backup_share_result }}
+
+        # --- the rungs the exposure gap asked for -----------------------
+        - name: "5a. Read the shares back from the platform"
+          ansible.builtin.include_tasks: read-nfs-shares.yml
+
+        - name: "5b. Emptying the list did NOT revoke anything"
+          ansible.builtin.assert:
+            that:
+              - nfs_shares | selectattr('name', 'equalto', share)
+                | list | length == 1
+              - allowed_host in (nfs_shares
+                                 | selectattr('name', 'equalto', share)
+                                 | map(attribute='allowed_hosts')
+                                 | first | string)
+            fail_msg: >-
+              this rung asserts the CURRENT behaviour so the role's message
+              can be held to it: an empty allowed_hosts skips the task and
+              leaves the export exposed. If the platform or the module has
+              started revoking on its own, the role's wording and its
+              state: absent path both need revisiting.
+              shares={{ nfs_shares }}
+
+        - name: "5c. A run with no hosts and no state is refused"
+          block:
+            - name: "5c-i. Ambiguous share declaration"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.vm_backup
+              vars:
+                vm_backup_nfs_share:
+                  name: zz-backup-share
+                  allowed_hosts: []
+                  data_access: ro
+            - name: "5c-ii. Reaching here means it was accepted"
+              ansible.builtin.fail:
+                msg: "an ambiguous empty allowed_hosts was accepted"
+          rescue:
+            - name: "5c-iii. Refused, and it says which reading to pick"
+              ansible.builtin.assert:
+                that:
+                  - "'does not revoke' in ansible_failed_result.msg"
+                  - "'absent' in ansible_failed_result.msg"
+                fail_msg: "{{ ansible_failed_result.msg }}"
+
+        - name: "5d. state: absent actually revokes it"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_backup
+          vars:
+            vm_backup_nfs_share:
+              name: zz-backup-share
+              allowed_hosts: []
+              data_access: ro
+              state: absent
+
+        - name: "5e. Read the shares back again"
+          ansible.builtin.include_tasks: read-nfs-shares.yml
+
+        - name: "5f. The export is no longer exposed"
+          ansible.builtin.assert:
+            that: >-
+              nfs_shares | selectattr('name', 'equalto', share)
+              | list | length == 0
+            fail_msg: >-
+              state: absent did not revoke the share, so the role offers a
+              revocation path that does not revoke: {{ nfs_shares }}
+
+        - name: "5g. Revoking again is a no-op"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_backup
+          vars:
+            vm_backup_nfs_share:
+              name: zz-backup-share
+              allowed_hosts: []
+              data_access: ro
+              state: absent
+
+        - name: "5h. Assert idempotent revocation"
+          ansible.builtin.assert:
+            that: not vm_backup_share_revoked.changed
+            fail_msg: >-
+              a second revocation reported a change, so the role cannot be
+              left declaring state: absent
+
+        # --- check mode over a dependency chain -------------------------
+        #
+        # The share and the export configuration are both defined in terms
+        # of the volume, so a --check run against a system that does not
+        # have the volume yet cannot evaluate them. It used to say
+        # "NAS volume 'backups' not found", which reads like the operator
+        # typed the wrong name.
+        - name: "7. A check-mode first run explains itself"
+          when: true
+          check_mode: true
+          block:
+            - name: "7a. Point at a volume that does not exist"
+              block:
+                - name: "7a-i. Run against an absent volume"
+                  ansible.builtin.include_role:
+                    name: vergeio.vergeos.vm_backup
+                  vars:
+                    vm_backup_volume: zz-backup-never-created
+                - name: "7a-ii. Reaching here means it evaluated them"
+                  ansible.builtin.fail:
+                    msg: >-
+                      check mode configured a share on a volume that does
+                      not exist
+              rescue:
+                - name: "7a-iii. It names the dependency, not a typo"
+                  ansible.builtin.assert:
+                    that:
+                      - "'defined in terms of volume' in
+                         ansible_failed_result.msg"
+                      - "'check mode cannot create it' in
+                         ansible_failed_result.msg"
+                    fail_msg: >-
+                      expected an explanation of the dependency chain; got
+                      {{ ansible_failed_result.msg }}
+
+        - name: "7b. And created nothing"
+          vergeio.vergeos.nas_volume:
+            insecure: true
+            name: zz-backup-never-created
+            state: absent
+          register: never_created
+
+        - name: "7c. Assert check mode created no volume"
+          ansible.builtin.assert:
+            that: not never_created.changed
+            fail_msg: >-
+              check mode created zz-backup-never-created for real
+
+      rescue:
+        - name: Record the failure
+          ansible.builtin.set_fact:
+            ladder_failed: true
+        - name: Re-raise
+          ansible.builtin.fail:
+            msg: "vm_backup ladder FAILED -- see the task above"
+
+      always:
+        - name: "6. Remove the export configuration"
+          vergeio.vergeos.vm_export:
+            insecure: true
+            volume: "{{ volume }}"
+            state: absent
+
+        - name: "6b. Remove the NFS share"
+          vergeio.vergeos.nas_nfs_share:
+            insecure: true
+            name: "{{ share }}"
+            volume: "{{ volume }}"
+            state: absent
+
+        - name: "6c. Remove the volume"
+          vergeio.vergeos.nas_volume:
+            insecure: true
+            name: "{{ volume }}"
+            state: absent
+
+        - name: "6d. Remove the snapshot profile"
+          vergeio.vergeos.snapshot_profile:
+            insecure: true
+            name: "{{ profile }}"
+            state: absent
+
+        - name: "6e. Deleting the volume again must be a no-op"
+          vergeio.vergeos.nas_volume:
+            insecure: true
+            name: "{{ volume }}"
+            state: absent
+          register: vol_gone
+
+        - name: "6f. Assert absent is idempotent"
+          ansible.builtin.assert:
+            that: not vol_gone.changed
+            fail_msg: "volume was still present after teardown"
+
+    - name: Stop if the ladder failed
+      ansible.builtin.fail:
+        msg: "vm_backup ladder FAILED"
+      when: ladder_failed | default(false)
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          vm_backup ladder PASSED: four layers created -> idempotent
+          re-run -> retention drift corrected without touching the volume
+          -> an empty allowed_hosts creates no share -> and, read back from
+          the platform, revokes nothing either -> an ambiguous declaration
+          is refused -> state: absent really revokes -> revoking twice is a
+          no-op -> a check-mode first run names the dependency chain
+          instead of reading like a typo, and creates nothing -> full
+          teardown, zero leftovers

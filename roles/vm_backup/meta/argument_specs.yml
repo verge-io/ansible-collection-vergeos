@@ -1,0 +1,71 @@
+---
+argument_specs:
+  main:
+    short_description: Snapshot schedule, export target and NFS exposure
+    description:
+      - Enforces four layers of a backup policy from one document - the
+        snapshot schedule, the NAS volume exports land on, read-only NFS
+        exposure so external tooling can ingest them, and the export
+        configuration with generation retention.
+      - Every layer except the volume is optional. Omitting a section leaves
+        that layer unmanaged rather than resetting it to a default.
+      - Does not attach the snapshot profile to individual VMs - that belongs
+        with the VM definition or the C(protect) role - and does not verify
+        that a backup restores, which is C(restore_drill).
+    author:
+      - VergeIO (@vergeio)
+    options:
+      vm_backup_host:
+        description: VergeOS hostname or IP. Defaults to C(VERGEOS_HOST).
+        type: str
+        required: true
+      vm_backup_username:
+        description: Username. Defaults to C(VERGEOS_USERNAME).
+        type: str
+      vm_backup_password:
+        description: Password. Defaults to C(VERGEOS_PASSWORD).
+        type: str
+      vm_backup_insecure:
+        description: Skip SSL validation. Defaults to C(VERGEOS_INSECURE).
+        type: bool
+      vm_backup_nas_service:
+        description: Name of the NAS service the export volume lives on.
+        type: str
+        required: true
+      vm_backup_volume:
+        description: Name of the export volume. Created if missing.
+        type: str
+        default: backups
+      vm_backup_volume_size_gb:
+        description: Size of the export volume in GB.
+        type: int
+        default: 200
+      vm_backup_volume_tier:
+        description:
+          - Storage tier for the export volume.
+          - The tier has to exist. The platform range-checks the number
+            (1-5) and does not check that the tier is present, so naming a
+            missing one is accepted, reads back, and is never honoured.
+        type: int
+        default: 1
+      vm_backup_snapshot_profile:
+        description:
+          - Snapshot schedule to ensure. Set to C(null) to leave snapshot
+            policy unmanaged.
+        type: dict
+      vm_backup_nfs_share:
+        description:
+          - NFS exposure of the export volume. Takes C(name),
+            C(allowed_hosts), C(data_access) and C(state).
+          - No share is created while C(allowed_hosts) is empty - but
+            skipping the task does not revoke a share that already exists.
+            C(state) says which of the two an empty list means - C(present)
+            leaves an existing share untouched, C(absent) revokes it. With
+            an empty list and no C(state) the role refuses rather than guess.
+        type: dict
+      vm_backup_export:
+        description:
+          - Export configuration - C(max_exports) generations to keep,
+            C(quiesced), C(run_now) to run an export during the play, and
+            C(vms) (empty means all).
+        type: dict
