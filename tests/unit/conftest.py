@@ -174,8 +174,8 @@ def no_sleep(monkeypatch):
 # `except` both behave.
 # ---------------------------------------------------------------------------
 try:
-    import pyvergeos  # noqa: F401
-    import pyvergeos.exceptions  # noqa: F401
+    import pyvergeos  # noqa: F401  pylint: disable=unused-import
+    import pyvergeos.exceptions  # noqa: F401  pylint: disable=unused-import
     HAS_REAL_SDK = True
 except ImportError:
     HAS_REAL_SDK = False

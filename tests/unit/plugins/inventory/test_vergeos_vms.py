@@ -4,7 +4,7 @@
 """Unit tests for vergeos_vms inventory plugin"""
 
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 
 # `mock_pyvergeos` now lives in tests/unit/conftest.py, which stubs the SDK
@@ -22,7 +22,7 @@ def inventory_module():
         module.inventory = MagicMock()
         module.display = MagicMock()
         module._options = {}
-        module.get_option = lambda key: module._options.get(key)
+        module.get_option = module._options.get
         return module
 
 

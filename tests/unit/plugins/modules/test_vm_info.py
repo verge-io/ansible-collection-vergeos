@@ -3,7 +3,6 @@
 
 """Unit tests for vm_info module"""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 

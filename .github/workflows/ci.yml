@@ -68,7 +68,7 @@ jobs:
         run: pytest tests/unit -v
 
   sanity:
-    name: sanity (ansible-core ${{ matrix.ansible }})
+    name: sanity (ansible-core ${{ matrix.ansible }}, py${{ matrix.python }})
     runs-on: ubuntu-latest
     # ADVISORY UNTIL #73 MERGES -- then delete this line.
     #
@@ -89,17 +89,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ansible: ["2.15", "2.20"]
+        # ansible-test refuses to run under a Python its own core does not
+        # support, and it is the CONTROLLER Python that matters here:
+        #
+        #   ansible-core 2.15 + py3.12
+        #     -> "This version of ansible-test cannot be executed with Python
+        #         version 3.12.14. Supported Python versions are: 3.9, 3.10,
+        #         3.11"
+        #
+        # So the Python is pinned per core rather than shared across the
+        # matrix. Keep these pairs in step when the floor moves.
+        include:
+          - ansible: "2.15"
+            python: "3.11"
+          - ansible: "2.20"
+            python: "3.12"
     steps:
       - name: Check out the collection
         uses: actions/checkout@v4
         with:
           path: ${{ env.COLLECTION_PATH }}
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
       - name: Install ansible-core ${{ matrix.ansible }}
         run: |
