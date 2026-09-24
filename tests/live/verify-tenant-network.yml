@@ -1,0 +1,246 @@
+---
+# Live ladder for tenant_network_block / tenant_external_ip.
+#
+#   set -a; . ~/.config/vergeos/env; set +a
+#   ansible-playbook verify-tenant-network.yml
+#
+# Runs against a zz- scratch internal network and a zz- scratch tenant, so
+# nothing touches the real LAN. The tenant stays powered off throughout.
+#
+# The ported version built its network by shelling out to `scratch_net.py`,
+# a helper that is not in this repository -- the same defect as #32 and #44.
+# It uses scratch_net_tasks.yml now, the fixture the firewall ladders share.
+#
+# Both modules are create-and-delete only, by SDK design: neither
+# vnet_addresses nor vnet_cidrs has an update path. So `hostname` and
+# `description` are creation facts, and changing the source network is a
+# refusal rather than a move -- rung 3 pins that refusal, because silently
+# leaving an assignment on the wrong network is the failure that matters.
+- name: Tenant network live ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    api: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    net: zz-tenet
+    tenant: zz-tenet-tenant
+    block_cidr: 192.0.2.0/28
+    # Inside the scratch network below, so the assignment is real rather than
+    # an address the parent network has never heard of.
+    ext_ip: 10.99.99.50
+    scratch_api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    scratch_net_cidr: 10.99.99.0/24
+    scratch_net_ip: 10.99.99.1
+
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+      return_content: true
+
+  tasks:
+    - name: Ladder body
+      block:
+        - name: Scratch internal network
+          ansible.builtin.include_tasks: scratch_net_tasks.yml
+          vars:
+            scratch_net_name: "{{ net }}"
+            scratch_net_action: create
+
+        - name: Scratch tenant (powered off, minimal)
+          vergeio.vergeos.tenant:
+            name: "{{ tenant }}"
+            description: tenant-network ladder scratch (zz- disposable)
+            state: present
+
+        - name: "1. Assign a network block"
+          vergeio.vergeos.tenant_network_block:
+            tenant: "{{ tenant }}"
+            network: "{{ net }}"
+            cidr: "{{ block_cidr }}"
+            description: ladder block
+            state: present
+          register: blk
+
+        - name: "2. Identical re-run must converge"
+          vergeio.vergeos.tenant_network_block:
+            tenant: "{{ tenant }}"
+            network: "{{ net }}"
+            cidr: "{{ block_cidr }}"
+            state: present
+          register: blk_rerun
+
+        - name: "Block verdicts: created once, converged, right CIDR"
+          ansible.builtin.assert:
+            that:
+              - blk is changed
+              - blk.network_block.cidr == block_cidr
+              - blk_rerun is not changed
+              - blk_rerun.network_block.key == blk.network_block.key
+            fail_msg: "unexpected block results: {{ blk }} / {{ blk_rerun }}"
+
+        - name: "3. Declaring the wrong source network must be refused"
+          block:
+            - name: Same block, network Core
+              vergeio.vergeos.tenant_network_block:
+                tenant: "{{ tenant }}"
+                network: Core
+                cidr: "{{ block_cidr }}"
+                state: present
+
+            - name: Unreachable — the refusal did not fire
+              ansible.builtin.fail:
+                msg: a moved block was silently accepted
+          rescue:
+            - name: Confirm the refusal names the remedy
+              ansible.builtin.assert:
+                that:
+                  - "'cannot be moved' in (ansible_failed_result.msg | default(''))"
+                fail_msg: "wrong failure: {{ ansible_failed_result | default({}) }}"
+
+        - name: "4. Check-mode IP assignment must not create anything"
+          vergeio.vergeos.tenant_external_ip:
+            tenant: "{{ tenant }}"
+            network: "{{ net }}"
+            ip: "{{ ext_ip }}"
+            state: present
+          check_mode: true
+          register: ip_preview
+
+        - name: "5. Assign the external IP for real"
+          vergeio.vergeos.tenant_external_ip:
+            tenant: "{{ tenant }}"
+            network: "{{ net }}"
+            ip: "{{ ext_ip }}"
+            hostname: zz-tenet-edge
+            state: present
+          register: ip_created
+
+        - name: "6. Identical re-run must converge"
+          vergeio.vergeos.tenant_external_ip:
+            tenant: "{{ tenant }}"
+            network: "{{ net }}"
+            ip: "{{ ext_ip }}"
+            state: present
+          register: ip_rerun
+
+        - name: "IP verdicts: previewed, created once with hostname, converged"
+          ansible.builtin.assert:
+            that:
+              - ip_preview is changed
+              - ip_created is changed
+              - ip_created.external_ip.ip == ext_ip
+              - ip_created.external_ip.hostname == 'zz-tenet-edge'
+              - ip_rerun is not changed
+            fail_msg: >-
+              unexpected IP results:
+              {{ ip_created }} / {{ ip_rerun }}
+
+        - name: "7. Remove both assignments"
+          vergeio.vergeos.tenant_external_ip:
+            tenant: "{{ tenant }}"
+            ip: "{{ ext_ip }}"
+            state: absent
+          register: ip_gone
+
+        - name: Remove the block
+          vergeio.vergeos.tenant_network_block:
+            tenant: "{{ tenant }}"
+            cidr: "{{ block_cidr }}"
+            state: absent
+          register: blk_gone
+
+        - name: "8. Removal must be idempotent"
+          vergeio.vergeos.tenant_network_block:
+            tenant: "{{ tenant }}"
+            cidr: "{{ block_cidr }}"
+            state: absent
+          register: blk_gone_again
+
+        - name: "Removal verdicts"
+          ansible.builtin.assert:
+            that:
+              - ip_gone is changed
+              - blk_gone is changed
+              - blk_gone_again is not changed
+            fail_msg: "unexpected removal results"
+
+      rescue:
+        - name: Record that the ladder failed, so cleanup can still run
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+      always:
+        # Innermost first: an assignment outlives neither its tenant nor its
+        # network, and deleting the network with a block still on it is the
+        # kind of thing that leaves a row nothing reads.
+        - name: Cleanup - external IP
+          vergeio.vergeos.tenant_external_ip:
+            tenant: "{{ tenant }}"
+            ip: "{{ ext_ip }}"
+            state: absent
+          failed_when: false
+
+        - name: Cleanup - network block
+          vergeio.vergeos.tenant_network_block:
+            tenant: "{{ tenant }}"
+            cidr: "{{ block_cidr }}"
+            state: absent
+          failed_when: false
+
+        - name: Cleanup - tenant
+          vergeio.vergeos.tenant:
+            name: "{{ tenant }}"
+            state: absent
+
+        - name: Cleanup - scratch network
+          ansible.builtin.include_tasks: scratch_net_tasks.yml
+          vars:
+            scratch_net_name: "{{ net }}"
+            scratch_net_action: delete
+
+        - name: Re-read every table this ladder wrote to
+          ansible.builtin.uri:
+            url: "{{ api }}/{{ item }}"
+          register: leftovers
+          changed_when: false
+          loop:
+            - "tenants?fields=name"
+            - "vnets?fields=name"
+            - "vnet_cidrs?fields=cidr"
+            - "vnet_addresses?fields=ip"
+
+        - name: Zero leftovers
+          ansible.builtin.assert:
+            that:
+              - tenant not in (leftovers.results[0].json
+                               | map(attribute='name') | list)
+              - net not in (leftovers.results[1].json
+                            | map(attribute='name') | list)
+              - block_cidr not in (leftovers.results[2].json
+                                   | map(attribute='cidr') | list)
+              - ext_ip not in (leftovers.results[3].json
+                               | map(attribute='ip') | list)
+            fail_msg: >-
+              leftovers: tenants={{ leftovers.results[0].json
+                                    | map(attribute='name') | list }},
+              networks={{ leftovers.results[1].json
+                          | map(attribute='name') | list }},
+              cidrs={{ leftovers.results[2].json
+                       | map(attribute='cidr') | list }},
+              addresses={{ leftovers.results[3].json
+                           | map(attribute='ip') | list }}
+
+        - name: Fail the run if the ladder failed before cleanup
+          ansible.builtin.fail:
+            msg: "ladder FAILED -- see the first failed task above; cleanup ran"
+          when: ladder_failed | default(false)
+
+        - name: PASSED
+          ansible.builtin.debug:
+            msg: >-
+              tenant-network ladder PASSED: block assign -> converge ->
+              move refusal -> IP check-mode -> assign with hostname ->
+              converge -> removal x2 idempotent, zero leftovers

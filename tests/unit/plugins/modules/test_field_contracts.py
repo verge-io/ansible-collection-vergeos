@@ -77,7 +77,7 @@ def _argument_spec_options(mod):
 # joins now that #87 is fixed. Every module with a field map is covered.
 MAPPED_MODULES = ['network', 'nic', 'drive', 'user', 'catalog', 'api_key',
                   'group', 'vnet_rule', 'vm', 'nas_volume', 'nas_nfs_share',
-                  'vm_export']
+                  'vm_export', 'tenant']
 
 
 class TestDocumentationMatchesArgumentSpec:
@@ -189,6 +189,55 @@ class TestEveryDiffedFieldIsFetched:
         for column in vm_export.COMPARISON_FIELDS:
             assert column in vm_export.EXPORT_FIELDS, (
                 'vm_export compares %r but does not fetch it' % column)
+
+    def test_tenant(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils import (
+            tenants as shared,
+        )
+        from ansible_collections.vergeio.vergeos.plugins.modules import tenant
+        assert tenant.UPDATE_FIELD_MAP is shared.UPDATE_FIELD_MAP, (
+            'tenant and tenant_info must read the same contract')
+        for api_field in shared.UPDATE_FIELD_MAP.values():
+            assert api_field in shared.COMPARISON_FIELDS, (
+                "tenant diffs %r but never fetches it" % api_field)
+        for column in shared.COMPARISON_FIELDS:
+            assert column in shared.TENANT_FIELDS, (
+                'tenant compares %r but does not fetch it' % column)
+
+    def test_tenant_names_the_joins_it_depends_on(self):
+        """`running` and `status` are not columns on a tenant -- they are
+        joins on the status row. The module decides whether to power the
+        tenant on from `running`, so a projection that omits it reports every
+        tenant as stopped and powers on something already running (#97's
+        shape, on a different table)."""
+        from ansible_collections.vergeio.vergeos.plugins.module_utils import (
+            tenants as shared,
+        )
+        assert 'status#running as running' in shared.TENANT_FIELDS
+        assert 'status#status as status' in shared.TENANT_FIELDS
+        assert 'running' not in shared.TENANT_FIELDS
+        assert 'status' not in shared.TENANT_FIELDS
+
+    def test_tenant_storage_tier_number_is_a_join_not_the_tier_column(self):
+        """The `tier` COLUMN on tenant_storage holds the storage tier's KEY.
+        The tier NUMBER -- what the module's `tier` option means -- exists
+        only as a join. Matching allocations on `tier` would compare a key to
+        a number and silently find nothing, so every run would try to create
+        an allocation that already exists."""
+        from ansible_collections.vergeio.vergeos.plugins.module_utils import (
+            tenants as shared,
+        )
+        assert 'tier#tier as tier_number' in shared.STORAGE_FIELDS
+        assert 'tier' not in shared.STORAGE_FIELDS
+
+    def test_tenant_node_fetches_the_host_it_was_placed_on(self):
+        """Issue #24: an unplaceable tenant node is not reported as a failure
+        anywhere. `host_node` being empty is the only visible difference
+        between "never placed" and "placed and still booting"."""
+        from ansible_collections.vergeio.vergeos.plugins.module_utils import (
+            tenants as shared,
+        )
+        assert 'machine#status#node#$display as host_node' in shared.NODE_FIELDS
 
     def test_api_key_fetches_every_column_it_returns(self):
         """find_keys() asks for LIST_FIELDS explicitly rather than trusting
@@ -477,6 +526,39 @@ class TestCreateAndUpdatePathsAgree:
                 'vm_export maps %r to an API field but does not accept it as '
                 'an option -- the mapping is dead code' % param)
 
+    def test_tenant_update_is_a_subset_of_create(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils import (
+            tenants as shared,
+        )
+        create = set(shared.CREATE_PARAM_MAP)
+        update = set(shared.UPDATE_FIELD_MAP)
+        assert update <= create
+        assert create - update == set(shared.IDENTITY_PARAMS)
+
+    def test_tenant_mapped_parameters_are_all_real_options(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import tenant
+        from ansible_collections.vergeio.vergeos.plugins.module_utils import (
+            tenants as shared,
+        )
+        spec = _argument_spec_options(tenant)
+        for param in set(shared.CREATE_PARAM_MAP) | set(shared.UPDATE_FIELD_MAP):
+            assert param in spec, (
+                'tenant maps %r to an API field but does not accept it as an '
+                'option -- the mapping is dead code' % param)
+
+    def test_tenant_password_flag_is_renamed_on_the_way_out(self):
+        """`require_password_change` is not a column; `change_password` is.
+        The SDK's create() does the rename, so passing the COLUMN name would
+        land in **kwargs and also work -- two spellings, one of which stops
+        working the day the SDK stops translating. The map records which one
+        this module relies on."""
+        from ansible_collections.vergeio.vergeos.plugins.module_utils import (
+            tenants as shared,
+        )
+        assert shared.CREATE_PARAM_MAP['require_password_change'] == \
+            'change_password'
+        assert 'require_password_change' not in shared.UPDATE_FIELD_MAP
+
     def test_nic_mapped_parameters_are_all_real_options(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import nic
         spec = _argument_spec_options(nic)
@@ -541,6 +623,10 @@ class TestNoKnownBadFieldNamesComeBack:
         # vm_export needs no renames: quiesced, create_current and max_exports
         # are all real columns on a live volume_vm_exports row (26.1.8).
         'vm_export': {},
+        'tenant': {
+            'require_password_change': 'the column is change_password; the '
+                                       "SDK's create() does the rename",
+        },
         # api_key needs no renames on the write path either -- but its READ
         # path does: the API spells the last-login pair lastlogin_*, and that
         # mapping lives in module_utils/api_keys.py so the info module cannot

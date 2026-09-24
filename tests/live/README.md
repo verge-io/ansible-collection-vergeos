@@ -64,6 +64,8 @@ precisely because nothing read that table.
 | Ladder | Covers |
 |---|---|
 | `verify-field-contract.yml` | the compare-and-map contract for `network`, `nic`, `drive`, `user` (#75) |
+| `verify-tenant.yml` | `tenant` / `tenant_info` — nodes, storage, power, and the placement field issue #24 turns on (#40) |
+| `verify-tenant-network.yml` | `tenant_external_ip` / `tenant_network_block` (#40) |
 | `verify-nas-modules.yml` | `nas_volume` / `nas_nfs_share` — volumes, NFS exports, and the two convergence bugs they shipped with (#35) |
 | `verify-vm-export.yml` | `vm_export` — configuration, a real export run, and the platform's own statistics row (#43) |
 | `verify-vm-clone.yml` | `vm_clone` — clone from a snapshot, idempotent on the clone name (#42) |

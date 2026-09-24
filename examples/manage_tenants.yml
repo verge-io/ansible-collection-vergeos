@@ -1,0 +1,72 @@
+---
+# Tenant-per-customer as code.
+#
+# Auth comes from the standard environment variables:
+#   VERGEOS_HOST, VERGEOS_USERNAME, VERGEOS_PASSWORD, VERGEOS_INSECURE
+#
+# Run:  ansible-playbook examples/manage_tenants.yml
+#
+# The sizes below are deliberately small and overridable, for the reason
+# issue #22 was opened: the version of this example that shipped before asked
+# for tier 3 storage and 8-core/32 GB nodes. Tier numbering is per system and
+# a single-tier system is perfectly normal, so `tier: 3` failed outright on
+# most of them; and a node that large may be more than the cluster can place,
+# which is issue #24 -- a tenant that cannot be placed simply never starts.
+#
+# Override for a real fleet:
+#   ansible-playbook examples/manage_tenants.yml \
+#     -e '{"customers":[{"name":"acme","description":"ACME","nodes":[...]}]}'
+
+- name: Manage tenants declaratively
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # Tier 1 exists on every VergeOS system. Higher tiers may not.
+    tenant_storage_tier: 1
+    tenant_node_cores: 2
+    tenant_node_ram_gb: 4
+    tenant_storage_gb: 50
+    customers:
+      - name: acme
+        description: ACME Corp production tenant
+      - name: globex
+        description: Globex staging tenant
+
+  tasks:
+    - name: Ensure each customer tenant exists and is running
+      vergeio.vergeos.tenant:
+        name: "{{ item.name }}"
+        description: "{{ item.description }}"
+        nodes:
+          - name: "{{ item.name }}-node1"
+            cpu_cores: "{{ item.cpu_cores | default(tenant_node_cores) }}"
+            ram_gb: "{{ item.ram_gb | default(tenant_node_ram_gb) }}"
+        storage:
+          - tier: "{{ item.tier | default(tenant_storage_tier) }}"
+            provisioned_gb: "{{ item.provisioned_gb
+                                | default(tenant_storage_gb) }}"
+        state: running
+      loop: "{{ customers }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # A tenant that cannot be placed does not fail -- it returns to stopped
+    # and the platform reports no reason (#24). When the task above times
+    # out, its `placement` return says which nodes were never given a
+    # physical host, and what the cluster had available at the time.
+
+    - name: Report the tenant fleet
+      vergeio.vergeos.tenant_info:
+      register: fleet
+
+    - name: Show fleet summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.name }}: {{ 'running' if item.running else 'stopped' }},
+          {{ item.nodes | length }} node(s),
+          {{ item.storage | map(attribute='provisioned_gb') | sum }} GB
+          provisioned
+      loop: "{{ fleet.tenants }}"
+      loop_control:
+        label: "{{ item.name }}"
