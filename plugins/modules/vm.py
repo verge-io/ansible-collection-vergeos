@@ -237,22 +237,6 @@ def machine_type_matches(desired, current):
     return bool(prefix and current and str(current).startswith(prefix))
 
 
-def resolve_snapshot_profile(module, client):
-    """Profile NAME (what the operator writes) -> the raw field value.
-
-    The vm row stores the profile's $key, not its name. '' clears the
-    enrolment.
-    """
-    name = module.params['snapshot_profile']
-    if name == '':
-        return ''
-    try:
-        profile = resolve_one(module, client.snapshot_profiles, name, 'snapshot profile')
-    except NotFoundError:
-        module.fail_json(msg="Snapshot profile '%s' not found" % name)
-    return dict(profile)['$key']
-
-
 def create_vm(module, client):
     """Create a new VM using SDK"""
     vm_data = build_vm_data(module)
