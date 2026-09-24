@@ -213,6 +213,18 @@
           WRITES, so unlike health_report it must stay skipped under --check
           rather than being given check_mode: false (#28).
 
+    # The role decides which of its two summaries to print from whether the
+    # export RAN, not from ansible_check_mode -- that variable reports the
+    # --check flag and reads false inside the block above, which would have
+    # printed "0 system period(s) -> " for an export that never happened.
+    - name: "5g. Check mode left no result to report"
+      ansible.builtin.assert:
+        that: billing_export_result == {}
+        fail_msg: >-
+          after a check-mode run the role reported
+          {{ billing_export_result }}, which means it took the branch for a
+          run that actually exported something.
+
     - name: "6. Teardown scratch output"
       ansible.builtin.file:
         path: "{{ dest }}"
