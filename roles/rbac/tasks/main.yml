@@ -1,0 +1,87 @@
+---
+# rbac -- reconcile groups, their membership, and their permissions from one
+# document.
+#
+# Groups first, then membership, then rights. The order matters: a permission
+# is attached to an identity, and a group has no identity until it exists.
+
+- name: Preflight -- every group entry must be named
+  ansible.builtin.assert:
+    that:
+      - rbac_host | length > 0
+      - rbac_groups | rejectattr('name', 'defined') | list | length == 0
+    fail_msg: >-
+      rbac needs rbac_host (or VERGEOS_HOST), and every entry in rbac_groups
+      needs a name.
+    quiet: true
+
+- name: Reconcile groups and their membership
+  vergeio.vergeos.group:
+    host: "{{ rbac_host }}"
+    username: "{{ rbac_username }}"
+    password: "{{ rbac_password }}"
+    insecure: "{{ rbac_insecure }}"
+    name: "{{ item.name }}"
+    description: "{{ item.description | default(omit) }}"
+    email: "{{ item.email | default(omit) }}"
+    identifier: "{{ item.identifier | default(omit) }}"
+    enabled: "{{ item.enabled | default(omit) }}"
+    users: "{{ item.users | default(omit) }}"
+    groups: "{{ item.groups | default(omit) }}"
+    exact_members: "{{ item.exact_members | default(false) }}"
+  loop: "{{ rbac_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Grant the declared permissions
+  ansible.builtin.include_tasks: grants.yml
+  loop: "{{ rbac_groups }}"
+  loop_control:
+    loop_var: rbac_group
+    label: "{{ rbac_group.name }}"
+  when: rbac_group.permissions | default([]) | length > 0
+
+- name: Revoke permissions that are not declared
+  ansible.builtin.include_tasks: purge.yml
+  loop: "{{ rbac_groups }}"
+  loop_control:
+    loop_var: rbac_group
+    label: "{{ rbac_group.name }}"
+  when: rbac_exact_permissions | bool
+
+- name: Read back who can do what
+  vergeio.vergeos.group_info:
+    host: "{{ rbac_host }}"
+    username: "{{ rbac_username }}"
+    password: "{{ rbac_password }}"
+    insecure: "{{ rbac_insecure }}"
+    members: true
+    permissions: true
+  register: rbac_state
+  changed_when: false
+  when: rbac_report | bool
+
+- name: Report who can do what
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.name }}:
+      users={{ (item.members | default({})).users | default([]) }}
+      groups={{ (item.members | default({})).groups | default([]) }}
+      rights={{ item.permissions | default([])
+                | map(attribute='table') | list }}
+  loop: "{{ rbac_state.groups | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: rbac_report | bool
+
+# System groups are the platform's own. Reported rather than reconciled --
+# a document that quietly rewrote them would be a surprising way to lose
+# administrative access.
+- name: Note the platform's own groups
+  ansible.builtin.debug:
+    msg: >-
+      platform-managed groups, not reconciled by this role:
+      {{ rbac_state.system_groups | default([]) }}
+  when:
+    - rbac_report | bool
+    - rbac_state.system_groups | default([]) | length > 0
