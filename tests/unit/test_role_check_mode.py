@@ -23,6 +23,29 @@ pipes ``''`` into ``from_json``.
 thing and do not. The first is a claim about the report; the second is
 permission to run anyway. A read-only task needs both.
 
+There are two valid answers, not one, and the difference is whether the
+command WRITES anything:
+
+  read-only  ``check_mode: false`` on the producer. It runs, the parse works,
+             and --check reports real findings -- which is the whole point of
+             running a reporting role in check mode.
+
+  writes     leave the producer skipped, and make the PARSE survive an empty
+             stdout: ``| default('{}', true) | from_json``. billing_export is
+             this case -- it writes CSVs to the controller, and a --check run
+             that quietly produced an invoicing artifact would be worse than
+             one that crashed.
+
+Forcing the first answer everywhere would make check mode write files. The
+guard accepts either.
+
+What it does NOT accept, because it does not work: ``when: not
+ansible_check_mode`` on the parse. ``set_fact`` finalizes its arguments before
+the condition is evaluated, so ``from_json`` still runs on the empty string
+and the play still aborts with the same trace. That looked obviously correct,
+passed review in this file's own first draft, and cost a live ladder run to
+disprove -- which is why it is named here rather than left as an omission.
+
 Why this is a test and not a lint rule: nothing in CI runs a playbook at all,
 in check mode or otherwise -- the ladders need a live cluster. This check
 needs neither. It reads the task files, finds every variable that is parsed as
@@ -56,10 +79,20 @@ _IDS = [os.path.relpath(p, _root()) for p in _task_files()]
 # chain -- the variable name is what matters, not the filters after it.
 _PARSED = re.compile(r'(\w+)\s*\.\s*stdout\b[^}]*\|\s*from_json')
 
+# Same shape, but capturing the variable, for the "defended" case.
+_DEFENDED_VAR = re.compile(
+    r'(\w+)\s*\.\s*stdout\b[^}]*\|\s*default\([^)]*\)[^}]*\|\s*from_json')
+
 # Task keys that produce stdout worth parsing. `uri` and the vergeos modules
 # are unaffected: they run in check mode, or return structured data already.
 _PRODUCERS = ('ansible.builtin.command', 'ansible.builtin.shell',
               'ansible.builtin.script', 'command', 'shell', 'script')
+
+# The second remedy, for a producer that writes: make the parse survive an
+# empty stdout. It must be in the expression -- see the module docstring for
+# why a `when:` on the same task is not enough.
+_PARSE_DEFENDED = re.compile(
+    r'\.\s*stdout\b[^}]*\|\s*default\([^)]*\)[^}]*\|\s*from_json')
 
 
 def _flatten(tasks):
@@ -90,6 +123,9 @@ def test_every_parsed_command_runs_in_check_mode(path):
                   for task in _load(path)
                   if isinstance(task.get('register'), str)}
 
+    # The other remedy: the parse itself tolerates an empty stdout.
+    defended = set(_DEFENDED_VAR.findall(body))
+
     offenders = []
     for name in sorted(parsed):
         task = registered.get(name)
@@ -99,6 +135,8 @@ def test_every_parsed_command_runs_in_check_mode(path):
             continue                      # not a command; check mode is fine
         if task.get('check_mode') is False:
             continue
+        if name in defended:
+            continue
         offenders.append('%r (registered by %r)'
                          % (name, task.get('name', '<unnamed>')))
 
@@ -106,9 +144,15 @@ def test_every_parsed_command_runs_in_check_mode(path):
         "%s parses these as JSON, but the task that produces them is skipped "
         "under --check, so from_json is handed an empty string and the play "
         "aborts with a stack trace: %s.\n\n"
-        "Add `check_mode: false` to the producing task. `changed_when: false` "
-        "is not the same claim -- it says the task changes nothing, not that "
-        "it is safe to run anyway. This is issue #28."
+        "Two ways out, and which one depends on whether the command WRITES:\n"
+        "  read-only -> `check_mode: false` on the producing task. Note that "
+        "`changed_when: false` is not the same claim: it says the task "
+        "changes nothing, not that it is safe to run anyway.\n"
+        "  writes    -> `| default(\'{}\', true) | from_json` on the parse, so "
+        "check mode produces nothing instead of crashing. A `when:` on that "
+        "task does NOT work: set_fact finalizes its args before the condition "
+        "is evaluated.\n"
+        "This is issue #28."
         % (os.path.relpath(path, _root()), ', '.join(offenders)))
 
 
@@ -137,5 +181,63 @@ def test_the_guard_can_actually_fail():
         with pytest.raises(AssertionError) as caught:
             test_every_parsed_command_runs_in_check_mode(path)
         assert 'probe_raw' in str(caught.value)
+    finally:
+        os.unlink(path)
+
+
+def test_a_defended_parse_is_also_accepted():
+    """The remedy for a producer that writes.
+
+    Demanding `check_mode: false` everywhere would make a --check run of
+    billing_export actually write an invoicing CSV.
+    """
+    import tempfile
+    body = (
+        "- name: Run the export\n"
+        "  ansible.builtin.command:\n"
+        "    cmd: /bin/true\n"
+        "  register: probe_raw\n"
+        "  changed_when: true\n"
+        "\n"
+        "- name: Parse it\n"
+        "  ansible.builtin.set_fact:\n"
+        "    probe: \"{{ probe_raw.stdout | default('{}', true) "
+        "| from_json }}\"\n"
+    )
+    with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        test_every_parsed_command_runs_in_check_mode(path)   # must not raise
+    finally:
+        os.unlink(path)
+
+
+def test_a_bare_when_is_not_accepted():
+    """The remedy that looks right and is not.
+
+    set_fact finalizes its arguments before evaluating `when`, so from_json
+    runs on the empty string anyway. Measured: it aborted a live ladder run
+    with the identical trace the condition was added to prevent.
+    """
+    import tempfile
+    body = (
+        "- name: Run the export\n"
+        "  ansible.builtin.command:\n"
+        "    cmd: /bin/true\n"
+        "  register: probe_raw\n"
+        "  changed_when: true\n"
+        "\n"
+        "- name: Parse it\n"
+        "  ansible.builtin.set_fact:\n"
+        "    probe: \"{{ probe_raw.stdout | from_json }}\"\n"
+        "  when: not ansible_check_mode\n"
+    )
+    with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        with pytest.raises(AssertionError):
+            test_every_parsed_command_runs_in_check_mode(path)
     finally:
         os.unlink(path)

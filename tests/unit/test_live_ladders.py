@@ -80,6 +80,16 @@ _PLAYBOOK_DIR_PATH = re.compile(r'\{\{\s*playbook_dir\s*\}\}(/[^"\'\s\]]+)')
 # repo-relative reference too, and that is the one #44 slipped through on.
 _SCRIPT_NAME = re.compile(r'[\w./-]+\.(?:py|sh)\b')
 
+# ...and a third spelling, which cost a live run of verify-health-report.yml:
+# the ladder defines a var FROM playbook_dir and then references files through
+# that var. The two checks above see `{{ playbook_dir }}/../../tests/fixtures`,
+# resolve it to a directory that exists, and never look at
+# `{{ fixtures }}/health-healthy.json` -- which did not exist here at all. One
+# level of indirection is enough to cover it and cheap to follow.
+_VAR_FROM_PLAYBOOK_DIR = re.compile(
+    r'^\s*(\w+):\s*["\']\{\{\s*playbook_dir\s*\}\}(/[^"\']*)["\']',
+    re.M)
+
 # Paths that are deliberately outside this repository.
 _NOT_OURS = ('/usr/', '/bin/', '/etc/', '/tmp/', 'python')
 
@@ -115,6 +125,17 @@ def test_playbook_dir_references_resolve(path):
         target = os.path.normpath(os.path.join(_live_dir(), ref.lstrip('/')))
         if not os.path.exists(target):
             dangling.append(ref)
+
+    # One level of indirection: `fixtures: "{{ playbook_dir }}/../fixtures"`
+    # followed by `"{{ fixtures }}/health-healthy.json"`.
+    for name, base in _VAR_FROM_PLAYBOOK_DIR.findall(body):
+        used = re.compile(r'\{\{\s*%s\s*\}\}(/[^"\'\s}]+)' % re.escape(name))
+        for suffix in used.findall(executable):
+            ref = base.rstrip('/') + suffix
+            target = os.path.normpath(os.path.join(_live_dir(),
+                                                   ref.lstrip('/')))
+            if not os.path.exists(target):
+                dangling.append('{{ %s }}%s -> %s' % (name, suffix, ref))
     assert not dangling, (
         "%s references files that do not exist in this repository: %s"
         % (os.path.basename(path), sorted(set(dangling))))

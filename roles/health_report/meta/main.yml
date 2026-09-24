@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  author: VergeIO
+  description: >-
+    Read-only green/amber/red health digest for a VergeOS system --
+    alarms, nodes, tier capacity, cloud-snapshot recency and NAS
+    services -- with an optional webhook and CI gate.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.15"
+  galaxy_tags:
+    - vergeos
+    - monitoring
+    - health
+dependencies: []
