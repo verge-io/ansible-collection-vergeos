@@ -1,0 +1,164 @@
+---
+# CI for vergeio.vergeos.
+#
+# This repository had no workflow of any kind until this file: `.github/` was
+# absent on every branch and in every commit, and `main`'s branch protection
+# required a review but zero status checks. The unit suite was red on `main`
+# for weeks (#66) and nothing surfaced it, because the only way to see it was
+# to run pytest locally.
+#
+# See issue #66 and the Wave 0 section of the PR plan.
+name: CI
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The collection MUST live at ansible_collections/<ns>/<name> for both
+  # ansible-test and the module import paths used by the unit tests.
+  COLLECTION_PATH: ansible_collections/vergeio/vergeos
+
+jobs:
+  units:
+    name: units (ansible-core ${{ matrix.ansible }}, py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Floor declared by meta/runtime.yml (requires_ansible >=2.15.0).
+          - ansible: "2.15"
+            python: "3.11"
+          # What the collection is currently developed against.
+          - ansible: "2.20"
+            python: "3.12"
+    steps:
+      - name: Check out the collection
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.COLLECTION_PATH }}
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install ansible-core ${{ matrix.ansible }} and test deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "ansible-core~=${{ matrix.ansible }}.0"
+          python -m pip install pytest pytest-mock
+          # pyvergeos is a hard runtime requirement. Install it so the tests
+          # exercise the real exception classes rather than a stub -- see the
+          # mock_pyvergeos fixture in tests/unit/conftest.py.
+          python -m pip install -r ${{ env.COLLECTION_PATH }}/requirements.txt
+
+      - name: Run unit tests
+        working-directory: ${{ env.COLLECTION_PATH }}
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: pytest tests/unit -v
+
+  sanity:
+    name: sanity (ansible-core ${{ matrix.ansible }})
+    runs-on: ubuntu-latest
+    # ADVISORY UNTIL #73 MERGES -- then delete this line.
+    #
+    # `dev` fails sanity today, and not because of anything in this PR.
+    # Measured on this branch with ansible-core 2.20.9:
+    #
+    #     validate-modules : 29 errors
+    #     yamllint         :  3 errors
+    #
+    # Every one of them is plugins/modules/network.py, whose DOCUMENTATION
+    # block is unparsable YAML (#17). PR #73 fixes it and takes both counts to
+    # zero -- verified. Gating on sanity now would make this PR, which fixes
+    # the unit suite, unmergeable because of an unrelated defect.
+    #
+    # Once #73 is in: remove `continue-on-error` and add "sanity" to dev's
+    # required status checks.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        ansible: ["2.15", "2.20"]
+    steps:
+      - name: Check out the collection
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.COLLECTION_PATH }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-core ${{ matrix.ansible }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "ansible-core~=${{ matrix.ansible }}.0"
+
+      - name: Run ansible-test sanity
+        working-directory: ${{ env.COLLECTION_PATH }}
+        run: ansible-test sanity --local -v --color
+
+  lint:
+    name: ansible-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the collection
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.COLLECTION_PATH }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-lint
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ansible-lint
+
+      - name: Run ansible-lint
+        working-directory: ${{ env.COLLECTION_PATH }}
+        run: ansible-lint --profile production
+
+  build:
+    name: galaxy build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the collection
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.COLLECTION_PATH }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-core
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ansible-core
+
+      - name: Build the collection artifact
+        working-directory: ${{ env.COLLECTION_PATH }}
+        run: ansible-galaxy collection build --output-path ./dist
+
+      - name: Upload the artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: collection-tarball
+          path: ${{ env.COLLECTION_PATH }}/dist/*.tar.gz
+          if-no-files-found: error
