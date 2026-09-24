@@ -124,6 +124,37 @@ discovered: NAS services are rows in `vm_services`, and so is the cluster's own
 Services VM, with no column separating them. Both ladders print the candidates
 rather than guessing.
 
+## The check-mode sweep
+
+Nothing in CI runs a playbook against a live system, so nothing runs the
+shipped examples the way an operator does. Issue #28 was six roles aborting
+under `--check` with a `from_json` stack trace — all six read-only reporters,
+which is exactly when someone reaches for `--check`.
+
+Two things guard it now, and they cover different halves:
+
+- `tests/unit/test_role_check_mode.py` runs in CI, with no cluster. It insists
+  that any variable parsed with `from_json` is produced by a task carrying
+  `check_mode: false`. That is #28's exact shape.
+- The `examples parse` CI job loads every example as a playbook. That catches a
+  broken example, not a broken role.
+
+Neither replaces actually running them. When you have a cluster:
+
+```bash
+set -a; . ~/.config/vergeos/env; set +a
+for f in examples/*.yml; do
+  ansible-playbook --check "$f" || echo "FAILED: $f"
+done
+```
+
+Read the failures rather than treating the list as a pass/fail. Several are
+**correct**: `delete_snapshot.yml` and `vm_snapshots.yml` refuse without `-e`,
+which is the behaviour they are supposed to have. Others fail because check
+mode does not actually create the object a later task then looks up — inherent
+to a create-then-configure playbook, not a defect. What you are looking for is
+a *stack trace*.
+
 ## Adding one
 
 1. Name every object `zz-<ladder>-<thing>`.
