@@ -1,0 +1,53 @@
+---
+# lb_stack -- a load balancer that IS a VM. Labelled honestly.
+#
+# VergeOS has no NSX-ALB-style fabric load balancer. This is the
+# mitigation, and it is worth being precise about what that means: you
+# get haproxy (optionally with keepalived for a VIP) deployed and
+# configured as code, and you operate it. It is not a service the
+# platform provides, and it does not become one because Ansible
+# created it.
+#
+# Composes proven pieces: a golden template from image_pipeline ->
+# vm_clone -> a rendered cloud-init document -> nic -> boot. The
+# renderer in files/lb_render.py is a pure function with its own tests.
+
+# Connection.
+lb_stack_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+lb_stack_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+lb_stack_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+lb_stack_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(false, true) | bool }}"
+
+# The LB VM name, and the golden template to clone. Both required.
+lb_stack_name: ""
+lb_stack_template: ""
+
+# Template snapshot to clone from.
+lb_stack_snapshot: golden
+
+# Network the LB's NIC attaches to.
+lb_stack_network: External
+
+lb_stack_cpu_cores: 1
+lb_stack_ram_mb: 1024
+
+# Boot after deploying.
+lb_stack_power: true
+
+# The spec that drives the rendered configuration. Required.
+#
+#   lb_stack_spec:
+#     hostname: lb1
+#     frontends:
+#       - {name: web, bind_port: 80, default_backend: app}
+#     backends:
+#       - name: app
+#         httpchk: true
+#         servers:
+#           - {name: a, host: 192.0.2.10, port: 8081}
+#           - {name: b, host: 192.0.2.11, port: 8081}
+#     ha: {vip: 192.0.2.100/24, state: MASTER, priority: 200}
+#
+# For an active/backup pair, run the role twice with different names
+# and ha.state MASTER / BACKUP with distinct priorities.
+lb_stack_spec: {}

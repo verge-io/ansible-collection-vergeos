@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  author: VergeIO
+  description: >-
+    Deploy one k3s Kubernetes node as a VM. VergeOS has no managed
+    Kubernetes service; this is DIY k8s you operate. A cluster is this
+    role run once per node with a shared token.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.15"
+  galaxy_tags:
+    - vergeos
+    - kubernetes
+    - k3s
+dependencies: []

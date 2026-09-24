@@ -66,6 +66,8 @@ precisely because nothing read that table.
 | `verify-field-contract.yml` | the compare-and-map contract for `network`, `nic`, `drive`, `user` (#75) |
 | `verify-health-report.yml` | the `health_report` role — capacity, snapshot age and NAS verdicts (#45) |
 | `verify-billing-export.yml` | the `billing_export` role — and that its numbers agree with `tenant_info` (#46, #27) |
+| `verify-k3s-node.yml` | the `k3s_node` role — clone, render, cloud-init, boot, adopt (#50) |
+| `verify-lb-stack.yml` | the `lb_stack` role — haproxy/keepalived rendered as code (#51) |
 | `verify-image-pipeline.yml` | the `image_pipeline` role — qcow2 to OVA to a versioned golden template (#49) |
 | `verify-vm-backup.yml` | the `vm_backup` role — snapshot schedule, export volume, NFS exposure, export retention (#52) |
 | `verify-restore-drill.yml` | the `restore_drill` role — and that a drill which should fail does (#53) |

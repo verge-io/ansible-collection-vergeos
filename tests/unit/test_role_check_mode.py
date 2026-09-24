@@ -345,3 +345,120 @@ def test_a_comment_explaining_the_trap_is_not_a_violation():
         test_no_role_gates_on_ansible_check_mode(path)   # must not raise
     finally:
         os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# The same defect, spelled without from_json.
+#
+# The guard above matches `<var>.stdout | from_json`, because that is the
+# spelling that crashes. k3s_node and lb_stack used the other one: a renderer
+# whose stdout is a cloud-init document, consumed raw.
+#
+# That does not crash. Measured on ansible-core 2.21, a skipped command
+# registers an EMPTY stdout rather than no stdout at all:
+#
+#     TASK [Render something]      skipping: [localhost]
+#     TASK [Consume its stdout]    ok: [localhost] => "user_data is "
+#
+# So the role carried on and attached an empty cloud-init document, and every
+# task reported success. A VM that boots with no configuration looks exactly
+# like a VM that booted.
+#
+# A guard that catches one spelling of a defect and not the other reads as
+# coverage -- which is the lesson #44 already cost this repository once.
+# ---------------------------------------------------------------------------
+
+_STDOUT_REF = re.compile(r'(\w+)\s*\.\s*stdout\b')
+
+
+@pytest.mark.parametrize('path', _task_files(), ids=_IDS)
+def test_every_consumed_stdout_runs_in_check_mode(path):
+    with open(path) as handle:
+        body = handle.read()
+
+    referenced = set(_STDOUT_REF.findall(body))
+    if not referenced:
+        return
+
+    tasks = _load(path)
+    registered = {task['register']: task
+                  for task in tasks
+                  if isinstance(task.get('register'), str)}
+
+    # A reference that already tolerates an empty stdout is the second
+    # remedy, the same one billing_export uses.
+    defended = set(re.findall(
+        r'(\w+)\s*\.\s*stdout\b[^}]*\|\s*default\(', body))
+
+    offenders = []
+    for name in sorted(referenced):
+        task = registered.get(name)
+        if task is None:
+            continue
+        if not any(key in task for key in _PRODUCERS):
+            continue
+        if task.get('check_mode') is False:
+            continue
+        if name in defended:
+            continue
+        offenders.append('%r (registered by %r)'
+                         % (name, task.get('name', '<unnamed>')))
+
+    assert not offenders, (
+        "%s consumes these as stdout, but the task that produces them is "
+        "skipped under --check: %s.\n\n"
+        "A skipped command still registers an EMPTY stdout, so this does "
+        "not crash -- it quietly hands the next task an empty string. When "
+        "that string is a configuration document, the run reports success "
+        "and produces a machine with no configuration on it.\n"
+        "Same two remedies as #28: `check_mode: false` on the producer when "
+        "it only reads, or `| default(...)` on every reference when it "
+        "writes."
+        % (os.path.relpath(path, _root()), ', '.join(offenders)))
+
+
+def test_the_raw_stdout_guard_can_fail():
+    import tempfile
+    body = (
+        "- name: Render the config\n"
+        "  ansible.builtin.command:\n"
+        "    cmd: /bin/true\n"
+        "  register: render_raw\n"
+        "  changed_when: false\n"
+        "\n"
+        "- name: Attach it\n"
+        "  ansible.builtin.debug:\n"
+        "    msg: \"{{ render_raw.stdout }}\"\n"
+    )
+    with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        with pytest.raises(AssertionError) as caught:
+            test_every_consumed_stdout_runs_in_check_mode(path)
+        assert 'render_raw' in str(caught.value)
+    finally:
+        os.unlink(path)
+
+
+def test_check_mode_false_satisfies_the_raw_guard():
+    import tempfile
+    body = (
+        "- name: Render the config\n"
+        "  ansible.builtin.command:\n"
+        "    cmd: /bin/true\n"
+        "  register: render_raw\n"
+        "  changed_when: false\n"
+        "  check_mode: false\n"
+        "\n"
+        "- name: Attach it\n"
+        "  ansible.builtin.debug:\n"
+        "    msg: \"{{ render_raw.stdout }}\"\n"
+    )
+    with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        test_every_consumed_stdout_runs_in_check_mode(path)   # must not raise
+    finally:
+        os.unlink(path)

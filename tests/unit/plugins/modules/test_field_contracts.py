@@ -340,6 +340,49 @@ class TestCreateAndUpdatePathsAgree:
             assert column in vm.VM_FIELDS, (
                 'vm compares %r but does not fetch it' % column)
 
+    def test_vm_fetches_the_power_state_it_gates_on(self):
+        """`state: running` on a running VM FAILED:
+
+            API error: Error starting machine: Machine is already running
+            with status 'running'
+
+        power_on_vm() returns early when the row says the VM is running, and
+        the row never said so -- this module asks for an explicit field list,
+        and neither `running` nor `status` survives one. Measured on 26.1.8:
+
+            fields=...,running,status            silently dropped
+            fields=most                          absent
+            fields=all                           absent
+            status#running as running            silently dropped
+            machine#status#running as running    WORKS
+
+        The SDK's DEFAULT projection carries them, which is why vm_info gets
+        power state right and this module could not. The moment a module
+        names its fields, it owns every field it reads.
+        """
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        joined = ' '.join(vm.VM_FIELDS)
+        assert 'machine#status#running as running' in vm.VM_FIELDS
+        assert 'machine#status#status as status' in vm.VM_FIELDS
+        # The spellings that do not work, named so they cannot come back.
+        assert 'status#running as running' not in vm.VM_FIELDS
+        assert ' running' not in ' ' + joined.replace(
+            'machine#status#running as running', '')
+
+    def test_the_power_guards_read_fields_the_projection_supplies(self):
+        """Both directions. `state: stopped` had the same hole and reported
+        changed forever instead of failing, which is why it went unnoticed
+        for longer."""
+        import inspect
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        supplied = {alias.split(' as ')[-1] for alias in vm.VM_FIELDS}
+        for func in (vm.power_on_vm, vm.power_off_vm):
+            source = inspect.getsource(func)
+            for field in re.findall(r"vm_dict\.get\('(\w+)'\)", source):
+                assert field in supplied, (
+                    '%s gates on %r, which vm does not fetch'
+                    % (func.__name__, field))
+
     def test_vnet_rule_update_is_a_subset_of_create(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import vnet_rule
         create = set(vnet_rule.CREATE_PARAM_MAP)
