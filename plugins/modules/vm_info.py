@@ -82,6 +82,29 @@ if HAS_PYVERGEOS:
     )
 
 
+# The SDK's default projection is a sensible summary of 24 columns, and it
+# omits two an operator regularly needs in order to ANSWER A QUESTION rather
+# than to change something:
+#
+#   snapshot_profile   which protection policy this VM is on (its $key)
+#   tags               what it is classified as
+#
+# Both are ordinary columns on the vm row -- 'all' returns them, checked
+# against a live row on 26.1.8 (74 columns). They are named alongside 'all'
+# anyway, because that is what this module actually needs: if 'all' ever
+# narrows, the names say what must not be lost, and the test asserts it.
+#
+# Before this, asking "which VMs are unprotected?" meant bypassing the
+# collection entirely. The protect role shipped a Python script whose whole
+# job was this one projection; it is deleted in the same change.
+#
+# 'all' as a bare STRING is wrong on the floor version -- pyvergeos 1.2.7
+# serialises it per-character and the API returns a single field with no error
+# (pyvergeos#101). The list form is correct on every supported version. Same
+# trap network_info documents (#25).
+FIELDS = ['all', 'snapshot_profile', 'tags']
+
+
 def main():
     argument_spec = vergeos_argument_spec()
     argument_spec.update(
@@ -100,13 +123,14 @@ def main():
         if name:
             # Get specific VM by name
             try:
-                vm = resolve_one(module, client.vms, name, 'VM')
+                vm = resolve_one(module, client.vms, name, 'VM',
+                                 fields=FIELDS)
                 vms = [dict(vm)]
             except NotFoundError:
                 vms = []
         else:
             # Get all VMs
-            vms = [dict(vm) for vm in client.vms.list()]
+            vms = [dict(vm) for vm in client.vms.list(fields=FIELDS)]
 
         module.exit_json(changed=False, vms=vms)
 

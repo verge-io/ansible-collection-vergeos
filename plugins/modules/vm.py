@@ -94,6 +94,14 @@ options:
       - Boot order for the VM devices.
     type: list
     elements: str
+  snapshot_profile:
+    description:
+      - Name of the snapshot profile the VM is enrolled in.
+      - Pass an empty string to remove the VM from its profile.
+      - The profile must already exist - see
+        M(vergeio.vergeos.snapshot_profile).
+    type: str
+    version_added: "2.2.0"
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
@@ -199,6 +207,45 @@ def get_vm(module, client, name):
         return None
 
 
+# The vm row stores a snapshot profile's $key, and the operator writes its
+# NAME. Two separate traps here, both measured on 26.1.8:
+#
+#   1. `snapshot_profile` is NOT in the SDK's default projection for a vm, so
+#      dict(vm).get('snapshot_profile') is None whatever the VM is enrolled
+#      in. Comparing against that made enrolment report changed on every run
+#      and made clearing ('') a silent no-op, since None and '' both look
+#      empty. It has to be read with an explicit field list.
+#   2. This module used to carry resolve_snapshot_profile() reading a
+#      parameter it never declared -- dead code that advertised the feature
+#      without providing it (#95). This is the other half, arriving with the
+#      snapshot_profile module it needs (#39).
+SNAPSHOT_PROFILE_FIELD = 'snapshot_profile'
+
+
+def resolve_snapshot_profile(module, client):
+    """Profile NAME -> the raw field value. '' clears the enrolment."""
+    name = module.params['snapshot_profile']
+    if name == '':
+        return ''
+    try:
+        profile = resolve_one(module, client.snapshot_profiles, name,
+                              'snapshot profile')
+    except NotFoundError:
+        module.fail_json(msg="Snapshot profile '%s' not found" % name)
+    return dict(profile)['$key']
+
+
+def current_snapshot_profile(client, vm_key):
+    """What the VM is enrolled in now, asked for by name.
+
+    Not read from the row the caller already has: the default projection does
+    not include this column, so that row says None regardless.
+    """
+    row = dict(client.vms.get(vm_key,
+                              fields=['$key', SNAPSHOT_PROFILE_FIELD]))
+    return str(row.get(SNAPSHOT_PROFILE_FIELD) or '')
+
+
 def build_vm_data(module):
     """Build VM data dict from module params"""
     vm_data = {
@@ -240,6 +287,9 @@ def machine_type_matches(desired, current):
 def create_vm(module, client):
     """Create a new VM using SDK"""
     vm_data = build_vm_data(module)
+    if module.params.get('snapshot_profile'):
+        vm_data[SNAPSHOT_PROFILE_FIELD] = resolve_snapshot_profile(module,
+                                                                   client)
 
     if module.check_mode:
         return True, vm_data
@@ -273,6 +323,12 @@ def update_vm(module, client, vm):
             continue
         update_data[field] = desired
         changed = True
+
+    if module.params.get('snapshot_profile') is not None:
+        wanted = str(resolve_snapshot_profile(module, client) or '')
+        if current_snapshot_profile(client, vm_dict['$key']) != wanted:
+            update_data[SNAPSHOT_PROFILE_FIELD] = wanted
+            changed = True
 
     if not changed:
         return False, vm_dict
@@ -354,6 +410,7 @@ def main():
         bios_type=dict(type='str', choices=['seabios', 'uefi']),
         network=dict(type='str'),
         boot_order=dict(type='list', elements='str'),
+        snapshot_profile=dict(type='str'),
     )
 
     module = AnsibleModule(

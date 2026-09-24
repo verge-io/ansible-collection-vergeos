@@ -548,3 +548,146 @@ class TestMachineTypeMatching:
     def test_alias_does_not_match_unrelated_prefix(self):
         # 'pc' must not swallow every pc-* type; it means i440fx.
         assert self._fn()('pc', 'pc-q35-10.0') is False
+
+
+class TestSnapshotProfileEnrolment:
+    """The half of #22 that never reached main, arriving with #39.
+
+    `vm.py` used to carry resolve_snapshot_profile() reading a parameter it
+    did not declare -- unreachable code advertising a feature that was not
+    there (#95). Deleted in #96, restored here with the module it needs.
+
+    The trap it has to avoid, measured on 26.1.8: `snapshot_profile` is NOT in
+    the SDK's default projection for a vm, so the row the module already holds
+    says None whatever the VM is enrolled in. Comparing against that makes
+    enrolment report changed on every run, and makes clearing a silent no-op
+    -- None and '' both look empty.
+    """
+
+    def _client(self, current='', profile_key=7):
+        client = MagicMock()
+        vm_row = MagicMock()
+        data = {'$key': 3, 'name': 'zz-vm', 'enabled': True}
+        vm_row.keys.side_effect = lambda: list(data.keys())
+        vm_row.__getitem__.side_effect = data.__getitem__
+        vm_row.__iter__.side_effect = lambda: iter(data)
+        vm_row.save.return_value = vm_row
+        client.vms.list.return_value = [vm_row]
+
+        # The explicit-projection read, which is the only place the current
+        # value can honestly come from.
+        prof_row = MagicMock()
+        pdata = {'$key': 3, 'snapshot_profile': current}
+        prof_row.keys.side_effect = lambda: list(pdata.keys())
+        prof_row.__getitem__.side_effect = pdata.__getitem__
+        prof_row.__iter__.side_effect = lambda: iter(pdata)
+        client.vms.get.return_value = prof_row
+
+        p = MagicMock()
+        pd = {'$key': profile_key, 'name': 'nightly'}
+        p.keys.side_effect = lambda: list(pd.keys())
+        p.__getitem__.side_effect = pd.__getitem__
+        p.__iter__.side_effect = lambda: iter(pd)
+        client.snapshot_profiles.list.return_value = [p]
+
+        client.vm_row = vm_row
+        return client
+
+    def _params(self, **overrides):
+        params = {
+            'host': 'vergeos.example.com', 'username': 'admin',
+            'password': 'secret', 'insecure': False, 'api_key': None,
+            'name': 'zz-vm', 'state': 'present', 'description': None,
+            'enabled': None, 'os_family': None, 'cpu_cores': None,
+            'ram': None, 'machine_type': None, 'machine_subtype': None,
+            'bios_type': None, 'network': None, 'boot_order': None,
+            'snapshot_profile': None,
+        }
+        params.update(overrides)
+        return params
+
+    def _run(self, client, params, check_mode=False):
+        module = MagicMock()
+        module.params = params
+        module.check_mode = check_mode
+        module.exit_json.side_effect = SystemExit
+        module.fail_json.side_effect = SystemExit
+        base = 'ansible_collections.vergeio.vergeos.plugins.modules.vm'
+        with patch('%s.get_vergeos_client' % base, return_value=client), \
+             patch('%s.HAS_PYVERGEOS' % base, True), \
+             patch('%s.AnsibleModule' % base, return_value=module):
+            from ansible_collections.vergeio.vergeos.plugins.modules import vm
+            try:
+                vm.main()
+            except SystemExit:
+                pass
+        return module
+
+    def test_the_current_value_is_read_with_an_explicit_field_list(self):
+        client = self._client(current='7')
+        self._run(client, self._params(snapshot_profile='nightly'))
+
+        client.vms.get.assert_called_once_with(
+            3, fields=['$key', 'snapshot_profile'])
+
+    def test_an_enrolled_vm_converges(self):
+        """Without the explicit read this reports changed forever."""
+        client = self._client(current='7')
+        module = self._run(client, self._params(snapshot_profile='nightly'))
+
+        client.vm_row.save.assert_not_called()
+        assert module.exit_json.call_args.kwargs['changed'] is False
+
+    def test_enrolling_sends_the_profile_key_not_its_name(self):
+        client = self._client(current='')
+        module = self._run(client, self._params(snapshot_profile='nightly'))
+
+        client.vm_row.save.assert_called_once_with(snapshot_profile='7')
+        assert module.exit_json.call_args.kwargs['changed'] is True
+
+    def test_an_empty_string_clears_the_enrolment(self):
+        """Not a no-op: '' is the documented way to remove a VM from its
+        profile, and `if params.get(...)` would swallow it."""
+        client = self._client(current='7')
+        module = self._run(client, self._params(snapshot_profile=''))
+
+        client.vm_row.save.assert_called_once_with(snapshot_profile='')
+        assert module.exit_json.call_args.kwargs['changed'] is True
+
+    def test_clearing_an_unenrolled_vm_converges(self):
+        client = self._client(current='')
+        module = self._run(client, self._params(snapshot_profile=''))
+
+        client.vm_row.save.assert_not_called()
+        assert module.exit_json.call_args.kwargs['changed'] is False
+
+    def test_omitting_it_leaves_the_enrolment_alone(self):
+        client = self._client(current='7')
+        module = self._run(client, self._params(description=None))
+
+        client.vms.get.assert_not_called()
+        client.vm_row.save.assert_not_called()
+        assert module.exit_json.call_args.kwargs['changed'] is False
+
+    def test_an_unknown_profile_is_a_named_failure(self):
+        client = self._client(current='')
+        client.snapshot_profiles.list.return_value = []
+        module = self._run(client, self._params(snapshot_profile='nope'))
+
+        assert "Snapshot profile 'nope' not found" \
+            in module.fail_json.call_args.kwargs['msg']
+        client.vm_row.save.assert_not_called()
+
+    def test_creating_with_a_profile_resolves_it(self):
+        client = self._client(current='')
+        client.vms.list.return_value = []
+        created = MagicMock()
+        cdata = {'$key': 9, 'name': 'zz-vm'}
+        created.keys.side_effect = lambda: list(cdata.keys())
+        created.__getitem__.side_effect = cdata.__getitem__
+        created.__iter__.side_effect = lambda: iter(cdata)
+        client.vms.create.return_value = created
+
+        self._run(client, self._params(snapshot_profile='nightly'))
+
+        assert client.vms.create.call_args.kwargs['snapshot_profile'] == 7
