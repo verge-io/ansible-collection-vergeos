@@ -67,6 +67,14 @@
     VERGEOS_INSECURE: "{{ 'true' if protect_insecure else '' }}"
   register: protect_scan_raw
   changed_when: false
+  # Read-only: protect_ctl.py scan only issues GETs. Without this the task is
+  # skipped under --check, stdout is empty, and the next task hands '' to
+  # from_json and aborts with a stack trace -- in a role whose whole default
+  # mode is reporting, which is when someone reaches for --check (#28).
+  #
+  # `changed_when: false` is not the same claim. It says the task changes
+  # nothing; this says it is safe to run anyway.
+  check_mode: false
   no_log: true
 
 - name: Parse the scan
