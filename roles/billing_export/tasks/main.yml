@@ -1,0 +1,77 @@
+---
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that:
+      - billing_export_fixture | length > 0
+        or billing_export_host | length > 0
+    fail_msg: >-
+      billing_export needs billing_export_host (or VERGEOS_HOST), unless
+      billing_export_fixture is set for an offline run.
+    quiet: true
+
+- name: Preflight -- a destination is set
+  ansible.builtin.assert:
+    that: billing_export_dest | length > 0
+    fail_msg: "billing_export needs billing_export_dest."
+    quiet: true
+
+# changed_when: true because this genuinely writes files. It is the one
+# task in this role that touches anything, and it touches only the
+# controller's filesystem -- never the platform.
+- name: Run the export
+  ansible.builtin.command:
+    argv: >-
+      {{ [ansible_playbook_python,
+          role_path ~ '/files/billing_export.py',
+          '--dest', billing_export_dest,
+          '--periods', billing_export_periods | string]
+         + (['--fixture', billing_export_fixture]
+            if billing_export_fixture else [])
+         + (['--keep-duplicate-periods']
+            if billing_export_keep_duplicate_periods else []) }}
+  environment:
+    VERGEOS_HOST: "{{ billing_export_host }}"
+    VERGEOS_USERNAME: "{{ billing_export_username }}"
+    VERGEOS_PASSWORD: "{{ billing_export_password }}"
+    VERGEOS_INSECURE: "{{ 'true' if billing_export_insecure else '' }}"
+  register: billing_export_raw
+  changed_when: true
+  no_log: true
+
+# The opposite remedy to health_report's, and for the opposite reason (#28).
+#
+# That role's scan is read-only, so it gets `check_mode: false` and runs
+# anyway. This one WRITES -- two CSVs, onto the controller -- and a --check
+# run that quietly produced an invoicing artifact would be worse than one that
+# crashed. So the command stays skipped.
+#
+# `when: not ansible_check_mode` on this task is NOT enough, which cost a
+# ladder run to find: set_fact finalizes its arguments BEFORE the condition is
+# evaluated, so from_json still runs on the empty stdout and still aborts. The
+# default has to be in the expression itself.
+- name: Parse the summary
+  ansible.builtin.set_fact:
+    billing_export_result: >-
+      {{ billing_export_raw.stdout | default('{}', true) | from_json }}
+
+# `.get(...)` rather than attribute access, and for the same reason the parse
+# above carries a default: a task's arguments are templated BEFORE its `when`
+# is evaluated, so a message that assumes the export ran will fail in check
+# mode however it is guarded. This is the second task the lesson cost.
+- name: Export summary
+  ansible.builtin.debug:
+    msg: >-
+      {{ billing_export_result.get('system_rows', 0) }} system period(s),
+      {{ billing_export_result.get('tenant_rows', 0) }} tenant row(s)
+      ({{ billing_export_result.get('periods_deduplicated', 0) }} duplicate
+      period(s) dropped) ->
+      {{ billing_export_result.get('files', []) | join(', ') }}
+  when: not ansible_check_mode
+
+- name: Export summary (check mode)
+  ansible.builtin.debug:
+    msg: >-
+      check mode: would export the {{ billing_export_periods }} most recent
+      billing period(s) and a per-tenant snapshot to
+      {{ billing_export_dest }}. Nothing was written.
+  when: ansible_check_mode

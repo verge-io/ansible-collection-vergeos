@@ -1,0 +1,229 @@
+---
+# Live ladder for the billing_export role.
+#
+#   set -a; . ~/.config/vergeos/env; set +a
+#   ansible-playbook verify-billing-export.yml
+#
+# Read-only against the platform. Writes CSVs to a scratch directory on the
+# controller and removes it at the end.
+#
+# Rungs 4a-4d exist because the ported version of this ladder did not have
+# them, and issue #27 shipped straight through it. It asserted that the export
+# ran, that two files existed, and that they had headers -- it never checked a
+# single VALUE. The tenant CSV was publishing raw byte counts under _gb
+# headers, overstating storage by 1024**3, and the ladder went green.
+#
+# The check that would have caught it is the one a human did by hand in #27:
+# read the same tenant through tenant_info and compare.
+- name: Billing export live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    dest: /tmp/zz-billing-ladder
+  tasks:
+    - name: "0. Clean scratch output"
+      ansible.builtin.file:
+        path: "{{ dest }}"
+        state: absent
+
+    - name: "1. Export against the live system"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.billing_export
+      vars:
+        billing_export_dest: "{{ dest }}"
+
+    - name: "1b. The summary has the shape callers depend on"
+      ansible.builtin.assert:
+        that:
+          - billing_export_result.files | length == 2
+          - billing_export_result.system_rows is defined
+          - billing_export_result.tenant_rows is defined
+        fail_msg: "unexpected summary: {{ billing_export_result }}"
+
+    - name: "2. Both CSVs really exist on disk"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ billing_export_result.files }}"
+      register: csvs
+
+    - name: "2b. Non-empty, and named as documented"
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.size > 0
+          - "'vergeos-billing-' in item.stat.path"
+        fail_msg: "missing or empty CSV: {{ item.stat.path | default(item) }}"
+      loop: "{{ csvs.results }}"
+      loop_control:
+        label: "{{ item.stat.path | default('?') }}"
+
+    - name: "3. Each CSV has a header row"
+      ansible.builtin.command:
+        cmd: "head -1 {{ item }}"
+      loop: "{{ billing_export_result.files }}"
+      register: headers
+      changed_when: false
+
+    - name: "3b. Header looks like a header"
+      ansible.builtin.assert:
+        that: item.stdout | length > 0 and ',' in item.stdout
+        fail_msg: "no usable header: {{ item.stdout }}"
+      loop: "{{ headers.results }}"
+      loop_control:
+        label: "{{ item.item | basename }}"
+
+    # --- the rungs #27 asked for ------------------------------------------
+    - name: "4a. Read the tenant CSV back"
+      ansible.builtin.slurp:
+        src: "{{ billing_export_result.files[1] }}"
+      register: tenant_csv
+
+    - name: "4b. Ask tenant_info about the same tenants"
+      vergeio.vergeos.tenant_info:
+      register: truth
+      changed_when: false
+
+    - name: "4c. The tenant CSV has the columns the next rung indexes"
+      vars:
+        lines: "{{ (tenant_csv.content | b64decode).splitlines() }}"
+        header: "{{ ((tenant_csv.content | b64decode).splitlines()
+                     | first).split(',') }}"
+      ansible.builtin.assert:
+        that:
+          - lines | length > 1
+          - header[0] == 'tenant'
+          - header[6] == 'provisioned_gb'
+          - header[7] == 'used_gb'
+        fail_msg: >-
+          the tenant CSV columns have moved, so the comparison below would be
+          reading the wrong field: {{ header }}
+
+    - name: "4d. Every tenant's provisioned_gb matches tenant_info's"
+      vars:
+        lines: "{{ (tenant_csv.content | b64decode).splitlines() }}"
+        csv_rows: "{{ lines[1:] | select('search', ',') | list }}"
+      ansible.builtin.assert:
+        that: >-
+          {{ csv_rows | map('split', ',') | selectattr('0', 'equalto',
+             item.name) | map(attribute=6) | map('float') | list
+             == [item.storage | map(attribute='provisioned_gb') | sum
+                 | round(2)] }}
+        fail_msg: >-
+          billing_export and tenant_info disagree about '{{ item.name }}'.
+          tenant_info says
+          {{ item.storage | map(attribute='provisioned_gb') | sum | round(2) }}
+          GB; the CSV row is
+          {{ csv_rows | map('split', ',')
+             | selectattr('0', 'equalto', item.name) | list }}.
+          Issue #27 was exactly this, a factor of 1073741824 apart.
+      loop: "{{ truth.tenants }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.storage is defined
+
+    - name: "4e. Read the system CSV back"
+      ansible.builtin.slurp:
+        src: "{{ billing_export_result.files[0] }}"
+      register: system_csv
+
+    - name: "4f. One row per billing period, and tiers in plausible GB"
+      vars:
+        lines: "{{ (system_csv.content | b64decode).splitlines() }}"
+        header: "{{ ((system_csv.content | b64decode).splitlines()
+                     | first).split(',') }}"
+        data: "{{ lines[1:] | select('search', ',') | list
+                  | map('split', ',') | list }}"
+        starts: "{{ data | map(attribute=1) | list }}"
+      ansible.builtin.assert:
+        that:
+          # The platform returns the current period twice, differing only in
+          # the last second of period_to. Billing off both double-counts it.
+          - starts | length == starts | unique | length
+          - "'total_ram_mb' in header"
+          - "'tier_1_total_gb' in header"
+          - "'total_ram' not in header"
+          - "'tier_1_total' not in header"
+          - "'period_key' in header"
+          # 1861.1 GB on the test system. A byte count would be ~2e12, so an
+          # upper bound of a petabyte separates the two without pinning this
+          # to one cluster's capacity.
+          - data | map(attribute=header.index('tier_1_total_gb'))
+            | map('float') | select('gt', 1048576.0) | list | length == 0
+        fail_msg: >-
+          system CSV problem. periods={{ starts }} header={{ header }}
+          -- a repeated period_from means the duplicated month is back
+          (#27), and a tier figure above a petabyte means the column is
+          still raw bytes under a _gb name.
+
+    - name: "4g. The summary says how many duplicates it removed"
+      ansible.builtin.assert:
+        that: billing_export_result.periods_deduplicated is defined
+        fail_msg: >-
+          the export no longer reports periods_deduplicated, so a consumer
+          cannot tell whether the platform returned duplicates at all
+
+    - name: "4. Report what was exported"
+      ansible.builtin.debug:
+        msg: >-
+          live export: {{ billing_export_result.system_rows }} system
+          period(s), {{ billing_export_result.tenant_rows }} tenant row(s)
+
+    - name: "5. Re-running overwrites rather than duplicating"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.billing_export
+      vars:
+        billing_export_dest: "{{ dest }}"
+
+    - name: "5b. Still exactly two files in the directory"
+      ansible.builtin.find:
+        paths: "{{ dest }}"
+        patterns: "*.csv"
+      register: found
+
+    - name: "5c. Assert no duplicates accumulated"
+      ansible.builtin.assert:
+        that: found.files | length == 2
+        fail_msg: >-
+          expected 2 CSVs after two runs on the same day, found
+          {{ found.files | length }}
+
+    # check_mode on the BLOCK, not a fabricated ansible_check_mode var --
+    # that variable is read-only, and setting it looks like it works while
+    # the role runs for real and writes the export it was supposed to skip.
+    - name: "5d. Check mode writes nothing"
+      when: true
+      check_mode: true
+      block:
+        - name: "5d-i. Run the role under check mode"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.billing_export
+          vars:
+            billing_export_dest: "{{ dest }}/check-mode"
+
+    - name: "5e. ...and really wrote nothing"
+      ansible.builtin.stat:
+        path: "{{ dest }}/check-mode"
+      register: check_dir
+
+    - name: "5f. Assert check mode produced no invoicing artifact"
+      ansible.builtin.assert:
+        that: not check_dir.stat.exists
+        fail_msg: >-
+          check mode wrote a real export to {{ dest }}/check-mode. This role
+          WRITES, so unlike health_report it must stay skipped under --check
+          rather than being given check_mode: false (#28).
+
+    - name: "6. Teardown scratch output"
+      ansible.builtin.file:
+        path: "{{ dest }}"
+        state: absent
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          billing_export ladder PASSED: live export -> two non-empty
+          date-stamped CSVs with headers -> every tenant's provisioned_gb
+          agrees with tenant_info -> one row per billing period ->
+          columns carry their units and the values match them ->
+          re-run overwrites rather than duplicating -> check mode writes
+          nothing -> scratch removed

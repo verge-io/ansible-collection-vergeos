@@ -1,0 +1,20 @@
+{
+  "now": 1787750000,
+  "errors": {},
+  "alarms": [
+    {"level": "info", "alarm_type": "fyi", "snooze": 0}
+  ],
+  "nodes": [
+    {"name": "node1", "running": true, "maintenance": false},
+    {"name": "node2", "running": true, "maintenance": false}
+  ],
+  "tiers": [
+    {"tier": 1, "capacity": 999170834432, "used": 25291194368, "dedupe_ratio": 14}
+  ],
+  "snapshots": [
+    {"name": "daily", "created": 1787746400, "expires": 1787832800}
+  ],
+  "nas": [
+    {"name": "nas1", "vm_running": true, "vm_status": "running", "volume_count": 1}
+  ]
+}

@@ -64,6 +64,8 @@ precisely because nothing read that table.
 | Ladder | Covers |
 |---|---|
 | `verify-field-contract.yml` | the compare-and-map contract for `network`, `nic`, `drive`, `user` (#75) |
+| `verify-health-report.yml` | the `health_report` role — capacity, snapshot age and NAS verdicts (#45) |
+| `verify-billing-export.yml` | the `billing_export` role — and that its numbers agree with `tenant_info` (#46, #27) |
 | `verify-drive-health.yml` | `physical_drive_info` and the `drive_health` role — SMART triage, and that every flag it reads is a real column (#37) |
 | `verify-auth-source.yml` | `auth_source` / `auth_source_info` — SSO, and that a settings update replaces rather than merges (#31) |
 | `verify-file.yml` | `file` / `file_info` — upload, the `filesize` settle window, metadata drift (#33) |
