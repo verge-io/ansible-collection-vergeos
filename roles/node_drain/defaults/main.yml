@@ -1,0 +1,41 @@
+---
+# node_drain -- evacuate a node into maintenance mode, or bring it back.
+#
+# Two things make this safe to run:
+#
+#   1. The preflight ALWAYS runs and is read-only. With
+#      node_drain_confirm left at "no" the role reports whether the
+#      drain would fit and stops. That is the default.
+#   2. The capacity gate. The platform will happily accept a drain it
+#      cannot complete: measured on this lab, draining a node with an
+#      18 GB shortfall was accepted, the node flipped to maintenance
+#      immediately, and the migration then sat at status 'migrating'
+#      with no destination for fourteen minutes, with no error and no
+#      timeout. Neither the UI nor the native action checks first.
+
+# Connection.
+node_drain_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+node_drain_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+node_drain_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+node_drain_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(false, true) | bool }}"
+
+# Node to act on. Required.
+node_drain_node: ""
+
+# drained -> evacuate into maintenance. active -> bring it back.
+node_drain_state: drained
+
+# Explicit consent. Without "yes" the role runs the preflight and stops.
+# Same discipline as a failover: the read-only half needs no ceremony,
+# the half that moves workloads does.
+node_drain_confirm: "no"
+
+# Proceed even when the capacity gate says the workloads will not fit.
+# This is how you get the fourteen-minute stall described above.
+node_drain_force: false
+
+# Seconds to wait for the node's running VMs to actually leave.
+node_drain_timeout: 600
+
+# Seconds between completion polls.
+node_drain_poll_interval: 10

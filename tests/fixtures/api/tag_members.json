@@ -1,0 +1,16 @@
+{
+ "_call": "client._request('GET','tag_members',{'fields':'all'})",
+ "_meta": {
+  "captured": "2026-09-24",
+  "identities_substituted": [
+   "cluster1",
+   "operator",
+   "user2",
+   "user3",
+   "vergeos.example.com"
+  ],
+  "note": "Regenerate with tests/capture_api_fixtures.py. Do not hand-edit: the point of these files is that no human chose the field names.",
+  "platform": "26.1.8"
+ },
+ "rows": []
+}

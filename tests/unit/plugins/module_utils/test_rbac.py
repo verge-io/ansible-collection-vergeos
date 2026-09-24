@@ -177,7 +177,7 @@ def test_a_string_row_key_still_matches():
 # every group reported zero members (bug B2).
 #
 #   {'$key': 1, 'parent_group': 1, 'member': 'users/1',
-#    'member_display': 'welchums', 'creator': ''}
+#    'member_display': 'operator', 'creator': ''}
 #
 # And with fields=all the display name is absent entirely:
 #   {'$key': 1, 'parent_group': 1, 'member': 'users/1', 'creator': ''}

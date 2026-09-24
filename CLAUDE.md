@@ -12,6 +12,36 @@ ansible-galaxy collection build --force
 ansible-galaxy collection install vergeio-vergeos-*.tar.gz --force
 ```
 
+## Running the Local Gates
+
+```bash
+# Unit tests
+PYTHONPATH=<workdir> python -m pytest tests/unit -q
+
+# Lint
+ansible-lint --profile production
+
+# Sanity -- run it from a CHECKOUT-SHAPED directory, not from the built
+# artifact. galaxy.yml's build_ignore excludes `tests`, so the tarball
+# contains no test files at all and `ansible-test sanity` against an
+# installed collection silently skips the entire test tree. CI checks out
+# the repo and runs in place, so it checks files a build-then-install run
+# never sees -- boilerplate, pylint and yamllint findings in tests/ arrive
+# as a red PR after a green local run.
+#
+# Exclude `.ansible/` when copying: ansible-lint creates a full copy of the
+# collection inside itself there, and sanity then lints every file twice.
+git archive --format=tar HEAD | tar -x -C <workdir>/ansible_collections/vergeio/vergeos
+cd <workdir>/ansible_collections/vergeio/vergeos
+ansible-test sanity --local
+```
+
+Run sanity on **both** supported cores. The two pylint versions disagree:
+the older one does not know `kwarg-superseded-by-positional-arg` and reports
+`redundant-keyword-arg` for the same code, so a `# pylint: disable=` that
+satisfies one fails the other with `unknown-option-value`. Fix the
+construct rather than suppressing the message.
+
 ## Running Playbooks
 
 ```bash

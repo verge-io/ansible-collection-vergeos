@@ -131,7 +131,7 @@ def find_membership(members, user_key):
     real row from VergeOS 26.1.8:
 
         {'$key': 4, 'parent_group': 2, 'member': '/v4/users/4',
-         'member_display': 'zz-b13-user', 'creator': 'welchums'}
+         'member_display': 'zz-b13-user', 'creator': 'operator'}
 
     The previous version compared that reference against the bare username:
 
