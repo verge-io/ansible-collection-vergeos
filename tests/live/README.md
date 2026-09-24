@@ -86,6 +86,7 @@ precisely because nothing read that table.
 | `verify-snapshot-profile.yml` | `snapshot_profile` — profiles and their periods (#39) |
 | `verify-protect.yml` | the `protect` role: tag a VM, get it enrolled (#39) |
 | `verify-vnet-rule.yml` | `vnet_rule` / `vnet_apply` — firewall rules and the explicit apply (#44, #19) |
+| `verify-network-power.yml` | `network` powering a vnet on and off — a rule staged on a stopped router, started, and read back live (#97) |
 | `verify-network-policy.yml` | the `network_policy` role, enforcing a rule set with one apply (#44) |
 | `verify-rbac.yml` | `group` / `group_info` / `permission` and the `rbac` role (#34) |
 | `verify-member.yml` | `member` add/converge/remove, and that the right membership row is taken (#92) |

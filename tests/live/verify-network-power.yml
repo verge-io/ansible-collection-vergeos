@@ -1,0 +1,337 @@
+---
+# Live ladder for vnet power (#97).
+#
+#   ansible-playbook verify-network-power.yml
+#
+# The gap this closes: firewall rules could be staged from Ansible and never
+# made to take effect. `vnet_rule` skips its apply on a stopped network and
+# `vnet_apply` reports "not running; staged rules take effect when it starts".
+# Both are correct. Neither could start it, and nothing else could either — so
+# a play could build a complete policy and then stop, with the router down.
+#
+# The ladder proves the whole of that path, not just the power call: a rule is
+# staged on a STOPPED network, the network is started, and the rule is read
+# back off the running router.
+#
+# Everything it touches is named zz-; the always: block deletes it.
+- name: Network power live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    net_name: zz-power-net
+    net_cidr: 10.99.97.0/24
+    net_ip: 10.99.97.1
+  tasks:
+    - name: "0. Nothing of this name is lying around"
+      vergeio.vergeos.network_info:
+        insecure: true
+      register: before
+      changed_when: false
+      failed_when: >-
+        before.networks | selectattr('name', 'equalto', net_name)
+        | list | length > 0
+
+    - name: The ladder
+      block:
+        # ── create, stopped ────────────────────────────────────────────────
+
+        - name: "1. Create the network"
+          vergeio.vergeos.network:
+            insecure: true
+            name: "{{ net_name }}"
+            state: present
+            network_type: internal
+            network: "{{ net_cidr }}"
+            ip_address: "{{ net_ip }}"
+            description: ansible live-verify scratch network (zz- disposable)
+          register: created
+
+        - name: "1b. It exists, and it is NOT running"
+          ansible.builtin.assert:
+            that:
+              - created.changed
+              - created.running is not none
+              - not created.running
+            fail_msg: >-
+              a freshly created vnet reported running={{ created.running }}.
+              `none` means the module could not read the power state at all,
+              which is the defect this closes - `running` is a join, not a
+              column, and is absent from fields=all.
+            quiet: true
+
+        - name: "1c. state=present is idempotent and still reports power"
+          vergeio.vergeos.network:
+            insecure: true
+            name: "{{ net_name }}"
+            state: present
+            network_type: internal
+            network: "{{ net_cidr }}"
+            ip_address: "{{ net_ip }}"
+          register: again
+
+        - name: "1d. Which means no change, and power reported either way"
+          ansible.builtin.assert:
+            that:
+              - not again.changed
+              - not again.running
+              - again.need_restart is defined
+            fail_msg: "converged run: {{ again }}"
+            quiet: true
+
+        # ── a rule staged on a stopped network ─────────────────────────────
+
+        - name: "2. Stage a rule while the network is down"
+          vergeio.vergeos.vnet_rule:
+            insecure: true
+            network: "{{ net_name }}"
+            name: zz-allow-ssh
+            state: present
+            rule_action: accept
+            protocol: tcp
+            destination_ports: "22"
+            apply: false
+          register: staged
+
+        - name: "2b. Applying it now is refused, because nothing is running"
+          vergeio.vergeos.vnet_apply:
+            insecure: true
+            network: "{{ net_name }}"
+          register: apply_down
+
+        - name: "2c. And it says so rather than claiming there is nothing to do"
+          ansible.builtin.assert:
+            that:
+              - not apply_down.changed
+              - not apply_down.applied
+              - "'not running' in apply_down.msg"
+            fail_msg: >-
+              a stopped network reported {{ apply_down.msg }}. #19 was this
+              branch being unreachable, so the operator who had just staged a
+              policy was told there were no pending rule changes.
+            quiet: true
+
+        # ── the thing that could not be done from Ansible ──────────────────
+
+        - name: "3. Start it"
+          vergeio.vergeos.network:
+            insecure: true
+            name: "{{ net_name }}"
+            state: running
+          register: started
+
+        - name: "3b. It reports the change, and the state it waited for"
+          ansible.builtin.assert:
+            that:
+              - started.changed
+              - started.running
+            fail_msg: >-
+              start reported {{ started }}. The module waits for the state and
+              fails on expiry, so a success here means the router really came
+              up - not that the request was accepted.
+            quiet: true
+
+        - name: "3c. Read it back independently"
+          vergeio.vergeos.network_info:
+            insecure: true
+            name: "{{ net_name }}"
+          register: readback
+          changed_when: false
+
+        - name: "3d. The platform agrees"
+          ansible.builtin.assert:
+            that: (readback.networks | first).running
+            fail_msg: >-
+              the module said running and network_info disagrees:
+              {{ readback.networks | first }}
+            quiet: true
+
+        - name: "3e. Starting it again is not a change"
+          vergeio.vergeos.network:
+            insecure: true
+            name: "{{ net_name }}"
+            state: running
+          register: started_again
+
+        - name: "3f. Which is what idempotence means for a router"
+          ansible.builtin.assert:
+            that:
+              - not started_again.changed
+              - started_again.running
+            fail_msg: >-
+              a converged start reported changed={{ started_again.changed }}.
+              That is a second POST to vnet_actions on every run.
+            quiet: true
+
+        # ── and the rule is live ───────────────────────────────────────────
+
+        - name: "4. The staged rule is on the running router"
+          vergeio.vergeos.vnet_rule_info:
+            insecure: true
+            network: "{{ net_name }}"
+          register: rules
+          changed_when: false
+
+        - name: "4b. By name"
+          ansible.builtin.assert:
+            that: >-
+              rules.rules | selectattr('name', 'equalto', 'zz-allow-ssh')
+              | list | length == 1
+            fail_msg: >-
+              the rule staged on the stopped network is not there now that it
+              is running: {{ rules.rules | map(attribute='name') | list }}
+            quiet: true
+
+        - name: "4c. And there is nothing left pending"
+          vergeio.vergeos.vnet_apply:
+            insecure: true
+            network: "{{ net_name }}"
+          register: apply_up
+
+        - name: "4d. Because starting it applied them"
+          ansible.builtin.assert:
+            that: not apply_up.changed
+            fail_msg: >-
+              rules were still pending after a start with apply_rules
+              defaulting to true: {{ apply_up.msg }}
+            quiet: true
+
+        # ── restart, and the debt that makes it necessary ──────────────────
+
+        - name: "5. Change the MTU on the running vnet"
+          vergeio.vergeos.network:
+            insecure: true
+            name: "{{ net_name }}"
+            state: present
+            mtu: 1400
+          register: retuned
+
+        - name: "5b. The record changed and the router is owed a restart"
+          ansible.builtin.assert:
+            that:
+              - retuned.changed
+              - retuned.need_restart
+            fail_msg: >-
+              changing mtu on a running vnet reported
+              need_restart={{ retuned.need_restart }}. Measured on 26.1.8 it
+              sets the flag, and until the restart happens the live router
+              keeps the old value - a run that reports changed here has
+              changed the record, not the router.
+            quiet: true
+
+        - name: "5c. Restart it"
+          vergeio.vergeos.network:
+            insecure: true
+            name: "{{ net_name }}"
+            state: restarted
+          register: restarted
+
+        - name: "5d. The debt is cleared and it is still up"
+          ansible.builtin.assert:
+            that:
+              - restarted.changed
+              - restarted.running
+              - not restarted.need_restart
+            fail_msg: "after restart: {{ restarted }}"
+            quiet: true
+
+        # ── check mode ─────────────────────────────────────────────────────
+
+        - name: "6. Check mode over a stop"
+          vergeio.vergeos.network:
+            insecure: true
+            name: "{{ net_name }}"
+            state: stopped
+          check_mode: true
+          register: would_stop
+
+        - name: "6b. Reports the change"
+          ansible.builtin.assert:
+            that: would_stop.changed
+            fail_msg: "check mode did not report the pending stop"
+            quiet: true
+
+        - name: "6c. And made none"
+          vergeio.vergeos.network_info:
+            insecure: true
+            name: "{{ net_name }}"
+          register: still_up
+          changed_when: false
+
+        - name: "6d. The router is still running"
+          ansible.builtin.assert:
+            that: (still_up.networks | first).running
+            fail_msg: "check mode stopped the network"
+            quiet: true
+
+        # ── stop ───────────────────────────────────────────────────────────
+
+        - name: "7. Stop it"
+          vergeio.vergeos.network:
+            insecure: true
+            name: "{{ net_name }}"
+            state: stopped
+          register: stopped
+
+        - name: "7b. It reports the change and the state it waited for"
+          ansible.builtin.assert:
+            that:
+              - stopped.changed
+              - not stopped.running
+            fail_msg: "stop reported {{ stopped }}"
+            quiet: true
+
+        - name: "7c. Stopping it again is not a change"
+          vergeio.vergeos.network:
+            insecure: true
+            name: "{{ net_name }}"
+            state: stopped
+          register: stopped_again
+
+        - name: "7d. Idempotent both ways"
+          ansible.builtin.assert:
+            that: not stopped_again.changed
+            fail_msg: "a converged stop reported a change: {{ stopped_again }}"
+            quiet: true
+
+        - name: "7e. Restarting a stopped vnet is refused, not silently skipped"
+          vergeio.vergeos.network:
+            insecure: true
+            name: "{{ net_name }}"
+            state: restarted
+          register: restart_down
+          failed_when: restart_down is succeeded
+
+        - name: "7f. With a message that says what to do instead"
+          ansible.builtin.assert:
+            that: "'nothing to restart' in restart_down.msg"
+            fail_msg: "unhelpful refusal: {{ restart_down.msg }}"
+            quiet: true
+
+      always:
+        - name: "8. Tear down"
+          vergeio.vergeos.network:
+            insecure: true
+            name: "{{ net_name }}"
+            state: absent
+
+        - name: "8b. Zero leftovers"
+          vergeio.vergeos.network_info:
+            insecure: true
+          register: after
+          changed_when: false
+          failed_when: >-
+            after.networks | selectattr('name', 'match', '^zz-')
+            | list | length > 0
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          network power ladder PASSED: a created vnet reports a real power
+          state rather than none -> a rule staged on a STOPPED network cannot
+          be applied and says so -> the network starts, waits, and is agreed
+          with by network_info -> a second start is not a change -> the staged
+          rule is live on the running router with nothing left pending ->
+          changing mtu on it reports the restart it owes, and restarting
+          clears it -> check mode reports a stop without making one -> it
+          stops, idempotently -> restarting a stopped vnet is refused ->
+          zero leftovers

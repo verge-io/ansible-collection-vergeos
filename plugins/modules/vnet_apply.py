@@ -28,6 +28,9 @@ description:
     possible (the API rejects it) and none is needed — a stopped network
     picks its rules up when it starts. The module reports this and
     changes nothing.
+  - To start it, use M(vergeio.vergeos.network) with C(state=running). Until
+    that option existed nothing in this collection could, so a play could
+    stage a complete policy and then had no way to make it live.
 options:
   network:
     description:

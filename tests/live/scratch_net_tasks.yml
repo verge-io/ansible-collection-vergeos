@@ -4,18 +4,21 @@
 #   scratch_net_name    zz-prefixed name; refused otherwise
 #   scratch_net_action  create | delete
 #
-# Why this is REST and not `vergeio.vergeos.network`:
+# Why the OBJECT lifecycle is REST and not `vergeio.vergeos.network`:
+# a fixture built out of the module under test cannot fail independently of
+# it -- a `network` bug would read as a `vnet_rule` bug.
 #
-#   1. Nothing in the collection can power a vnet on or off. `network` manages
-#      configuration only, and firewall rules need a RUNNING router before an
-#      apply does anything. Tracked separately.
-#   2. A fixture built out of the module under test cannot fail independently
-#      of it -- a `network` bug would read as a `vnet_rule` bug.
+# Power is a different matter and is done with the module, which is the point
+# of #97. It used to POST to vnet_actions here because nothing in the
+# collection could power a vnet at all: `network` managed configuration only,
+# while firewall rules need a RUNNING router before an apply does anything,
+# so a play could stage a complete policy and had no way to make it live.
+# `network` now takes state: running / stopped / restarted.
 #
-# It replaced tests/live/scratch_net.py, which the ported ladders invoked and
-# which is not in this repository. The script's stated reason ("the network
-# module cannot create an addressed network -- finding #13") no longer holds;
-# #13 is fixed. The power gap is the part that still does.
+# This file replaced tests/live/scratch_net.py, which the ported ladders
+# invoked and which is not in this repository. The script's stated reason
+# ("the network module cannot create an addressed network -- finding #13") no
+# longer holds; #13 is fixed, and now so is the power gap.
 
 - name: "Fixture: refuse to touch anything not clearly scratch"
   ansible.builtin.assert:
@@ -70,67 +73,23 @@
       ansible.builtin.set_fact:
         scratch_net_key: "{{ scratch_net_created.json['$key'] | string }}"
 
-- name: "Fixture: power on and wait"
+# The module waits for the state and fails if it does not arrive, so the
+# poll loop that used to live here is gone with the REST call it guarded.
+- name: "Fixture: power on"
   when: scratch_net_action == 'create'
-  block:
-    # POST /vnet_actions, not PUT /vnets/<key>?action=poweron. The latter
-    # returns HTTP 200 with an empty body and does nothing at all -- measured
-    # on 26.1.8, and it cost a ladder run to find, because "200" reads as
-    # success and the network simply stayed stopped for the full 60s wait.
-    # The SDK uses vnet_actions for every power operation.
-    - name: "Fixture: poweron"
-      ansible.builtin.uri:
-        url: "{{ scratch_api_base }}/vnet_actions"
-        url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
-        url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
-        force_basic_auth: true
-        validate_certs: false
-        method: POST
-        body_format: json
-        body:
-          vnet: "{{ scratch_net_key | int }}"
-          action: poweron
-        status_code: [200, 201, 202]
-
-    # `running` is a join through the router machine, not a vnet column, so
-    # REST cannot answer this and network_info can -- it asks for
-    # "machine#status#running as running" (#25).
-    - name: "Fixture: wait until the router is actually up"
-      vergeio.vergeos.network_info:
-        name: "{{ scratch_net_name }}"
-      register: scratch_net_state
-      until: scratch_net_state.networks[0].running | default(false) | bool
-      retries: 20
-      delay: 3
-      changed_when: false
+  vergeio.vergeos.network:
+    name: "{{ scratch_net_name }}"
+    state: running
 
 - name: "Fixture: delete"
   when:
     - scratch_net_action == 'delete'
     - scratch_net_key | length > 0
   block:
-    - name: "Fixture: poweroff"
-      ansible.builtin.uri:
-        url: "{{ scratch_api_base }}/vnet_actions"
-        url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
-        url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
-        force_basic_auth: true
-        validate_certs: false
-        method: POST
-        body_format: json
-        body:
-          vnet: "{{ scratch_net_key | int }}"
-          action: poweroff
-        status_code: [200, 201, 202, 400]
-
-    - name: "Fixture: wait until it is down"
-      vergeio.vergeos.network_info:
+    - name: "Fixture: power off"
+      vergeio.vergeos.network:
         name: "{{ scratch_net_name }}"
-      register: scratch_net_down
-      until: not (scratch_net_down.networks[0].running | default(false) | bool)
-      retries: 20
-      delay: 3
-      changed_when: false
+        state: stopped
 
     - name: "Fixture: DELETE the network"
       ansible.builtin.uri:
