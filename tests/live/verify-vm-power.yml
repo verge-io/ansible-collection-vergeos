@@ -1,0 +1,290 @@
+---
+# Live ladder for vm power waits (#114).
+#
+#   ansible-playbook verify-vm-power.yml
+#
+# `state: running` and `state: stopped` used to wait sixty seconds and then
+# report success whichever way the wait ended, so a VM that never started gave
+# changed=true and a green play.
+#
+# Proving the expiry path needs a wait that cannot succeed, and a VM that
+# cannot start is hard to come by: measured on 26.1.8, the platform refuses an
+# over-provisioned start SYNCHRONOUSLY --
+#
+#     Machine exceeds the max amount of ram allowed on this cluster
+#     Machine exceeds the max amount of cores allowed on this cluster
+#
+# -- so those fail correctly and never reach the wait at all.
+#
+# What makes it testable is the timing. Measured from the instant the power
+# call returned:
+#
+#     power_on   +0.01s initializing   +0.52s running
+#     power_off  +0.01s running        +0.51s running   +1.03s stopped
+#
+# The state is never already correct when the call returns. So the wait reads
+# the state BEFORE its first sleep, `power_timeout: 0` means "check once", and
+# a zero-second budget expires deterministically against a real VM without
+# contriving a broken one.
+- name: VM power live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    probe_vm: zz-power-vm
+  tasks:
+    - name: "0. Nothing of this name is lying around"
+      vergeio.vergeos.vm_info:
+        insecure: true
+      register: before
+      changed_when: false
+      failed_when: >-
+        before.vms | selectattr('name', 'equalto', probe_vm)
+        | list | length > 0
+
+    - name: The ladder
+      block:
+        - name: "1. Create the probe VM, stopped"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: present
+            cpu_cores: 1
+            ram: 1024
+            description: ansible live-verify power probe (zz- disposable)
+          register: created
+
+        - name: "1b. It exists and is not running"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ probe_vm }}"
+          register: fresh
+          changed_when: false
+          failed_when: (fresh.vms | first).running
+
+        # ── the defect ────────────────────────────────────────────────────
+
+        - name: "2. Start it with a budget it cannot meet"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: running
+            power_timeout: 0
+          register: too_soon
+          failed_when: too_soon is succeeded
+
+        - name: "2b. It failed, and said what it was still reading"
+          ansible.builtin.assert:
+            that:
+              - "\"did not reach 'running'\" in too_soon.msg"
+              - "'power_timeout' in too_soon.msg"
+              - probe_vm in too_soon.msg
+            fail_msg: >-
+              a wait that could not succeed reported {{ too_soon.msg | default(too_soon) }}.
+              Before #114 it waited the full sixty seconds and then returned
+              changed=true whatever the VM was doing.
+            quiet: true
+
+        - name: "2c. And the start request itself was still made"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ probe_vm }}"
+          register: starting
+          changed_when: false
+
+        - name: "2d. So the VM is on its way up, not untouched"
+          ansible.builtin.assert:
+            that: (starting.vms | first).status != 'stopped'
+            fail_msg: >-
+              the VM is still stopped, so the failure came before the power
+              call rather than after it -- this rung would then prove nothing
+              about the wait. status={{ (starting.vms | first).status }}
+            quiet: true
+
+        # ── the ordinary path ─────────────────────────────────────────────
+
+        # The failed wait above did not un-issue the start: the VM is coming
+        # up regardless, and by now it is up. So this converges rather than
+        # starting -- which is itself worth asserting, because a module that
+        # could not converge after its own wait expired would leave the
+        # operator with no way forward but the UI.
+        - name: "3. Converge on running after the expired wait"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: running
+          register: converged
+
+        - name: "3b. It is running"
+          ansible.builtin.assert:
+            that: converged.vm.status == 'running'
+            fail_msg: >-
+              after an expired wait the module could not converge:
+              {{ converged }}
+            quiet: true
+
+        - name: "3c. The platform agrees"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ probe_vm }}"
+          register: up
+          changed_when: false
+
+        - name: "3d. Independently"
+          ansible.builtin.assert:
+            that: (up.vms | first).running
+            fail_msg: "module said running, vm_info disagrees"
+            quiet: true
+
+        - name: "3e. Asking again is not a change"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: running
+          register: again
+          failed_when: again.changed
+
+        - name: "3f. And a zero budget is fine once it is already there"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: running
+            power_timeout: 0
+          register: already
+          failed_when: already.changed
+
+        # ── a start from stopped really does report changed ───────────────
+
+        - name: "4. Stop it"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: stopped
+          register: stopped_first
+
+        - name: "4b. Which is a change, and it waited for it"
+          ansible.builtin.assert:
+            that:
+              - stopped_first.changed
+              - stopped_first.vm.status == 'stopped'
+            fail_msg: "stop reported {{ stopped_first }}"
+            quiet: true
+
+        - name: "4c. Start it cleanly"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: running
+          register: started
+
+        - name: "4d. A change, and running by the time it returned"
+          ansible.builtin.assert:
+            that:
+              - started.changed
+              - started.vm.status == 'running'
+            fail_msg: >-
+              a start from stopped reported {{ started }}. Before #114 the
+              status here could be anything at all, because the wait returned
+              success whichever way it ended.
+            quiet: true
+
+        # ── stopping ──────────────────────────────────────────────────────
+
+        - name: "5. Stop it with a budget it cannot meet"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: stopped
+            power_timeout: 0
+          register: stop_too_soon
+          failed_when: stop_too_soon is succeeded
+
+        - name: "5b. Which fails the same way"
+          ansible.builtin.assert:
+            that: "\"did not reach 'stopped'\" in stop_too_soon.msg"
+            fail_msg: "{{ stop_too_soon.msg | default(stop_too_soon) }}"
+            quiet: true
+
+        - name: "5c. Converge on stopped"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: stopped
+          register: stopped
+
+        - name: "5d. It is stopped"
+          ansible.builtin.assert:
+            that: stopped.vm.status == 'stopped'
+            fail_msg: "stop reported {{ stopped }}"
+            quiet: true
+
+        - name: "5e. Stopping again is not a change"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: stopped
+          register: stopped_again
+          failed_when: stopped_again.changed
+
+        # ── check mode ────────────────────────────────────────────────────
+
+        - name: "6. Check mode over a start"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: running
+          check_mode: true
+          register: would_start
+
+        - name: "6b. Reports the change"
+          ansible.builtin.assert:
+            that: would_start.changed
+            fail_msg: "check mode did not report the pending start"
+            quiet: true
+
+        - name: "6c. And made none"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ probe_vm }}"
+          register: still_down
+          changed_when: false
+          failed_when: (still_down.vms | first).running
+
+      always:
+        # `vm`'s state: absent deliberately refuses to delete a RUNNING VM
+        # rather than powering off a workload to remove it, so the teardown
+        # stops it first. That refusal is the right default and it is the
+        # opposite of `network`, where the thing being deleted is a router
+        # rather than somebody's workload.
+        - name: "7. Stop it before deleting"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: stopped
+          failed_when: false
+
+        - name: "7b. Tear down"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: absent
+
+        - name: "7c. Zero leftovers"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: after
+          changed_when: false
+          failed_when: >-
+            after.vms | selectattr('name', 'equalto', probe_vm)
+            | list | length > 0
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          vm power ladder PASSED: a start whose budget cannot be met FAILS and
+          names the status it was still reading, rather than reporting success
+          after sixty seconds -> the request was still made, so the failure is
+          about the outcome and not the call -> asking properly starts it, the
+          platform agrees, and a second ask is not a change -> a zero budget
+          is fine once it is already there -> stopping fails and succeeds the
+          same way -> check mode reports a start without making one -> zero
+          leftovers

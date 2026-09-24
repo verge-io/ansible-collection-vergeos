@@ -54,7 +54,8 @@ class TestVmStatePresent:
             'machine_subtype': None,
             'bios_type': None,
             'network': None,
-            'boot_order': None
+            'boot_order': None,
+            'power_timeout': 60
         }
         mock_module.check_mode = False
 
@@ -105,7 +106,8 @@ class TestVmStatePresent:
             'machine_subtype': None,
             'bios_type': None,
             'network': None,
-            'boot_order': None
+            'boot_order': None,
+            'power_timeout': 60
         }
         mock_module.check_mode = False
 
@@ -144,7 +146,8 @@ class TestVmStatePresent:
             'insecure': False, 'name': 'existing-vm', 'state': 'present',
             'description': 'x', 'enabled': None, 'os_family': None, 'cpu_cores': None,
             'ram': None, 'machine_type': None, 'machine_subtype': None,
-            'bios_type': None, 'network': None, 'boot_order': None
+            'bios_type': None, 'network': None, 'boot_order': None,
+            'power_timeout': 60
         }
         mock_module.check_mode = False
 
@@ -191,7 +194,8 @@ class TestVmStatePresent:
             'machine_subtype': None,
             'bios_type': None,
             'network': None,
-            'boot_order': None
+            'boot_order': None,
+            'power_timeout': 60
         }
         mock_module.check_mode = False
 
@@ -243,7 +247,8 @@ class TestVmStateAbsent:
             'machine_subtype': None,
             'bios_type': None,
             'network': None,
-            'boot_order': None
+            'boot_order': None,
+            'power_timeout': 60
         }
         mock_module.check_mode = False
 
@@ -290,7 +295,8 @@ class TestVmStateAbsent:
             'machine_subtype': None,
             'bios_type': None,
             'network': None,
-            'boot_order': None
+            'boot_order': None,
+            'power_timeout': 60
         }
         mock_module.check_mode = False
 
@@ -346,7 +352,8 @@ class TestVmStatePower:
             'machine_subtype': None,
             'bios_type': None,
             'network': None,
-            'boot_order': None
+            'boot_order': None,
+            'power_timeout': 60
         }
         mock_module.check_mode = False
 
@@ -396,7 +403,8 @@ class TestVmStatePower:
             'machine_subtype': None,
             'bios_type': None,
             'network': None,
-            'boot_order': None
+            'boot_order': None,
+            'power_timeout': 60
         }
         mock_module.check_mode = False
 
@@ -442,7 +450,8 @@ class TestVmCheckMode:
             'machine_subtype': None,
             'bios_type': None,
             'network': None,
-            'boot_order': None
+            'boot_order': None,
+            'power_timeout': 60
         }
         mock_module.check_mode = True
 
@@ -489,7 +498,8 @@ class TestVmCheckMode:
             'machine_subtype': None,
             'bios_type': None,
             'network': None,
-            'boot_order': None
+            'boot_order': None,
+            'power_timeout': 60
         }
         mock_module.check_mode = True
 

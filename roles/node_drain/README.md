@@ -8,20 +8,23 @@ Evacuate a node into maintenance mode, or bring it back.
 |---|---|
 | Preflight (read-only) | **live-verified** on VergeOS 26.1.8, two nodes |
 | Unknown-node refusal | **live-verified** |
-| Drain execution | **implemented, not yet live-verified** |
-| Restore | **implemented, not yet live-verified** |
+| Ambiguous-consent refusal | **live-verified** |
+| Drain execution | **live-verified** |
+| Restore | **live-verified** |
 
-The drain and restore paths are written, lint-clean and unit-tested, but have
-not been run against a real cluster yet, because doing so puts a node into
-maintenance mode. `tests/live/verify-node-drain.yml` exercises them. Run it
-deliberately, attended, with console access to the cluster:
+All of it now. `tests/live/verify-node-drain.yml` passed attended on a
+two-node system, `ok=78 changed=2 failed=0`:
 
-```bash
-ansible-playbook tests/live/verify-node-drain.yml
-```
+> read-only preflight produces a boolean capacity verdict and changes nothing
+> → unknown node refused → consent written as YAML's bare `yes` refused rather
+> than silently ignored → real drain enters maintenance with zero VMs left
+> behind, and the capacity check stops counting the drained node as a survivor
+> → node returned to service, and asking again is not a change
 
-Until that has passed, treat the drain half as unproven. Saying so is cheaper
-than discovering it during an outage.
+It is still a ladder to run **deliberately and attended**: it puts a real node
+into maintenance mode. It picks a node with nothing on it, and it restores in
+an `always:` block including on failure, but a cluster is not a thing to
+experiment with unsupervised.
 
 ### The ladder counts machines, not VMs
 
