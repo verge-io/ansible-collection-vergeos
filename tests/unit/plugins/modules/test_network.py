@@ -37,8 +37,8 @@ def _module(**overrides):
 
 def _client_with_uplink(make_resource, name='ext1 Switch', key=5):
     client = MagicMock()
-    client.networks.get.return_value = make_resource({'$key': key, 'name': name,
-                                                      'type': 'physical'})
+    client.networks.list.return_value = [
+        make_resource({'$key': key, 'name': name, 'type': 'physical'})]
     return client
 
 
@@ -57,14 +57,14 @@ class TestResolveInterfaceVnet:
         from ansible_collections.vergeio.vergeos.plugins.modules.network import resolve_interface_vnet
         client = _client_with_uplink(make_resource)
         assert resolve_interface_vnet(_module(interface_network='ext1 Switch'), client) == 5
-        client.networks.get.assert_called_once_with(name='ext1 Switch')
+        client.networks.list.assert_called_once()
 
     def test_a_missing_uplink_fails_by_name(self):
         from ansible_collections.vergeio.vergeos.plugins.modules.network import resolve_interface_vnet
         from pyvergeos.exceptions import NotFoundError
 
         client = MagicMock()
-        client.networks.get.side_effect = NotFoundError('nope')
+        client.networks.list.return_value = []
         module = _module(interface_network='does-not-exist')
         module.fail_json.side_effect = SystemExit(1)
 

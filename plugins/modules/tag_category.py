@@ -164,6 +164,7 @@ category:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -180,10 +181,10 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_category(client, name):
+def get_category(module, client, name):
     """Get tag category by name using SDK"""
     try:
-        return client.tag_categories.get(name=name)
+        return resolve_one(module, client.tag_categories, name, 'tag category')
     except NotFoundError:
         return None
 
@@ -339,7 +340,7 @@ def main():
     client = get_vergeos_client(module)
 
     try:
-        category = get_category(client, category_name)
+        category = get_category(module, client, category_name)
 
         if state == 'absent':
             if category:

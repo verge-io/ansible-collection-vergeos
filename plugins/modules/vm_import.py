@@ -169,6 +169,7 @@ import_info:
 import time
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -250,10 +251,10 @@ def wait_for_import_completion(client, import_key, poll_interval, poll_timeout, 
         time.sleep(poll_interval)
 
 
-def get_file_by_name(client, file_name):
+def get_file_by_name(module, client, file_name):
     """Look up file by name using SDK."""
     try:
-        return client.files.get(name=file_name)
+        return resolve_one(module, client.files, file_name, 'file')
     except NotFoundError:
         return None
 
@@ -269,7 +270,7 @@ def create_vm_import(client, module):
     if ova_file_id:
         file_id = ova_file_id
     elif ova_file_name:
-        file_obj = get_file_by_name(client, ova_file_name)
+        file_obj = get_file_by_name(module, client, ova_file_name)
         if not file_obj:
             module.fail_json(msg=f"OVA file '{ova_file_name}' not found in VergeOS files")
         file_id = str(dict(file_obj).get('$key'))
@@ -372,7 +373,7 @@ def delete_vm_import(client, module):
     name = module.params['name']
 
     try:
-        import_obj = client.vm_imports.get(name=name)
+        import_obj = resolve_one(module, client.vm_imports, name, 'VM import')
     except NotFoundError:
         module.exit_json(changed=False, msg="Import not found")
 

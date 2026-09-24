@@ -72,7 +72,7 @@ class TestVmInfo:
         mock_vm = MagicMock()
         mock_vm_state = {'$key': 1, 'name': 'web-server', 'cpu_cores': 4}
         mock_vm = make_resource(mock_vm_state)
-        mock_client.vms.get.return_value = mock_vm
+        mock_client.vms.list.return_value = [mock_vm]
         mock_get_client.return_value = mock_client
 
         # Create mock module
@@ -95,7 +95,7 @@ class TestVmInfo:
             except SystemExit:
                 pass
 
-        mock_client.vms.get.assert_called_once_with(name='web-server')
+        mock_client.vms.list.assert_called_once()
         mock_module.exit_json.assert_called_once()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is False
@@ -108,7 +108,7 @@ class TestVmInfo:
 
         # Setup mock client to raise NotFoundError
         mock_client = MagicMock()
-        mock_client.vms.get.side_effect = NotFoundError("VM not found")
+        mock_client.vms.list.return_value = []
         mock_get_client.return_value = mock_client
 
         # Create mock module

@@ -234,6 +234,7 @@ changed:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -250,7 +251,7 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_network(client, name):
+def get_network(module, client, name):
     """Get network by name, including every field the module compares.
 
     The SDK's default field set is a subset of the vnet schema and omits
@@ -259,7 +260,7 @@ def get_network(client, name):
     module reports 'changed' on every run and never converges (issue #18).
     """
     try:
-        return client.networks.get(name=name, fields=COMPARISON_FIELDS)
+        return resolve_one(module, client.networks, name, 'network', fields=COMPARISON_FIELDS)
     except NotFoundError:
         return None
 
@@ -357,7 +358,7 @@ def resolve_interface_vnet(module, client):
         return ''
 
     try:
-        uplink = client.networks.get(name=name)
+        uplink = resolve_one(module, client.networks, name, 'network')
     except NotFoundError:
         module.fail_json(
             msg="Uplink network '%s' not found. %s must name an existing "
@@ -471,7 +472,7 @@ def main():
     state = module.params['state']
 
     try:
-        network = get_network(client, name)
+        network = get_network(module, client, name)
 
         if state == 'absent':
             if network:

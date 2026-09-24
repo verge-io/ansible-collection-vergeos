@@ -132,6 +132,7 @@ user:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -148,10 +149,10 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_user(client, name):
+def get_user(module, client, name):
     """Get user by name using SDK"""
     try:
-        return client.users.get(name=name)
+        return resolve_one(module, client.users, name, 'user')
     except NotFoundError:
         return None
 
@@ -260,7 +261,7 @@ def main():
     state = module.params['state']
 
     try:
-        user = get_user(client, target_username)
+        user = get_user(module, client, target_username)
 
         if state == 'absent':
             if user:

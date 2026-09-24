@@ -174,6 +174,7 @@ changed:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -190,10 +191,10 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_vm(client, name):
+def get_vm(module, client, name):
     """Get VM by name using SDK"""
     try:
-        return client.vms.get(name=name)
+        return resolve_one(module, client.vms, name, 'VM')
     except NotFoundError:
         return None
 
@@ -246,7 +247,7 @@ def resolve_snapshot_profile(module, client):
     if name == '':
         return ''
     try:
-        profile = client.snapshot_profiles.get(name=name)
+        profile = resolve_one(module, client.snapshot_profiles, name, 'snapshot profile')
     except NotFoundError:
         module.fail_json(msg="Snapshot profile '%s' not found" % name)
     return dict(profile)['$key']
@@ -382,7 +383,7 @@ def main():
 
     try:
         # Get existing VM
-        vm = get_vm(client, name)
+        vm = get_vm(module, client, name)
 
         if state == 'absent':
             if vm:
@@ -407,7 +408,7 @@ def main():
                 changed, vm_data = create_vm(module, client)
                 # Re-fetch VM after creation (skip in check mode)
                 if not module.check_mode:
-                    vm = get_vm(client, name)
+                    vm = get_vm(module, client, name)
                 else:
                     vm = None
             else:
@@ -416,7 +417,7 @@ def main():
                 changed = update_changed
                 # Re-fetch VM after update to get fresh state (skip in check mode)
                 if update_changed and not module.check_mode:
-                    vm = get_vm(client, name)
+                    vm = get_vm(module, client, name)
 
             # Ensure VM is running (only if we have a VM object)
             if vm:
@@ -434,7 +435,7 @@ def main():
             update_changed, updated_vm = update_vm(module, client, vm)
             # Re-fetch VM after update to get fresh state
             if update_changed and not module.check_mode:
-                vm = get_vm(client, name)
+                vm = get_vm(module, client, name)
 
             # Ensure VM is stopped
             power_changed, vm_dict = power_off_vm(module, client, vm)

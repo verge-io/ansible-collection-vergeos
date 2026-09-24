@@ -63,6 +63,7 @@ networks:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -119,7 +120,7 @@ def main():
         if name:
             # Get specific network by name
             try:
-                network = client.networks.get(name=name, fields=all_fields)
+                network = resolve_one(module, client.networks, name, 'network', fields=all_fields)
                 networks = [dict(network)]
             except NotFoundError:
                 networks = []
