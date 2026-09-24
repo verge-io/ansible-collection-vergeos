@@ -105,6 +105,32 @@ options:
     description: Include stopped/powered-off VMs in inventory.
     type: bool
     default: true
+  strict_sites:
+    description:
+      - >-
+        Whether a site that cannot be queried is fatal. When C(false) the
+        site is skipped with a warning and the inventory is built from the
+        sites that did answer.
+      - >-
+        The default is C(false) for compatibility, but consider C(true) for
+        anything automated. A bad credential, a network partition or an
+        appliance mid-upgrade otherwise yields a SMALLER inventory that still
+        exits 0, and a partial inventory which looks complete is worse than
+        an error.
+      - >-
+        Independently of this setting, it is always fatal for B(every) site
+        to fail - an entirely empty inventory is never a useful result.
+      - >-
+        B(Note on exit codes.) An inventory plugin cannot control the exit
+        code. Ansible treats a failed inventory source as a warning and falls
+        back, so C(ansible-inventory) still exits 0 even on the errors above.
+        To make it exit non-zero, set C(inventory_unparsed_failed = True) in
+        ansible.cfg, or C(ANSIBLE_INVENTORY_UNPARSED_FAILED=true) in the
+        environment. Without that, a CI job reads the failure as
+        "no hosts matched" and goes green.
+    type: bool
+    default: false
+    version_added: "2.2.0"
   strict:
     description:
       - If C(true), the plugin will fail on template errors.
@@ -191,6 +217,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 from ansible.errors import AnsibleError
+from ansible.template import Templar
 from ansible.plugins.inventory import BaseInventoryPlugin, Constructable, Cacheable
 
 # SDK Integration
@@ -226,6 +253,44 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             if path.endswith(('.vergeos_vms.yml', '.vergeos_vms.yaml')):
                 return True
         return False
+
+    def _template_sites(self, sites, loader):
+        """Resolve Jinja in the fields of each `sites:` entry.
+
+        The plugin docstring and inventory/vergeos_vms.yml.example both
+        document `password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"`, but
+        nothing templated it: the literal Jinja string went to the API as the
+        password, authentication failed, and the plugin fail-softed to an
+        empty inventory with rc 0 (issue #26).
+
+        get_option() does not reach inside a list of dicts, so the nested
+        values have to be templated here. `_read_config_data()` loads the file
+        with `trusted_as_template=True`, which is what makes these values
+        eligible under ansible-core's templating trust model -- a string
+        assembled in Python would not be, and would silently pass through
+        unrendered.
+        """
+        templar = Templar(loader=loader)
+
+        def render(value):
+            if isinstance(value, str):
+                return templar.template(value)
+            if isinstance(value, list):
+                return [render(v) for v in value]
+            if isinstance(value, dict):
+                return {k: render(v) for k, v in value.items()}
+            return value
+
+        templated = []
+        for site in sites:
+            try:
+                templated.append(render(site))
+            except AnsibleError as e:
+                raise AnsibleError(
+                    "Could not resolve the configuration for site '%s': %s"
+                    % (site.get('name', '<unnamed>'), e)
+                )
+        return templated
 
     def _fetch_site(self, site_config):
         """Fetch VMs from a single site via VergeOS API.
@@ -371,7 +436,9 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         Returns:
             List of site data dictionaries.
         """
-        sites = self.get_option('sites')
+        # parse() stashes the templated sites; get_option() would hand back
+        # the raw Jinja again. See _template_sites().
+        sites = getattr(self, '_templated_sites', None) or self.get_option('sites')
         max_workers = self.get_option('max_workers')
         site_timeout = self.get_option('site_timeout')
 
@@ -732,6 +799,46 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 if hostname in self.inventory.hosts:
                     self.inventory.add_child(groupname, hostname)
 
+    def _check_site_failures(self, site_data):
+        """Decide whether site errors are fatal.
+
+        Every failure path in _fetch_site() already records an 'error' and
+        warns, then carries on. That means a bad credential, a network
+        partition or an appliance mid-upgrade produced a SMALLER inventory
+        that still exited 0 -- and in CI that degrades to "no hosts matched"
+        and the job goes green (issue #26).
+
+        Two rules:
+
+          * strict_sites: true  -- any site failure is fatal
+          * always              -- every site failing is fatal, whatever
+                                   strict_sites says, because an entirely
+                                   empty inventory is never a useful answer
+        """
+        failed = [d for d in site_data if d.get('error')]
+        if not failed:
+            return
+
+        detail = "; ".join(
+            "%s: %s" % (d.get('site', '<unnamed>'), d['error']) for d in failed)
+
+        if len(failed) == len(site_data):
+            raise AnsibleError(
+                "Every configured site failed, so the inventory would be "
+                "empty: %s. An empty inventory exits 0 and reads as 'no hosts "
+                "matched', which is indistinguishable from success -- so this "
+                "is an error regardless of strict_sites." % detail)
+
+        if self.get_option('strict_sites'):
+            raise AnsibleError(
+                "%d of %d sites failed and strict_sites is true: %s"
+                % (len(failed), len(site_data), detail))
+
+        self.display.warning(
+            "%d of %d sites failed and were skipped; the inventory is "
+            "incomplete: %s. Set strict_sites: true to make this fatal."
+            % (len(failed), len(site_data), detail))
+
     def parse(self, inventory, loader, path, cache=True):
         """Parse the inventory source.
 
@@ -757,6 +864,13 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         sites = self.get_option('sites')
         if not sites:
             raise AnsibleError("At least one site must be configured in 'sites'")
+
+        # Resolve Jinja in the site fields BEFORE validating them. Order
+        # matters: an unset VERGEOS_PASSWORD templates to an empty string and
+        # is then caught by the credential check below with a message naming
+        # the site, instead of being sent to the API as a password.
+        sites = self._template_sites(sites, loader)
+        self._templated_sites = sites
 
         for i, site in enumerate(sites):
             if not site.get('name'):
@@ -785,6 +899,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         # Fetch from all sites
         self.display.vvv(f"Fetching VMs from {len(sites)} site(s)")
         site_data = self._fetch_all_sites()
+        self._check_site_failures(site_data)
 
         # Populate inventory
         self._populate_inventory(site_data)
