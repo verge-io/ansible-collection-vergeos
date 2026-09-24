@@ -52,10 +52,13 @@ networks:
   elements: dict
   sample:
     - name: "internal-network"
-      network_type: "internal"
-      ip_address: "10.0.0.0"
-      subnet_mask: "255.255.255.0"
-      id: "12345"
+      type: "internal"
+      network: "10.0.0.0/24"
+      ipaddress: "10.0.0.1"
+      dnslist: "8.8.8.8,8.8.4.4"
+      dhcp_enabled: true
+      running: true
+      status: "running"
 '''
 
 from ansible.module_utils.basic import AnsibleModule
@@ -90,17 +93,39 @@ def main():
     client = get_vergeos_client(module)
     name = module.params.get('name')
 
+    # The SDK's default field set is roughly a quarter of the vnet schema and
+    # omits fields an operator needs -- dnslist, port mirroring, rate limits.
+    # An _info module should return the whole resource.
+    #
+    # Keep this a list. On pyvergeos 1.2.7 -- the newest release, and what
+    # most users will have -- passing the string "all" made the SDK send a
+    # per-character field list and the API returned a single field, with no
+    # error (pyvergeos#101, confirmed on 26.1.8 for both get and list). That
+    # is fixed on pyvergeos dev, where both forms return the full record, but
+    # the list form is correct on every version the collection supports
+    # (requirements.txt allows >= 1.0.1).
+    # 'all' expands server-side to the vnet's own columns only, which never
+    # includes a traversal -- so it drops 'running' and 'status', which
+    # pyvergeos requests as aliased joins in its DEFAULT field list
+    # (pyvergeos/resources/networks.py). Asking for them by bare name does
+    # not work either; they are not field names. Request the joins
+    # alongside 'all' so an _info module can still answer "is it up?".
+    # See ansible-collection-vergeos#25.
+    all_fields = ['all',
+                  'machine#status#running as running',
+                  'machine#status#status as status']
+
     try:
         if name:
             # Get specific network by name
             try:
-                network = client.networks.get(name=name)
+                network = client.networks.get(name=name, fields=all_fields)
                 networks = [dict(network)]
             except NotFoundError:
                 networks = []
         else:
             # Get all networks
-            networks = [dict(net) for net in client.networks.list()]
+            networks = [dict(net) for net in client.networks.list(fields=all_fields)]
 
         module.exit_json(changed=False, networks=networks)
 

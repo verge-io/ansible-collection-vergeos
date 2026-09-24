@@ -226,6 +226,25 @@ def create_snapshot(client, module):
             # If expiration is in the past, use a minimal retention
             snapshot_data['retention'] = 3600  # 1 hour default
 
+    # Converge instead of colliding. The platform rejects a duplicate snapshot
+    # name with "This name is already in use", so re-running a play that takes
+    # a named snapshot used to fail outright rather than report no change.
+    existing = next(
+        (dict(s) for s in vm.snapshots.list()
+         if dict(s).get('name') == snapshot_name),
+        None,
+    )
+    if existing is not None:
+        module.exit_json(
+            changed=False,
+            operation='create',
+            snapshot_id=str(existing.get('$key', '')),
+            snapshot_name=snapshot_name,
+            vm_id=resolved_vm_id,
+            response=existing,
+            msg="Snapshot '%s' already exists on this VM" % snapshot_name,
+        )
+
     if module.check_mode:
         module.exit_json(
             changed=True,
