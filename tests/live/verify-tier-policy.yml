@@ -1,0 +1,410 @@
+---
+# Live ladder for the tier_policy role.
+#
+#   set -a; . ~/.config/vergeos/env; set +a
+#   ansible-playbook verify-tier-policy.yml
+#
+# Creates a scratch VM with a deliberately wrong-tier drive, proves the audit
+# sees it, enforces, proves it converged, then tears the VM down. Real VMs are
+# only ever read -- the policy used here matches zz-* only, so every other
+# drive on the system reports 'unclassified' and is never touched.
+- name: Tier policy live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vm_name: zz-tier-vm
+    drive_name: zz-tier-drive
+    fixtures: "{{ playbook_dir }}/../fixtures"
+    # Scoped to zz-* on purpose. A policy that matched '*' would, under
+    # enforce, retier every drive on the system.
+    scratch_policy:
+      - match: "zz-tier-*"
+        tier: 1
+  tasks:
+    - name: Ladder
+      block:
+        - name: "0. The fixture this ladder needs is present"
+          ansible.builtin.stat:
+            path: "{{ fixtures }}/tiers-mixed.json"
+          register: tiers_fixture
+
+        - name: "0b. Refuse to run half a ladder"
+          ansible.builtin.assert:
+            that: tiers_fixture.stat.exists
+            fail_msg: "{{ fixtures }}/tiers-mixed.json is missing"
+
+        - name: "1. Fixture audit -- rules evaluate without a cluster"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.tier_policy
+          vars:
+            tier_policy_fixture: "{{ fixtures }}/tiers-mixed.json"
+            tier_policy_rules: "{{ scratch_policy }}"
+
+        - name: "1b. The report has the shape callers depend on"
+          ansible.builtin.assert:
+            that:
+              - tier_policy_result.summary | length > 0
+              - tier_policy_result.drift is iterable
+              - tier_policy_result.unsatisfiable is iterable
+            fail_msg: "unexpected report: {{ tier_policy_result }}"
+
+        # The platform range-checks preferred_tier and does NOT check that
+        # the tier exists, so a policy naming a missing tier writes cleanly,
+        # reads back, and satisfies enforce's convergence proof while the
+        # data cannot have moved. Measured on 26.1.8: one storage tier
+        # (tier 1), PUT preferred_tier accepted 1-5 and refused 0, 6 and ''.
+        - name: "1c. A policy tier the recorded system lacks is reported"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.tier_policy
+          vars:
+            tier_policy_fixture: "{{ fixtures }}/tiers-mixed.json"
+            tier_policy_rules:
+              - {match: "db-*", tier: 3}
+
+        - name: "1d. ...by tier, by rule, and with the tiers that exist"
+          ansible.builtin.assert:
+            that:
+              - tier_policy_result.unsatisfiable | length == 1
+              - (tier_policy_result.unsatisfiable | first).tier == 3
+              - (tier_policy_result.unsatisfiable | first).rules == ['db-*']
+              - tier_policy_result.tiers_present == [1, 2, 4]
+              - "'cannot satisfy' in tier_policy_result.summary"
+            fail_msg: >-
+              a policy asking for a tier the system does not have was
+              reported as satisfiable: {{ tier_policy_result }}
+
+        - name: "1e. A malformed rule says which rule and why"
+          block:
+            - name: "1e-i. A rule with no tier"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.tier_policy
+              vars:
+                tier_policy_fixture: "{{ fixtures }}/tiers-mixed.json"
+                tier_policy_rules:
+                  - {match: "db-*"}
+            - name: "1e-ii. Reaching here means it was accepted"
+              ansible.builtin.fail:
+                msg: "a rule with no tier was accepted"
+          rescue:
+            - name: "1e-iii. The operator sees the reason, not 'censored'"
+              ansible.builtin.assert:
+                that:
+                  - "'rule 0' in ansible_failed_result.msg"
+                  - "'tier' in ansible_failed_result.msg"
+                  - "'censored' not in ansible_failed_result.msg"
+                fail_msg: >-
+                  the operator got '{{ ansible_failed_result.msg }}'. The
+                  audit runs with no_log: true because the credentials are
+                  in its environment, and no_log censors the whole task
+                  result -- so the script's own diagnostic has to be
+                  re-surfaced from stderr or the operator gets an exit code
+                  and nothing else.
+
+        - name: "1f. A tier the platform itself refuses is caught up front"
+          block:
+            - name: "1f-i. Tier 0 -- 'Error setting tier' on 26.1.8"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.tier_policy
+              vars:
+                tier_policy_fixture: "{{ fixtures }}/tiers-mixed.json"
+                tier_policy_rules:
+                  - {match: "db-*", tier: 0}
+            - name: "1f-ii. Reaching here means it was accepted"
+              ansible.builtin.fail:
+                msg: "tier 0 was accepted"
+          rescue:
+            - name: "1f-iii. Refused before the first drive was touched"
+              ansible.builtin.assert:
+                that: "'Error setting tier' in ansible_failed_result.msg"
+                fail_msg: >-
+                  tier 0 must be refused before enforce starts writing, or a
+                  policy fails partway through with some drives already
+                  retiered: {{ ansible_failed_result.msg }}
+
+        - name: "2. Enforce against a fixture is refused"
+          block:
+            - name: "2a. Try to enforce on a fixture"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.tier_policy
+              vars:
+                tier_policy_fixture: "{{ fixtures }}/tiers-mixed.json"
+                tier_policy_rules: "{{ scratch_policy }}"
+                tier_policy_mode: enforce
+            - name: "2b. Reaching here means it was accepted"
+              ansible.builtin.fail:
+                msg: "enforce against a fixture was accepted"
+          rescue:
+            - name: "2c. Refused, as it should be"
+              ansible.builtin.debug:
+                msg: "enforce on a fixture refused"
+
+        - name: "3. Live audit with an empty policy leaves everything alone"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.tier_policy
+
+        - name: "3b. Nothing drifts when nothing is declared"
+          ansible.builtin.assert:
+            that: tier_policy_result.drift | length == 0
+            fail_msg: >-
+              an empty policy produced drift, which means unmatched drives
+              are not being treated as unclassified:
+              {{ tier_policy_result.drift }}
+
+        - name: "3c. Ask the platform directly which tiers exist"
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "-c"
+              - |
+                import json, os, urllib3
+                urllib3.disable_warnings()
+                from pyvergeos import VergeClient
+                c = VergeClient(host=os.environ['VERGEOS_HOST'],
+                                username=os.environ['VERGEOS_USERNAME'],
+                                password=os.environ['VERGEOS_PASSWORD'],
+                                verify_ssl=False)
+                print(json.dumps(sorted(
+                    int(dict(t)['tier']) for t in c.storage_tiers.list())))
+          register: real_tiers
+          changed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: "3d. The audit's tiers_present is the platform's answer"
+          ansible.builtin.assert:
+            that: tier_policy_result.tiers_present
+                  == (real_tiers.stdout | from_json)
+            fail_msg: >-
+              the audit says tiers {{ tier_policy_result.tiers_present }}
+              exist; storage_tiers says {{ real_tiers.stdout }}. Everything
+              the unsatisfiable check refuses rests on this list.
+
+        - name: "4. Scratch VM with a wrong-tier drive, then enforce"
+          block:
+            - name: "4a. Create the scratch VM"
+              vergeio.vergeos.vm:
+                insecure: true
+                name: "{{ vm_name }}"
+                cpu_cores: 1
+                ram: 512
+                state: present
+
+            - name: "4b. Give it a drive on tier 4, against a policy of tier 1"
+              vergeio.vergeos.drive:
+                insecure: true
+                vm_name: "{{ vm_name }}"
+                name: "{{ drive_name }}"
+                size: 1
+                tier: 4
+                state: present
+
+            - name: "4c. Audit must see exactly one drifted drive"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.tier_policy
+              vars:
+                tier_policy_rules: "{{ scratch_policy }}"
+
+            - name: "4d. Assert the drift is ours and nobody else's"
+              ansible.builtin.assert:
+                that:
+                  - tier_policy_result.drift | length == 1
+                  - (tier_policy_result.drift | first).vm == vm_name
+                  - (tier_policy_result.drift | first).actual | string == '4'
+                  - (tier_policy_result.drift | first).expected | string == '1'
+                fail_msg: "unexpected drift set: {{ tier_policy_result.drift }}"
+
+            - name: "4e. The report-mode CI gate fires on drift"
+              block:
+                - name: "4e-i. Audit with the gate armed"
+                  ansible.builtin.include_role:
+                    name: vergeio.vergeos.tier_policy
+                  vars:
+                    tier_policy_rules: "{{ scratch_policy }}"
+                    tier_policy_fail_on_drift: true
+                - name: "4e-ii. Reaching here means the gate did not fire"
+                  ansible.builtin.fail:
+                    msg: "drift gate did NOT fire"
+              rescue:
+                - name: "4e-iii. Gate fired, as it should"
+                  ansible.builtin.debug:
+                    msg: "drift gate fired"
+
+            # Enforce is refused for a tier this system has no storage tier
+            # for. Without this the run would write preferred_tier=5, read
+            # back '5', declare convergence, and have moved nothing.
+            - name: "4f. Enforcing an absent tier is refused"
+              block:
+                - name: "4f-i. Policy asks for a tier the system lacks"
+                  ansible.builtin.include_role:
+                    name: vergeio.vergeos.tier_policy
+                  vars:
+                    tier_policy_rules:
+                      - {match: "zz-tier-*", tier: 5}
+                    tier_policy_mode: enforce
+                - name: "4f-ii. Reaching here means it enforced it"
+                  ansible.builtin.fail:
+                    msg: >-
+                      enforce accepted a tier this system does not have
+              rescue:
+                - name: "4f-iii. Refused, and it says which tiers exist"
+                  ansible.builtin.assert:
+                    that:
+                      - "'no storage tier' in ansible_failed_result.msg"
+                    fail_msg: "{{ ansible_failed_result.msg }}"
+
+            - name: "4f-iv. ...and the drive was not touched on the way out"
+              vergeio.vergeos.vm_drive_info:
+                insecure: true
+                vm: "{{ vm_name }}"
+              register: untouched
+              changed_when: false
+
+            - name: "4f-v. Still on tier 4"
+              ansible.builtin.assert:
+                that: >-
+                  (untouched.drives
+                   | selectattr('name', 'equalto', drive_name)
+                   | first).preferred_tier | string == '4'
+                fail_msg: >-
+                  the refused enforce run still wrote something:
+                  {{ untouched.drives }}
+
+            # Check mode on the BLOCK, not a fabricated ansible_check_mode
+            # var -- that variable is read-only, and setting it looks like it
+            # works while the role runs for real.
+            - name: "4g. Enforce under check mode writes nothing"
+              when: true
+              check_mode: true
+              block:
+                - name: "4g-i. Run enforce in check mode"
+                  ansible.builtin.include_role:
+                    name: vergeio.vergeos.tier_policy
+                  vars:
+                    tier_policy_rules: "{{ scratch_policy }}"
+                    tier_policy_mode: enforce
+
+            - name: "4g-ii. The drive is still on tier 4"
+              vergeio.vergeos.vm_drive_info:
+                insecure: true
+                vm: "{{ vm_name }}"
+              register: after_check
+              changed_when: false
+
+            - name: "4g-iii. Assert check mode changed nothing"
+              ansible.builtin.assert:
+                that: >-
+                  (after_check.drives
+                   | selectattr('name', 'equalto', drive_name)
+                   | first).preferred_tier | string == '4'
+                fail_msg: >-
+                  check mode retiered the drive for real:
+                  {{ after_check.drives }}
+
+            # ansible_check_mode reports the --check FLAG. A block-level
+            # `check_mode: true` skips the writes and leaves that variable
+            # reading false, so an enforce run guarded by it asserts
+            # convergence on a run that was told not to converge. This ladder
+            # failed exactly that way once; the role now gates on whether the
+            # re-audit ran.
+            - name: "4g-iv. Check mode kept the pre-enforce report"
+              ansible.builtin.assert:
+                that:
+                  - tier_policy_result.drift | length == 1
+                  - (tier_policy_result.drift | first).actual | string == '4'
+                fail_msg: >-
+                  after a check-mode enforce the role reported
+                  {{ tier_policy_result.drift }}. Nothing was written and
+                  nothing was re-read, so the honest answer is still the
+                  one drifted drive.
+
+            - name: "4h. Enforce -- retier and re-audit"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.tier_policy
+              vars:
+                tier_policy_rules: "{{ scratch_policy }}"
+                tier_policy_mode: enforce
+
+            - name: "4i. Assert it converged"
+              ansible.builtin.assert:
+                that: tier_policy_result.drift | length == 0
+                fail_msg: >-
+                  enforce did not converge: {{ tier_policy_result.drift }}
+
+            - name: "4j. Read the tier back independently of the audit"
+              vergeio.vergeos.vm_drive_info:
+                insecure: true
+                vm: "{{ vm_name }}"
+              register: drives_after
+              changed_when: false
+
+            - name: "4k. The drive really is on tier 1 now"
+              ansible.builtin.assert:
+                that: >-
+                  (drives_after.drives
+                   | selectattr('name', 'equalto', drive_name)
+                   | first).preferred_tier | string == '1'
+                fail_msg: >-
+                  audit says converged but the drive reads
+                  {{ drives_after.drives
+                     | selectattr('name', 'equalto', drive_name) | first }}
+
+            - name: "4l. Enforce again -- a converged policy is a no-op"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.tier_policy
+              vars:
+                tier_policy_rules: "{{ scratch_policy }}"
+                tier_policy_mode: enforce
+
+            - name: "4m. Still converged, and nothing was retiered"
+              ansible.builtin.assert:
+                that:
+                  - tier_policy_result.drift | length == 0
+                  - tier_policy_enforced.results | default([])
+                    | selectattr('changed') | list | length == 0
+                fail_msg: "a converged enforce run still changed something"
+
+          always:
+            - name: "5. Teardown the scratch VM"
+              vergeio.vergeos.vm:
+                insecure: true
+                name: "{{ vm_name }}"
+                state: absent
+
+            - name: "5b. Confirm zero leftovers"
+              vergeio.vergeos.vm_info:
+                insecure: true
+                name: "{{ vm_name }}"
+              register: leftover
+              changed_when: false
+
+            - name: "5c. Assert clean"
+              ansible.builtin.assert:
+                that: leftover.vms | length == 0
+                fail_msg: "scratch VM left behind"
+
+      rescue:
+        - name: Record the failure
+          ansible.builtin.set_fact:
+            ladder_failed: true
+        - name: Re-raise
+          ansible.builtin.fail:
+            msg: "tier_policy ladder FAILED -- see the task above"
+
+    - name: Stop if the ladder failed
+      ansible.builtin.fail:
+        msg: "tier_policy ladder FAILED"
+      when: ladder_failed | default(false)
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          tier_policy ladder PASSED: fixture audit -> a policy tier the
+          system lacks is reported -> a malformed rule names itself instead
+          of arriving as 'censored' -> a tier the platform refuses is caught
+          before the first write -> enforce-against-a-fixture refused -> an
+          empty policy leaves every real drive unclassified -> tiers_present
+          matches storage_tiers -> a wrong-tier drive is detected -> the CI
+          gate fires -> enforcing an absent tier is refused and writes
+          nothing -> check mode writes nothing -> enforce converges and the
+          tier reads back correct -> a converged enforce run is a no-op ->
+          zero leftovers

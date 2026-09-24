@@ -1,0 +1,52 @@
+---
+# Capture the collector's view of the live system as a fixture.
+#
+#   - ansible.builtin.include_role:
+#       name: vergeio.vergeos.rebalance_advisor
+#       tasks_from: capture
+#
+# Sets `rebalance_advisor_state` to {nodes, vms} -- exactly what
+# `rebalance_advisor_fixture` reads back. Write it to a file and you have a
+# replayable snapshot of a cluster at the moment it was misbehaving, which is
+# the only kind of advisor fixture worth trusting: a hand-written one agrees
+# with the code by construction, and this collection has shipped three of
+# those.
+#
+# Read-only, and it stops before planning.
+- name: Capture the live cluster state
+  ansible.builtin.command:
+    argv: >-
+      {{ [ansible_playbook_python, role_path ~ '/files/advisor.py',
+          '--samples', rebalance_advisor_samples | string,
+          '--interval', rebalance_advisor_interval | string,
+          '--dump-state'] }}
+  environment:
+    VERGEOS_HOST: "{{ rebalance_advisor_host }}"
+    VERGEOS_USERNAME: "{{ rebalance_advisor_username }}"
+    VERGEOS_PASSWORD: "{{ rebalance_advisor_password }}"
+    VERGEOS_INSECURE: "{{ 'true' if rebalance_advisor_insecure else '' }}"
+  register: rebalance_advisor_capture_raw
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
+
+- name: The capture must have succeeded
+  ansible.builtin.fail:
+    msg: >-
+      advisor.py --dump-state exited
+      {{ rebalance_advisor_capture_raw.rc }}:
+      {{ rebalance_advisor_capture_raw.stderr | default('') | trim }}
+  when: rebalance_advisor_capture_raw.rc != 0
+
+- name: Parse the captured state
+  ansible.builtin.set_fact:
+    rebalance_advisor_state:
+      "{{ rebalance_advisor_capture_raw.stdout | from_json }}"
+
+- name: Captured
+  ansible.builtin.debug:
+    msg: >-
+      captured {{ rebalance_advisor_state.nodes | length }} node(s) and
+      {{ rebalance_advisor_state.vms | length }} VM(s) -- save this as
+      rebalance_advisor_fixture to replay it

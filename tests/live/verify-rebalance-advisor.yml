@@ -1,0 +1,263 @@
+---
+# Live ladder for the rebalance_advisor role.
+#
+#   set -a; . ~/.config/vergeos/env; set +a
+#   ansible-playbook verify-rebalance-advisor.yml
+#
+# READ-ONLY throughout: the advisor never migrates anything, so there is
+# nothing to clean up. It writes one scratch file to the controller and
+# removes it.
+- name: Rebalance advisor live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    fixtures: "{{ playbook_dir }}/../fixtures"
+    capture_path: /tmp/zz-advisor-capture.json
+    # Declared here so the ladder asserts against the same contract the
+    # planner does, and fails if either side drifts.
+    node_fields: [name, cpu_usage, ram, ram_used, maintenance, running]
+    vm_fields: [name, node_name, ram, cpu_cores, running, ha_group,
+                is_snapshot, excluded, vm_cpu]
+  tasks:
+    - name: Ladder
+      block:
+        - name: "0. The fixtures this ladder needs are present"
+          ansible.builtin.stat:
+            path: "{{ fixtures }}/hotspot.json"
+          register: hotspot_fixture
+
+        - name: "0b. Refuse to run half a ladder"
+          ansible.builtin.assert:
+            that: hotspot_fixture.stat.exists
+            fail_msg: >-
+              {{ fixtures }}/hotspot.json is missing, so the rungs that
+              prove a hotspot produces a proposal would be skipped silently
+
+        - name: "1. Live run against the real system"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.rebalance_advisor
+          vars:
+            rebalance_advisor_samples: 2
+            rebalance_advisor_interval: 2
+
+        - name: "1b. The report has the shape callers depend on"
+          ansible.builtin.assert:
+            that:
+              - rebalance_advisor_result.mode is defined
+              - rebalance_advisor_result.hotspots is iterable
+              - rebalance_advisor_result.proposals is iterable
+              - rebalance_advisor_result.notes is iterable
+              - rebalance_advisor_result.nodes | length > 0
+            fail_msg: "unexpected report shape: {{ rebalance_advisor_result }}"
+
+        - name: "1c. Every proposal carries a reason and a destination"
+          ansible.builtin.assert:
+            that:
+              - item.vm | length > 0
+              - item.to_node | length > 0
+              - item.reason | length > 0
+            fail_msg: "a proposal with no reason is not actionable: {{ item }}"
+          loop: "{{ rebalance_advisor_result.proposals }}"
+          loop_control:
+            label: "{{ item.vm }}"
+
+        - name: "1d. It did not silently give up on the no-balance tag"
+          ansible.builtin.assert:
+            that: >-
+              rebalance_advisor_result.notes
+              | select('search', 'proposals are withheld') | list | length == 0
+            fail_msg: >-
+              the advisor could not read the no-balance tag on this system:
+              {{ rebalance_advisor_result.notes }}
+
+        - name: "1d-2. Remember the live answer for the replay comparison"
+          ansible.builtin.set_fact:
+            live_hotspot_count: "{{ rebalance_advisor_result.hotspots | length }}"
+            live_note_count: "{{ rebalance_advisor_result.notes | length }}"
+
+        - name: "1e. Report what the live system actually said"
+          ansible.builtin.debug:
+            msg: >-
+              live mode={{ rebalance_advisor_result.mode }}
+              hotspots={{ rebalance_advisor_result.hotspots | length }}
+              proposals={{ rebalance_advisor_result.proposals | length }}
+              notes={{ rebalance_advisor_result.notes | join(' | ') }}
+
+        # --- the rung that catches the defect this collection keeps shipping
+        #
+        # Every finding in the running tally is the same shape: a field the
+        # projection does not carry, read as if it were an answer. The unit
+        # tests check the collector against a recorded shape; only this rung
+        # checks it against the platform.
+        - name: "2. Capture the collector's view of the live system"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.rebalance_advisor
+            tasks_from: capture
+          vars:
+            rebalance_advisor_samples: 1
+
+        - name: "2b. Every field the planner reads is really there"
+          ansible.builtin.assert:
+            that:
+              - rebalance_advisor_state.nodes | length > 0
+              - rebalance_advisor_state.vms | length > 0
+              - rebalance_advisor_state.nodes
+                | rejectattr(item, 'defined') | list | length == 0
+            fail_msg: >-
+              the live collector produced no '{{ item }}' on some node, so
+              the planner would read None and decide with it:
+              {{ rebalance_advisor_state.nodes }}
+          loop: "{{ node_fields }}"
+
+        - name: "2c. ...on the VM side too"
+          ansible.builtin.assert:
+            that: >-
+              rebalance_advisor_state.vms
+              | rejectattr(item, 'defined') | list | length == 0
+            fail_msg: >-
+              the live collector produced no '{{ item }}' on some VM:
+              {{ rebalance_advisor_state.vms }}
+          loop: "{{ vm_fields }}"
+
+        - name: "2d. The numbers are live, not empty defaults"
+          ansible.builtin.assert:
+            that:
+              # RAM is in MB on both sides -- a node reading like a byte count
+              # would mean the planner is adding MB to bytes.
+              - rebalance_advisor_state.nodes
+                | map(attribute='ram') | map('int') | select('lt', 1) | list
+                | length == 0
+              - rebalance_advisor_state.nodes
+                | map(attribute='ram') | map('int')
+                | select('gt', 1048576) | list | length == 0
+              - rebalance_advisor_state.nodes
+                | selectattr('running') | list | length > 0
+            fail_msg: >-
+              node RAM is missing or not in MB:
+              {{ rebalance_advisor_state.nodes | map(attribute='ram') | list }}
+
+        - name: "3. A captured state is a valid fixture"
+          ansible.builtin.copy:
+            content: "{{ rebalance_advisor_state | to_nice_json }}"
+            dest: "{{ capture_path }}"
+            mode: "0600"
+
+        - name: "3b. Replay the capture offline"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.rebalance_advisor
+          vars:
+            rebalance_advisor_fixture: "{{ capture_path }}"
+
+        - name: "3c. The offline replay agrees with the live run"
+          ansible.builtin.assert:
+            that:
+              - rebalance_advisor_result.hotspots | length
+                == live_hotspot_count | int
+            fail_msg: >-
+              replaying the collector's own output gave
+              {{ rebalance_advisor_result.hotspots | length }} hotspot(s)
+              where the live run gave {{ live_hotspot_count }}, so the
+              fixture format and the collector have drifted apart
+
+        - name: "4. Fixture with a known hotspot must produce a proposal"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.rebalance_advisor
+          vars:
+            rebalance_advisor_fixture: "{{ fixtures }}/hotspot.json"
+
+        - name: "4b. It proposed the smallest resolving move, with a reason"
+          ansible.builtin.assert:
+            that:
+              - rebalance_advisor_result.hotspots | length > 0
+              - rebalance_advisor_result.proposals | length > 0
+              - (rebalance_advisor_result.proposals | first).reason | length > 0
+              - (rebalance_advisor_result.proposals | first).vm == 'small-web'
+            fail_msg: >-
+              the hotspot fixture produced no proposal:
+              {{ rebalance_advisor_result }}
+
+        - name: "5. The move budget is honoured"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.rebalance_advisor
+          vars:
+            rebalance_advisor_fixture: "{{ fixtures }}/hotspot.json"
+            rebalance_advisor_max_moves: 1
+
+        - name: "5b. Never more proposals than the budget"
+          ansible.builtin.assert:
+            that: rebalance_advisor_result.proposals | length <= 1
+            fail_msg: >-
+              budget of 1 produced
+              {{ rebalance_advisor_result.proposals | length }} proposals
+
+        # --- #28: a reporting role is exactly when --check gets used
+        - name: "6. Check mode still reports"
+          when: true
+          check_mode: true
+          block:
+            - name: "6a. Run the role under check mode"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.rebalance_advisor
+              vars:
+                rebalance_advisor_fixture: "{{ fixtures }}/hotspot.json"
+
+        - name: "6b. It produced a real report, not a stack trace"
+          ansible.builtin.assert:
+            that: rebalance_advisor_result.proposals | length > 0
+            fail_msg: >-
+              check mode produced no report. The advisor only reads, so its
+              command needs check_mode: false -- changed_when: false is a
+              different claim and does not grant permission to run (#28).
+
+        # --- the no_log hand-off
+        - name: "7. A failure reaches the operator with its reason"
+          block:
+            - name: "7a. Point the advisor at a fixture that is not there"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.rebalance_advisor
+              vars:
+                rebalance_advisor_fixture: /tmp/zz-no-such-fixture.json
+            - name: "7b. Reaching here means it did not fail at all"
+              ansible.builtin.fail:
+                msg: "a missing fixture was accepted"
+          rescue:
+            - name: "7c. The message names the actual problem"
+              ansible.builtin.assert:
+                that:
+                  - "'FileNotFoundError' in ansible_failed_result.msg"
+                  - "'censored' not in ansible_failed_result.msg"
+                fail_msg: >-
+                  the operator got '{{ ansible_failed_result.msg }}'.
+                  no_log censors the whole task result, so the script's
+                  diagnostic has to be re-surfaced from stderr or it is
+                  lost -- 'censored' and an exit code is not a diagnostic.
+
+      rescue:
+        - name: Record the failure
+          ansible.builtin.set_fact:
+            ladder_failed: true
+        - name: Re-raise
+          ansible.builtin.fail:
+            msg: "rebalance_advisor ladder FAILED -- see the task above"
+
+      always:
+        - name: Remove the scratch capture
+          ansible.builtin.file:
+            path: "{{ capture_path }}"
+            state: absent
+
+    - name: Stop if the ladder failed
+      ansible.builtin.fail:
+        msg: "rebalance_advisor ladder FAILED"
+      when: ladder_failed | default(false)
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          rebalance_advisor ladder PASSED: live run reports honestly ->
+          every proposal carries a reason -> the live collector produces
+          every field the planner reads, in the units it expects -> its own
+          capture replays to the same answer -> a hotspot fixture proposes
+          the smallest resolving move -> the budget caps the count ->
+          check mode reports instead of crashing -> a failure arrives with
+          its reason rather than the word 'censored'

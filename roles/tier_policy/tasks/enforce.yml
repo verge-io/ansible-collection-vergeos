@@ -1,0 +1,100 @@
+---
+# Correcting drift needs the drive module's `tier` parameter to actually
+# work. It did not until recently: the module compared a 'tier' key that
+# does not exist on a machine_drives row (the field is preferred_tier,
+# and it is a string), so it reported changed forever and converged
+# never. That is issue #8, fixed in this collection and pinned by
+# tests/unit/plugins/modules/test_field_contracts.py -- if that regresses,
+# this role silently stops working.
+- name: Retier drifted drives
+  vergeio.vergeos.drive:
+    host: "{{ tier_policy_host }}"
+    username: "{{ tier_policy_username }}"
+    password: "{{ tier_policy_password }}"
+    insecure: "{{ tier_policy_insecure }}"
+    vm_name: "{{ item.vm }}"
+    name: "{{ item.drive }}"
+    tier: "{{ item.expected }}"
+    state: present
+  loop: "{{ tier_policy_result.drift }}"
+  loop_control:
+    label: "{{ item.vm }}/{{ item.drive }} -> tier {{ item.expected }}"
+  register: tier_policy_enforced
+
+# Read-back doctrine: the platform accepts writes it then discards, so
+# "the module said changed" is not evidence that anything moved. Audit
+# again and assert against the fresh answer.
+#
+# This one deliberately does NOT get `check_mode: false`, unlike the audit in
+# main.yml. That audit is the role's report and must run under --check; this
+# one exists only to prove a write landed, and in check mode no write was
+# attempted. Being skipped is the signal -- see below.
+#
+# failed_when: false because no_log censors the whole task result, so the
+# diagnostic needs a task of its own.
+- name: Re-audit after enforcement
+  ansible.builtin.command:
+    argv: >-
+      {{ [ansible_playbook_python, role_path ~ '/files/tier_audit.py',
+          '--policy-json', tier_policy_rules | to_json]
+         + (['--default-tier', tier_policy_default_tier | string]
+            if tier_policy_default_tier is not none else []) }}
+  environment:
+    VERGEOS_HOST: "{{ tier_policy_host }}"
+    VERGEOS_USERNAME: "{{ tier_policy_username }}"
+    VERGEOS_PASSWORD: "{{ tier_policy_password }}"
+    VERGEOS_INSECURE: "{{ 'true' if tier_policy_insecure else '' }}"
+  register: tier_policy_reaudit_raw
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: tier_policy_result.drift | length > 0
+
+- name: The re-audit must have succeeded
+  ansible.builtin.fail:
+    msg: >-
+      the re-audit exited {{ tier_policy_reaudit_raw.rc }}, so enforcement
+      cannot be proved either way:
+      {{ tier_policy_reaudit_raw.stderr | default('') | trim }}
+  when:
+    - tier_policy_reaudit_raw is not skipped
+    - tier_policy_reaudit_raw.rc != 0
+
+# `default('{}', true)` because a skipped task's registered result has no
+# stdout at all, and set_fact finalizes its arguments before the `when` is
+# evaluated (#28) -- so the condition below does not save the template.
+- name: Adopt the converged report
+  ansible.builtin.set_fact:
+    tier_policy_result: >-
+      {{ tier_policy_reaudit_raw.stdout | default('{}', true) | from_json }}
+  when: tier_policy_reaudit_raw is not skipped
+
+# Everything below gates on whether the re-audit RAN, not on
+# `ansible_check_mode`.
+#
+# ansible_check_mode reports the --check flag, and nothing else. A caller who
+# wraps this role in a `check_mode: true` block gets tasks that are skipped
+# and a variable that still reads false -- measured, and it is why the live
+# ladder failed the first time it tried: the drive module wrote nothing, the
+# drift was still there by design, and a convergence assert guarded by
+# ansible_check_mode fired on a run that had been told not to change
+# anything. vm_from_recipe documents the same trap and gates on the same kind
+# of evidence: what the run itself reported.
+- name: What enforcement would do (check mode)
+  ansible.builtin.debug:
+    msg: >-
+      check mode: would retier {{ tier_policy_result.drift | length }}
+      drive(s) -- {{ tier_policy_result.drift
+                     | map(attribute='vm') | unique | join(', ') }}.
+      Nothing was written, and nothing was re-read.
+  when:
+    - tier_policy_reaudit_raw is skipped
+    - tier_policy_result.drift | length > 0
+
+- name: Enforcement must converge
+  ansible.builtin.assert:
+    that: tier_policy_result.drift | length == 0
+    fail_msg: >-
+      enforcement did not converge -- still configured for the wrong tier:
+      {{ tier_policy_result.drift }}
+  when: tier_policy_reaudit_raw is not skipped
