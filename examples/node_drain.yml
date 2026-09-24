@@ -1,0 +1,41 @@
+---
+# Evacuate a node into maintenance mode, or bring it back.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#
+#   # preflight only -- read-only, this is the DEFAULT
+#   ansible-playbook examples/node_drain.yml -e node_drain_node=node2
+#
+#   # actually drain it
+#   ansible-playbook examples/node_drain.yml \
+#     -e node_drain_node=node2 -e node_drain_confirm=yes
+#
+#   # bring it back
+#   ansible-playbook examples/node_drain.yml \
+#     -e node_drain_node=node2 -e node_drain_state=active
+#
+# Two things make this safe to run:
+#
+#   1. The preflight ALWAYS runs and is read-only. Without
+#      node_drain_confirm=yes it reports whether the drain would fit and
+#      stops. Restoring a node needs no confirmation -- it adds capacity
+#      rather than removing it.
+#
+#   2. The capacity gate. The platform will accept a drain it cannot
+#      complete: measured on a 2-node lab, draining a node with an 18 GB
+#      RAM shortfall was accepted, the node flipped to maintenance in under
+#      a second, and the migration then sat with nowhere to go for fourteen
+#      minutes -- no error, no timeout. Neither the UI nor the native action
+#      checks first. That check is the substance this role adds.
+#
+# The completion signal is NOT the maintenance flag, which the platform sets
+# as soon as the request is accepted, while RAM is still resident. It is zero
+# running MACHINES left on the node -- VMs and vnets both. A vnet migrates
+# like a VM and vm_info does not report it, so a VM-only count reaches zero
+# while the fabric is still moving off the node.
+- name: Node drain
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: vergeio.vergeos.node_drain

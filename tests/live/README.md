@@ -73,6 +73,8 @@ precisely because nothing read that table.
 | `verify-restore-drill.yml` | the `restore_drill` role — and that a drill which should fail does (#53) |
 | `verify-rebalance-advisor.yml` | the `rebalance_advisor` role — and that the live collector produces every field the planner reads (#47) |
 | `verify-tier-policy.yml` | the `tier_policy` role — drift, enforcement, and the tiers the platform accepts but does not have (#48) |
+| `verify-node-drain.yml` | `node_info` / `node_maintenance` and the `node_drain` role — a real drain and restore, on a node picked for being empty (#36) |
+| `verify-rolling-update.yml` | `update` / `update_info` and the `rolling_update` role — staging, the capacity gate and both consent gates. The reboot itself is not exercised; see the header (#41) |
 | `verify-drive-health.yml` | `physical_drive_info` and the `drive_health` role — SMART triage, and that every flag it reads is a real column (#37) |
 | `verify-auth-source.yml` | `auth_source` / `auth_source_info` — SSO, and that a settings update replaces rather than merges (#31) |
 | `verify-file.yml` | `file` / `file_info` — upload, the `filesize` settle window, metadata drift (#33) |
