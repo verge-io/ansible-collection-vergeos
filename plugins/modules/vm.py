@@ -41,6 +41,24 @@ options:
     type: str
     choices: [ present, absent, running, stopped ]
     default: present
+  power_timeout:
+    description:
+      - Seconds to wait for O(state=running) or O(state=stopped) to be
+        reached.
+      - On expiry the module fails and says what status it was still reading.
+        It used to wait the same 60 seconds and then report success whichever
+        way the wait ended, so a VM that never started produced
+        C(changed=true) and a green play.
+      - Raise it for a system that is legitimately slower than the default.
+        A VM that never arrives is not a VM that started.
+      - The state is read before the first wait, so C(0) means "check once and
+        fail if it is not already there". Measured on 26.1.8, a VM reports
+        C(initializing) the instant a power-on call returns and C(running)
+        about half a second later, so C(0) is a way to exercise the expiry
+        path deliberately rather than a useful production setting.
+    type: int
+    default: 60
+    version_added: "2.2.0"
   description:
     description:
       - Description of the virtual machine.
@@ -178,6 +196,8 @@ changed:
   type: bool
   sample: true
 '''
+
+import time
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
@@ -447,6 +467,52 @@ def delete_vm(module, client, vm):
     return True
 
 
+# Both power waits used to poll thirty times, two seconds apart, and then
+# `return True` whichever way the loop ended -- so a VM that never reached the
+# requested state produced changed=true and a green play (#114). The platform
+# refuses an over-provisioned start synchronously, which is why this was
+# survivable for so long; what it does not refuse is a start that is accepted
+# and then does not finish.
+# Measured on 26.1.8, from the instant the power call returned:
+#
+#   power_on   +0.01s initializing   +0.52s running
+#   power_off  +0.01s running        +0.51s running     +1.03s stopped
+#
+# So the state is never already correct when the call returns, and it arrives
+# in about half a second. The old loop slept two seconds BEFORE looking, which
+# made every power task cost at least that whether or not it needed to.
+POWER_POLL_SECONDS = 1
+
+
+def wait_for_power(module, vm, wanted, timeout):
+    """Poll until the VM reports ``wanted``, or fail saying what it read.
+
+    Failing on expiry rather than returning is the whole point (#114).
+    `network` was written this way for the same reason (#97); this brings the
+    two into line.
+
+    The state is read BEFORE the first sleep, so a VM that arrives quickly is
+    not made to wait for a poll interval it did not need -- and so that
+    ``power_timeout: 0`` means "check once", which is what makes the expiry
+    path testable against a real system without contriving a broken VM.
+    """
+    deadline = time.time() + max(0, int(timeout))
+    while True:
+        vm.refresh()
+        status = dict(vm).get('status')
+        if status == wanted:
+            return dict(vm)
+        if time.time() >= deadline:
+            module.fail_json(
+                msg="VM '%s' did not reach '%s' within %ss; it still reads "
+                    "status '%s'. Power is asynchronous and this module waits "
+                    "for it rather than assuming it -- raise power_timeout if "
+                    "this system is legitimately slower than that, but a VM "
+                    "that never arrives is not a VM that started."
+                    % (module.params['name'], wanted, timeout, status))
+        time.sleep(POWER_POLL_SECONDS)
+
+
 def power_on_vm(module, client, vm):
     """Power on a VM using SDK"""
     vm_dict = dict(vm)
@@ -458,14 +524,8 @@ def power_on_vm(module, client, vm):
         return True, vm_dict
 
     vm.power_on()
-    # Wait for VM to start (up to 60 seconds)
-    import time
-    for _attempt in range(30):
-        time.sleep(2)
-        vm.refresh()
-        if dict(vm).get('status') == 'running':
-            break
-    return True, dict(vm)
+    return True, wait_for_power(module, vm, 'running',
+                                module.params['power_timeout'])
 
 
 def power_off_vm(module, client, vm):
@@ -479,14 +539,8 @@ def power_off_vm(module, client, vm):
         return True, vm_dict
 
     vm.power_off(force=True)
-    # Wait for VM to stop (up to 60 seconds)
-    import time
-    for _attempt in range(30):
-        time.sleep(2)
-        vm.refresh()
-        if dict(vm).get('status') == 'stopped':
-            break
-    return True, dict(vm)
+    return True, wait_for_power(module, vm, 'stopped',
+                                module.params['power_timeout'])
 
 
 def main():
@@ -497,6 +551,7 @@ def main():
             type='str', default='present',
             choices=['present', 'absent', 'running', 'stopped']
         ),
+        power_timeout=dict(type='int', default=60),
         description=dict(type='str'),
         enabled=dict(type='bool'),
         os_family=dict(type='str', choices=['linux', 'windows', 'other']),
