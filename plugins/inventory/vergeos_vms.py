@@ -114,29 +114,37 @@ options:
 '''
 
 EXAMPLES = r'''
-# Single-site configuration (replacement for vergeos.py)
-plugin: vergeio.vergeos.vergeos_vms
-sites:
-  - name: production
-    host: vergeos.example.com
-    username: admin
-    password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+# NOTE: this block is deliberately ONE YAML document. ansible-test's yamllint
+# on ansible-core 2.15 rejects a multi-document EXAMPLES with "expected a
+# single document in the stream - but found another document", so the simpler
+# forms are shown as comments rather than separated by `---`. See issue #77.
+#
+# Minimal single site -- name, host, and one credential style:
+#
+#   plugin: vergeio.vergeos.vergeos_vms
+#   sites:
+#     - name: production
+#       host: vergeos.example.com
+#       username: admin
+#       password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+#
+# Several sites, no caching or filtering:
+#
+#   plugin: vergeio.vergeos.vergeos_vms
+#   sites:
+#     - name: denver
+#       host: denver.vergeos.local
+#       username: admin
+#       password: "{{ lookup('env', 'DENVER_PASS') }}"
+#     - name: chicago
+#       host: chicago.vergeos.local
+#       username: admin
+#       password: "{{ lookup('env', 'CHICAGO_PASS') }}"
+#
+# The live example below is the full form: several sites, both credential
+# styles, caching, filtering and group construction. `inventory/
+# vergeos_vms.yml.example` ships a copy you can edit directly.
 
-# Multi-site configuration
----
-plugin: vergeio.vergeos.vergeos_vms
-sites:
-  - name: denver
-    host: denver.vergeos.local
-    username: admin
-    password: "{{ lookup('env', 'DENVER_PASS') }}"
-  - name: chicago
-    host: chicago.vergeos.local
-    username: admin
-    password: "{{ lookup('env', 'CHICAGO_PASS') }}"
-
-# Full configuration with caching and filtering
----
 plugin: vergeio.vergeos.vergeos_vms
 cache: true
 cache_plugin: jsonfile

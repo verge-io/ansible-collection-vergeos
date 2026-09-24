@@ -59,7 +59,7 @@
           Snapshot Name: {{ snapshot.snapshot_name }}
 
           Note: You can manually delete this snapshot later using:
-          ansible-playbook examples/vm_snapshots.yml --tags delete \
+          ansible-playbook examples/delete_snapshot.yml \
             -e "snapshot_id={{ snapshot.snapshot_id }}"
 
     - name: List all snapshots for the VM

@@ -87,7 +87,7 @@
           Snapshots created with name: {{ snapshot_prefix }}-{{ snapshot_timestamp | default('N/A') }}
 
           To manage snapshots:
-            - List: Use VergeOS UI or vm_snapshot module with state: info
+            - List: Use the VergeOS UI, or the vm_snapshot module with operation: list
             - Delete: ansible-playbook examples/delete_snapshot.yml
 
           Example targeting patterns:

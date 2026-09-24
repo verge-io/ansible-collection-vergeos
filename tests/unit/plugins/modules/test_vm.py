@@ -3,12 +3,10 @@
 
 """Unit tests for vm module"""
 
-# Unused on this branch, but #73 adds @pytest.mark.parametrize cases to this
-# same file. Both changes merge without a textual conflict, so deleting the
-# import here produces a clean merge that cannot be collected:
-#     NameError: name 'pytest' is not defined
-# Keep it. pylint: disable-next is the price of the two landing separately.
-import pytest  # noqa: F401  pylint: disable=unused-import
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 

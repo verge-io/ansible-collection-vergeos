@@ -3,6 +3,9 @@
 
 """Unit tests for vm_info module"""
 
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
 from unittest.mock import MagicMock, patch
 
 

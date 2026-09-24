@@ -70,22 +70,6 @@ jobs:
   sanity:
     name: sanity (ansible-core ${{ matrix.ansible }}, py${{ matrix.python }})
     runs-on: ubuntu-latest
-    # ADVISORY UNTIL #73 MERGES -- then delete this line.
-    #
-    # `dev` fails sanity today, and not because of anything in this PR.
-    # Measured on this branch with ansible-core 2.20.9:
-    #
-    #     validate-modules : 29 errors
-    #     yamllint         :  3 errors
-    #
-    # Every one of them is plugins/modules/network.py, whose DOCUMENTATION
-    # block is unparsable YAML (#17). PR #73 fixes it and takes both counts to
-    # zero -- verified. Gating on sanity now would make this PR, which fixes
-    # the unit suite, unmergeable because of an unrelated defect.
-    #
-    # Once #73 is in: remove `continue-on-error` and add "sanity" to dev's
-    # required status checks.
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:

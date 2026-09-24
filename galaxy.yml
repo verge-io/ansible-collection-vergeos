@@ -30,4 +30,14 @@ build_ignore:
   - __pycache__
   - "*.pyc"
   - .venv
-  - tests/
+  # fnmatch against the path relative to the collection root: no path is ever
+  # equal to "tests/", so the trailing slash made this entry match nothing and
+  # the whole test tree shipped in every artifact (57 entries on 2.0.1). The
+  # neighbouring entries work because none of them has one. See issue #15.
+  - tests
+  # ansible-galaxy does NOT read .gitignore, so anything gitignored but absent
+  # from build_ignore is published whenever the artifact is built from a
+  # working tree rather than a clean clone.
+  - .probe
+  - .pytest_cache
+  - .github
