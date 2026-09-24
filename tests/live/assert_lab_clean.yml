@@ -1,0 +1,80 @@
+---
+# Is the lab actually clean? Across EVERY object type a recipe ladder touches.
+#
+#   ansible-playbook assert_lab_clean.yml
+#   ansible-playbook assert_lab_clean.yml -e '{"ignore": ["zz-i96x-f-vm"]}'
+#
+# Each ladder asserts its own prefix is gone, which is the right check for that
+# ladder and a blind one for the suite: nothing was looking across all of them
+# at once, and nothing looked at vm_recipe_instances at all.
+#
+# That gap was not hypothetical. An instance named 'zz-from-custom' pointing at
+# a recipe key that had already been deleted survived several ladder runs --
+# the teardown selected instances by recipe key, so an orphan matched nothing,
+# and the leftover assertion did not read the instance table. It was found by
+# noticing the system had 33 recipes where it used to have 32.
+#
+# Run this between ladders, or after a session. It creates nothing.
+- name: Assert the lab carries no scratch objects
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    # Names to tolerate -- someone else's scratch, or a VM deliberately left
+    # running for manual inspection.
+    ignore: []
+
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+      status_code: [200]
+
+  tasks:
+    - name: Read every table a recipe ladder can leave something in
+      ansible.builtin.uri:
+        url: "{{ api_base }}/{{ item }}?fields=name%2C%24key"
+      register: clean_scan
+      loop:
+        - vms
+        - vm_recipes
+        - catalogs
+        - vm_recipe_instances
+        - vnets
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Collect anything named zz-
+      ansible.builtin.set_fact:
+        clean_found: >-
+          {%- set out = [] -%}
+          {%- for r in clean_scan.results -%}
+            {%- for row in r.json | default([]) -%}
+              {%- if (row.name | default('')) is match('(?i)^zz-')
+                     and row.name not in ignore -%}
+                {%- set _ = out.append(r.item ~ ': ' ~ row.name) -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          {{ clean_found | length }} scratch object(s) present
+          {{ '-- ' ~ clean_found if clean_found | length > 0 else '' }}
+
+    - name: The lab must be clean
+      ansible.builtin.assert:
+        that: clean_found | length == 0
+        fail_msg: >-
+          scratch objects left behind: {{ clean_found }}.
+          Recipe instances and catalogs do not show up in vm_info, so a VM
+          list looking empty does not mean the lab is.
+        success_msg: >-
+          no zz- objects in vms, vm_recipes, catalogs, vm_recipe_instances
+          or vnets
+        quiet: true

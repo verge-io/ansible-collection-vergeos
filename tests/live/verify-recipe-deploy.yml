@@ -1,0 +1,307 @@
+---
+# Live ladder for the vm_recipe_deploy module (VergeOS 26.1.8).
+#
+# Deploys a zz- scratch VM from a STOCK catalog recipe and tears it down.
+# Stock recipes and catalogs are only ever read, never modified.
+#
+#   ansible-playbook verify-recipe-deploy.yml
+#
+# Ported from the platform repo's ladder for the old recipe_deploy role.
+# That role carried its own HTTP layer with an ssh/yb-api transport and a
+# direct-API transport, so the original needed recipe_deploy_transport,
+# _ssh_host, _auth_scheme, _validate_certs and hand-built Authorization
+# headers. None of that survives: the module handles connection and auth,
+# so the ladder reads the platform through vm_info like every other ladder
+# here.
+#
+# Do not run two instances of THIS ladder at once. The scratch VM name is
+# fixed and rung 0 deletes it, so a second instance would tear down the
+# first one's VM mid-run. That is deliberate -- a fixed name is what lets
+# rung 0 clean up after a crashed previous run.
+- name: Recipe deploy live ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    zz: zz-recipe-ladder
+    zz_recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+    good_answers:
+      HOSTNAME: "{{ zz }}"
+      USER: ladder
+      PASSWORD: LadderScratchValue1
+      YB_CPU_CORES: 1
+      YB_RAM: 1024
+      YB_DRIVE_OS_SIZE: 10737418240
+      SELECT_OS_TIER: 1
+      YB_IP_ADDR_TYPE: dhcp
+      # Answered explicitly, not left to the recipe's default. That default
+      # is __new_internal__ and the platform does NOT apply it -- a real
+      # deploy left eth0 attached to no network, and the original ladder
+      # passed anyway until the NIC post-condition was added. DMZ is the
+      # appliance's own isolated network, so scratch VMs never touch the LAN.
+      YB_NIC_ETH0: DMZ
+
+  tasks:
+    - name: Ladder body
+      block:
+        - name: "0. The stock recipe must exist before anything else"
+          vergeio.vergeos.vm_recipe_info:
+            insecure: true
+            name: "{{ zz_recipe }}"
+          register: recipe_present
+          changed_when: false
+
+        - name: "0b. Refuse to run without it"
+          ansible.builtin.assert:
+            that: recipe_present.recipes | default([]) | length == 1
+            fail_msg: >-
+              stock recipe '{{ zz_recipe }}' not found on this system.
+              Pass -e zz_recipe='<a recipe that exists>'.
+
+        - name: "0c. Cleanup first -- the scratch VM must not pre-exist"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ zz }}"
+            state: absent
+
+        # ---- refusals, all of which must create nothing ----
+
+        - name: "1. An unknown answer name is refused"
+          block:
+            - name: "1a. Deploy with a question the recipe does not have"
+              vergeio.vergeos.vm_recipe_deploy:
+                insecure: true
+                name: "{{ zz }}"
+                recipe: "{{ zz_recipe }}"
+                answers: "{{ good_answers | combine({'NOT_A_QUESTION': 'x'}) }}"
+              register: r1
+            - name: "1b. Reaching here means it was accepted"
+              ansible.builtin.fail:
+                msg: "an unknown answer name was accepted"
+          rescue:
+            - name: "1c. Refused, and it named the offending answer"
+              ansible.builtin.assert:
+                that: "'NOT_A_QUESTION' in (ansible_failed_result.msg | default(''))"
+                fail_msg: >-
+                  refused, but the message does not name the bad answer:
+                  {{ ansible_failed_result.msg | default('') }}
+
+        - name: "2. A missing required answer is refused"
+          block:
+            - name: "2a. Deploy without HOSTNAME"
+              vergeio.vergeos.vm_recipe_deploy:
+                insecure: true
+                name: "{{ zz }}"
+                recipe: "{{ zz_recipe }}"
+                answers: >-
+                  {{ good_answers | dict2items
+                     | rejectattr('key', 'equalto', 'HOSTNAME')
+                     | items2dict }}
+              register: r2
+            - name: "2b. Reaching here means it was accepted"
+              ansible.builtin.fail:
+                msg: "a missing required answer was accepted"
+          rescue:
+            - name: "2c. Refused, as it should be"
+              ansible.builtin.debug:
+                msg: "missing required answer refused"
+
+        - name: "3. An unknown recipe name is refused"
+          block:
+            - name: "3a. Deploy from a recipe that does not exist"
+              vergeio.vergeos.vm_recipe_deploy:
+                insecure: true
+                name: "{{ zz }}"
+                recipe: zz-no-such-recipe
+                answers: "{{ good_answers }}"
+              register: r3
+            - name: "3b. Reaching here means it was accepted"
+              ansible.builtin.fail:
+                msg: "an unknown recipe was accepted"
+          rescue:
+            - name: "3c. Refused, as it should be"
+              ansible.builtin.debug:
+                msg: "unknown recipe refused"
+
+        - name: "4. A bad credential is refused, and says so"
+          block:
+            - name: "4a. Deploy with a password that will be rejected"
+              vergeio.vergeos.vm_recipe_deploy:
+                host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+                username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+                password: zz-definitely-not-the-password
+                insecure: true
+                name: "{{ zz }}"
+                recipe: "{{ zz_recipe }}"
+                answers: "{{ good_answers }}"
+              register: r4
+            - name: "4b. Reaching here means it was accepted"
+              ansible.builtin.fail:
+                msg: "a rejected credential was accepted"
+          rescue:
+            - name: "4c. Refused, and the message is about authentication"
+              ansible.builtin.assert:
+                that: >-
+                  ansible_failed_result.msg is search('(?i)login|auth|credential')
+                fail_msg: >-
+                  refused, but not with an auth message:
+                  {{ ansible_failed_result.msg | default('') }}
+
+        - name: "5. Not one of those refusals created a VM"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ zz }}"
+          register: after_refusals
+          changed_when: false
+
+        - name: "5b. Assert every refusal was side-effect free"
+          ansible.builtin.assert:
+            that: after_refusals.vms | length == 0
+            fail_msg: >-
+              a refused deploy left a VM behind:
+              {{ after_refusals.vms | map(attribute='name') | list }}
+
+        # ---- the dry run, which must create nothing ----
+        #
+        # Check mode is the dry run. `simulate` is NOT: it defaults to true
+        # and means "run the server-side simulation BEFORE deploying", so
+        # simulate=true still deploys. Getting that wrong the first time I
+        # wrote this rung cost a real VM -- the module did exactly what it
+        # documents, and the ladder asserted the wrong thing.
+        #
+        # The simulation itself is the substance here: a real server-side
+        # dry run that renders cloud-init and walks every recipe step,
+        # creating nothing. Its log is scanned rather than trusted, because
+        # the API reports success as {"err": "Simulation complete"} even
+        # when its own log contains failed steps.
+        - name: "6. A good answer set passes the server-side simulation"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ zz }}"
+            recipe: "{{ zz_recipe }}"
+            answers: "{{ good_answers }}"
+          check_mode: true
+          register: sim
+
+        - name: "6b. The simulation reported no failed steps"
+          ansible.builtin.assert:
+            that:
+              - sim.simulate_result is defined
+              - sim.simulate_result.ok | bool
+              - sim.simulate_result.errors | length == 0
+              - sim.simulate_result.cloudinit_files | length > 0
+            fail_msg: >-
+              the simulation did not come back clean:
+              {{ sim.simulate_result | default('(absent)') }}
+
+        - name: "7. Check mode left nothing behind"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ zz }}"
+          register: after_sim
+          changed_when: false
+
+        - name: "7b. Assert clean"
+          ansible.builtin.assert:
+            that: after_sim.vms | length == 0
+            fail_msg: "check mode created a VM"
+
+        # ---- the real deploy ----
+
+        - name: "8. Deploy for real"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ zz }}"
+            recipe: "{{ zz_recipe }}"
+            answers: "{{ good_answers }}"
+          register: deployed
+
+        - name: "8b. It reported a VM key"
+          ansible.builtin.assert:
+            that:
+              - deployed is changed
+              - deployed.vm_key is defined
+              - deployed.vm_key | string | length > 0
+            fail_msg: "deploy did not report a vm_key: {{ deployed }}"
+
+        - name: "9. An identical re-run converges rather than duplicating"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ zz }}"
+            recipe: "{{ zz_recipe }}"
+            answers: "{{ good_answers }}"
+          register: rerun
+
+        - name: "9b. Reported as already existing"
+          ansible.builtin.assert:
+            that: rerun is not changed
+            fail_msg: "the second deploy was not a no-op: {{ rerun }}"
+
+        - name: "10. Exactly one VM by that name exists"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ zz }}"
+          register: final_vm
+          changed_when: false
+
+        - name: "10b. Assert no duplicate"
+          ansible.builtin.assert:
+            that: final_vm.vms | length == 1
+            fail_msg: >-
+              expected exactly one VM, got
+              {{ final_vm.vms | map(attribute='name') | list }}
+
+        # The post-condition the original ladder gained the hard way: the
+        # recipe's default network answer is not applied by the platform, so
+        # a deploy that looks fine can leave eth0 attached to nothing.
+        - name: "11. The VM has a NIC, and it is on a real network"
+          vergeio.vergeos.vm_nic_info:
+            insecure: true
+            vm: "{{ zz }}"
+          register: final_nics
+          changed_when: false
+
+        # The NIC row names the network in 'vnet' (key) and 'vnet_name',
+        # not 'network'. Asserting the name the ANSWER used, so a deploy
+        # that silently fell back to the recipe's __new_internal__ default
+        # fails here rather than looking attached-and-fine.
+        - name: "11b. Assert exactly one NIC, on the network we asked for"
+          ansible.builtin.assert:
+            that:
+              - final_nics.nics | default([]) | length == 1
+              - (final_nics.nics | first).vnet | int > 0
+              - (final_nics.nics | first).vnet_name == good_answers.YB_NIC_ETH0
+            fail_msg: >-
+              expected one NIC on '{{ good_answers.YB_NIC_ETH0 }}', got
+              {{ final_nics.nics | default([])
+                 | map(attribute='vnet_name') | list }}
+
+      always:
+        - name: "12. Teardown the scratch VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ zz }}"
+            state: absent
+
+        - name: "12b. Confirm zero leftovers"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ zz }}"
+          register: leftover
+          changed_when: false
+
+        - name: "12c. Assert clean"
+          ansible.builtin.assert:
+            that: leftover.vms | length == 0
+            fail_msg: "scratch VM left behind"
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          vm_recipe_deploy ladder PASSED: unknown answer refused (by name)
+          -> missing required answer refused -> unknown recipe refused ->
+          bad credential refused with an auth message -> all four refusals
+          side-effect free -> check mode passes the server-side simulation
+          with zero failed steps and creates nothing -> real deploy returns
+          a vm_key -> an identical re-run converges -> exactly one VM with
+          one attached NIC -> zero leftovers

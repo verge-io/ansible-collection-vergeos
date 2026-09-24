@@ -1,0 +1,104 @@
+---
+# Prove an answer set is good before you build anything.
+#
+# This is the playbook to run in CI, or the morning before a change window.
+# It creates nothing at all. What it does is put your answer set through the
+# same two gates a real deploy goes through:
+#
+#   1. Local validation. Unknown question names, wrong types, values outside
+#      a question's min, max or regex, and values that are not one of the
+#      valid choices for a table backed question.
+#   2. The platform's own simulation. A genuine server side dry run that
+#      renders cloud init and walks every step the deploy would take.
+#
+# The second one is the valuable half, because it catches things no amount
+# of local checking can know about, and it is the only preflight a recipe
+# deploy has.
+#
+#   ansible-playbook examples/recipe_preflight.yml
+#
+# Exits non zero when the answer set would not deploy, so it works as a gate.
+- name: Preflight a recipe answer set without creating anything
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    recipe_name: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+    vm_name: "web-01"
+    recipe_network: "External"
+
+    # Treat unanswered questions with empty defaults as a failure. Off by
+    # default because the stock recipes carry several that are fine left
+    # alone. Turn it on once you have read the hints and answered the ones
+    # that matter to you.
+    strict_hints: false
+
+  tasks:
+    - name: Find the tiers that are valid on this system
+      vergeio.vergeos.vm_recipe_info:
+        name: "{{ recipe_name }}"
+        questions: true
+        resolve_options: true
+      register: recipe
+
+    - name: Build the answer set we intend to deploy with
+      ansible.builtin.set_fact:
+        candidate_answers:
+          HOSTNAME: "{{ vm_name }}"
+          USER: "ops"
+          PASSWORD: "{{ vault_guest_password | default('change-me') }}"
+          YB_CPU_CORES: 2
+          YB_RAM: 4096
+          YB_DRIVE_OS_SIZE: 53687091200
+          YB_IP_ADDR_TYPE: dhcp
+          YB_NIC_ETH0: "{{ recipe_network }}"
+          SELECT_OS_TIER: >-
+            {{ recipe.options.SELECT_OS_TIER | map(attribute='$key') | first }}
+
+    # check_mode on the task itself, rather than asking the operator to
+    # remember --check. This playbook is a preflight, so it should not be
+    # possible to run it and accidentally build something.
+    #
+    # ignore_errors is here so a rejected answer set becomes a report rather
+    # than a stack trace. The assert below is what actually decides.
+    - name: Validate the answers and run the platform's simulation
+      vergeio.vergeos.vm_recipe_deploy:
+        name: "{{ vm_name }}"
+        recipe: "{{ recipe_name }}"
+        answers: "{{ candidate_answers }}"
+        fail_on_hints: "{{ strict_hints }}"
+      check_mode: true
+      register: preflight
+      ignore_errors: true
+
+    - name: Report the preflight
+      ansible.builtin.debug:
+        msg:
+          recipe: "{{ recipe_name }}"
+          would_deploy: "{{ not (preflight.failed | default(false)) }}"
+          # Question names only. Values are never echoed back.
+          answers_accepted: "{{ preflight.answers_sent | default([]) }}"
+          # How many steps the simulation walked. A number here means the
+          # platform really did dry run the whole deploy.
+          simulated_steps: >-
+            {{ preflight.simulate_result.step_count | default('none') }}
+          # Unanswered questions whose default is empty. Read them even when
+          # the preflight passes, because some of them fail a real deploy
+          # partway through rather than at validation time.
+          hints: "{{ preflight.hints | default([]) }}"
+          # Present only on failure, and it names the offending answer.
+          problem: "{{ preflight.msg | default('') if preflight.failed | default(false) else '' }}"
+
+    - name: Fail the run if this answer set would not deploy
+      ansible.builtin.assert:
+        that:
+          - not (preflight.failed | default(false))
+        fail_msg: >-
+          Preflight rejected the answer set for '{{ recipe_name }}':
+          {{ preflight.msg | default('no reason reported') }}
+        success_msg: >-
+          '{{ recipe_name }}' would deploy as '{{ vm_name }}'. The platform
+          simulated
+          {{ preflight.simulate_result.step_count | default('an unknown number of') }}
+          steps and created nothing.
+        quiet: true

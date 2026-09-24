@@ -1,0 +1,197 @@
+---
+# Teardown helper for the ladders that AUTHOR a recipe -- verify-recipe-fuzz
+# and verify-recipe-custom. Both build a catalog, a source VM and a recipe,
+# and both need the same removal in the same two places: once at step 0, so a
+# crashed previous run cannot poison this one, and once from always:.
+#
+# Caller sets td_prefix ('fuzz', 'custom'). Objects are matched as
+# zz-<prefix>* for catalogs and recipes, and zz-<prefix>* or zz-from-<prefix>*
+# for VMs.
+#
+# ORDER IS LOAD-BEARING, and every step of it was learned from a refusal:
+#
+#   1. instances  DELETE /v4/vm_recipes answers HTTP 500 with
+#                 {"err": "field 'instances' must be empty to delete"} while
+#                 anything has been deployed from the recipe. The fuzz ladder
+#                 never hit this because it only ever SIMULATES; any ladder
+#                 that really deploys does. Removing an instance does NOT
+#                 remove the VM it created.
+#   2. clones     A DEPLOYED VM's drive is a clone whose media_source points
+#                 at the recipe snapshot's drive. Delete the recipe first and
+#                 it fails with "Unable to delete VM snapshot N: ... field
+#                 'references' must be empty to delete".
+#   3. recipes    Which cascade to their own snapshot VMs -- and that cascade
+#                 is what releases the reference the SOURCE VM's drive is
+#                 under.
+#   4. sources    Only now. Deleting a source VM before its recipe answers
+#                 HTTP 500 for as long as the recipe's snapshot exists, and
+#                 the SDK retries that into "too many 500 error responses"
+#                 rather than reporting the reason.
+#   5. catalogs   Which hold the recipes.
+#
+# Selection is by $key wherever a wrong match would be destructive -- the
+# instance sweep in particular, because row 1 on this appliance is the
+# standing 'nas1' service and a name-prefix match is one bad regex away from
+# it.
+#
+# Every name match is (?i). VM names on this platform are CASE-SENSITIVE and
+# case-preserving -- ZZ-FOO and zz-foo are two different VMs, both allowed to
+# exist at once -- so a case-sensitive cleanup silently leaves one of them
+# behind. verify-recipe-edges.yml deploys ZZ-FROM-EDGE precisely to prove
+# that, and the first version of this file leaked it: the teardown did not
+# match it, and neither did the leftover check that was supposed to notice,
+# because both used the same lowercase pattern. The next run then converged
+# onto the leak and failed for a reason that had nothing to do with the rung.
+#
+# Nothing here suppresses a failure. Everything above was found BECAUSE a
+# teardown failed loudly; an earlier version with failed_when: false printed
+# "ok", removed nothing, and leaked seventeen VMs.
+#
+# Sets fz_left_vms / fz_left_recipes / fz_left_cats for the caller to assert
+# on.
+
+- name: "Teardown: list recipes"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/vm_recipes?fields=name%2C%24key"
+  register: fz_td_recipes
+
+- name: "Teardown: list recipe instances"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/vm_recipe_instances?fields=name%2C%24key%2Crecipe"
+  register: fz_td_inst
+
+# Matched two ways, and the second one is not redundant. Selecting only by
+# recipe key misses an ORPHAN -- an instance whose recipe has already been
+# deleted matches no scratch recipe key, so it is never touched and survives
+# every subsequent run. One did exactly that: instance 'zz-from-custom'
+# pointing at a recipe key that no longer existed, invisible to the teardown
+# and to the leftover assertion, still there several ladder runs later.
+#
+# The name match is anchored on zz- so it cannot reach the standing 'nas1'
+# instance, which is row 1 on this appliance.
+- name: "Teardown: delete the instances of every scratch recipe"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/vm_recipe_instances/{{ item['$key'] }}"
+    method: DELETE
+    status_code: [200, 201, 202, 204, 404]
+  loop: >-
+    {{ (fz_td_inst.json | default([])
+        | selectattr('recipe', 'defined')
+        | selectattr('recipe', 'in', fz_td_recipes.json | default([])
+                     | selectattr('name', 'defined')
+                     | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix)
+                     | map(attribute='$key') | list) | list
+        + fz_td_inst.json | default([])
+        | selectattr('name', 'defined')
+        | selectattr('name', 'match', '(?i)^zz-(' ~ td_prefix
+                     ~ '|from-' ~ td_prefix ~ ')') | list)
+       | unique | list }}
+  loop_control:
+    label: "{{ item.name | default(item['$key']) }}"
+
+- name: "Teardown: list VMs"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/vms?fields=name%2C%24key%2Cis_snapshot"
+  register: fz_td_vms
+
+# Stop-then-delete, via the same helper the real sweep uses. A bare DELETE on
+# a running VM is refused, and a sweep that ignored that refusal once leaked
+# seventeen VMs and exhausted the cluster.
+- name: "Teardown: remove the DEPLOYED VMs first"
+  ansible.builtin.include_tasks: recipe_real_teardown.yml
+  vars:
+    td_vm: "{{ item.name }}"
+  loop: >-
+    {{ fz_td_vms.json | default([])
+       | selectattr('name', 'defined')
+       | rejectattr('is_snapshot')
+       | rejectattr('name', 'search', ' [0-9]+\.[0-9]+-[0-9]+$')
+       | selectattr('name', 'match', '(?i)^zz-from-' ~ td_prefix) | list }}
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Teardown: delete every scratch recipe"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/vm_recipes/{{ item['$key'] }}"
+    method: DELETE
+    status_code: [200, 201, 202, 204, 404]
+  loop: >-
+    {{ fz_td_recipes.json | default([])
+       | selectattr('name', 'defined')
+       | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix) | list }}
+  loop_control:
+    label: "{{ item.name }} ({{ item['$key'] }})"
+
+# Only now: the recipe delete above cascaded its snapshot, and that is what
+# released the reference the source VM's drive was under.
+- name: "Teardown: remove the SOURCE VMs last"
+  ansible.builtin.include_tasks: recipe_real_teardown.yml
+  vars:
+    td_vm: "{{ item.name }}"
+  loop: >-
+    {{ fz_td_vms.json | default([])
+       | selectattr('name', 'defined')
+       | rejectattr('is_snapshot')
+       | rejectattr('name', 'search', ' [0-9]+\.[0-9]+-[0-9]+$')
+       | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix) | list }}
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Teardown: list catalogs"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/catalogs?fields=name%2C%24key"
+  register: fz_td_cats
+
+- name: "Teardown: delete every scratch catalog"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/catalogs/{{ item['$key'] }}"
+    method: DELETE
+    status_code: [200, 201, 202, 204, 404]
+  loop: >-
+    {{ fz_td_cats.json | default([])
+       | selectattr('name', 'defined')
+       | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix) | list }}
+  loop_control:
+    label: "{{ item.name }} ({{ item['$key'] }})"
+
+# Re-read rather than trusting the deletes above: a DELETE that answers 200
+# and removes nothing is the failure this is here to catch.
+- name: "Teardown: re-read recipes"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/vm_recipes?fields=name%2C%24key"
+  register: fz_td_recipes2
+
+- name: "Teardown: re-read VMs"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/vms?fields=name%2C%24key"
+  register: fz_td_vms2
+
+- name: "Teardown: re-read instances"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/vm_recipe_instances?fields=name%2C%24key%2Crecipe"
+  register: fz_td_inst2
+
+- name: "Teardown: re-read catalogs"
+  ansible.builtin.uri:
+    url: "{{ api_base }}/catalogs?fields=name%2C%24key"
+  register: fz_td_cats2
+
+- name: "Teardown: record what is left"
+  ansible.builtin.set_fact:
+    fz_left_recipes: >-
+      {{ fz_td_recipes2.json | default([]) | selectattr('name', 'defined')
+         | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix)
+         | map(attribute='name') | list }}
+    fz_left_vms: >-
+      {{ fz_td_vms2.json | default([]) | selectattr('name', 'defined')
+         | selectattr('name', 'match', '(?i)^zz-(' ~ td_prefix ~ '|from-' ~ td_prefix ~ ')')
+         | map(attribute='name') | list }}
+    fz_left_instances: >-
+      {{ fz_td_inst2.json | default([]) | selectattr('name', 'defined')
+         | selectattr('name', 'match', '(?i)^zz-(' ~ td_prefix
+                      ~ '|from-' ~ td_prefix ~ ')')
+         | map(attribute='name') | list }}
+    fz_left_cats: >-
+      {{ fz_td_cats2.json | default([]) | selectattr('name', 'defined')
+         | selectattr('name', 'match', '(?i)^zz-' ~ td_prefix)
+         | map(attribute='name') | list }}

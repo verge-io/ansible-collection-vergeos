@@ -69,6 +69,54 @@ Configure and Run Playbook
 ansible-playbook examples/snapshot_workflow.yml
 ```
 
+## Deploying VMs from recipes
+
+A recipe is what you pick in the VergeOS UI when you create a new VM. It
+carries its own set of questions, and deploying one from Ansible means
+answering them. There is a full walkthrough in
+[docs/DEPLOYING-VMS-FROM-RECIPES.md](docs/DEPLOYING-VMS-FROM-RECIPES.md), and
+runnable examples in [`examples/`](examples).
+
+| Module | What it does |
+|---|---|
+| `vm_recipe_info` | Lists recipes, and the questions a recipe accepts. Start here, because question names are not guessable and some valid values depend on the system you are pointed at |
+| `vm_recipe_deploy` | Deploys a VM from a recipe. Answers are checked against the recipe's own published questions before anything is sent, so a bad answer is a refusal rather than a half built VM |
+| `vm_drive_info` | A VM's drives, with optional IO counters. Those counters are how you tell a booted guest from one sitting at "no bootable device" |
+| `vm_nic_info` | A VM's NICs, and separately the ones attached to no network at all. A recipe whose network question was left unanswered produces exactly that, and it otherwise passes every check |
+
+| Role | What it does | Example |
+|---|---|---|
+| `vm_from_recipe` | Deploys a VM from a recipe and then waits until it is genuinely usable, meaning drives imported, NICs attached, and optionally the guest proven to have booted | `examples/vm_from_recipe_role.yml` |
+
+The modules return as soon as the platform accepts the deploy, which happens
+while the OS image is still downloading. Use them when you just want to fire
+a deploy off. Use the role when the next thing in your playbook needs the VM
+to actually work.
+
+### Examples
+
+| Example | What it shows |
+|---|---|
+| `recipe_discover.yml` | Read only. What recipes exist, what each one asks, and which answers are only valid on this particular system |
+| `recipe_preflight.yml` | Validates an answer set and runs the platform's own simulation without creating anything. Exits non zero when the answers would not deploy, so it works as a CI gate |
+| `deploy_from_recipe.yml` | A single VM, driving the modules directly |
+| `vm_from_recipe_role.yml` | A single VM via the role, waited on and boot proved |
+| `recipe_fleet.yml` | Several VMs from one recipe, each with its own size |
+
+### Setting connection details once
+
+The recipe modules share an action group, so `module_defaults` can carry the
+connection for all of them:
+
+```yaml
+- hosts: localhost
+  module_defaults:
+    group/vergeio.vergeos.recipe:
+      host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+      username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+```
+
 ## Dynamic Inventory
 
 The collection includes a dynamic inventory plugin (`vergeos_vms`) that queries one or more VergeOS sites for VMs.

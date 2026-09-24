@@ -1,0 +1,189 @@
+---
+# Deploy a VM from a VergeOS recipe, using the modules directly.
+#
+# A recipe is the same thing you would pick in the VergeOS UI when you create
+# a new VM. It carries a set of questions, and deploying one means answering
+# those questions. This playbook shows how to find out what a recipe asks
+# for, and then how to answer it from Ansible.
+#
+# Three ways to run it:
+#
+#   ansible-playbook examples/deploy_from_recipe.yml --tags discover
+#       Read only. Lists the recipes on your system and prints the questions
+#       for the one you picked. Creates nothing.
+#
+#   ansible-playbook examples/deploy_from_recipe.yml --check
+#       A genuine preflight. Your answers are validated locally and then the
+#       platform runs its own simulation of the whole deploy. Still creates
+#       nothing.
+#
+#   ansible-playbook examples/deploy_from_recipe.yml
+#       Builds the VM for real.
+#
+# Everything you are likely to change lives in the vars block below. Nothing
+# here is pinned to a particular system, because the storage tier is
+# discovered at run time rather than written in. The comment further down on
+# storage_tier explains why that matters.
+- name: Deploy a VergeOS VM from a recipe
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # === Connection ===
+    # These fall back to the standard environment variables, so normally you
+    # export VERGEOS_HOST, VERGEOS_USERNAME and VERGEOS_PASSWORD and leave
+    # this block alone.
+    vergeos_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+    vergeos_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+    vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+    vergeos_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true, true) }}"
+
+    # === What to build ===
+    recipe_name: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+    vm_name: "web-01"
+
+    # Which network the guest lands on, by name. Answer this deliberately.
+    # If you leave the recipe's own default in place it builds a brand new
+    # internal network, and you get a VM whose NIC is attached to nothing
+    # while every other check still passes. Point it at a network you meant.
+    recipe_network: "External"
+
+    # === Guest login created by cloud init ===
+    # Keep the password in a vault for anything that is not a scratch VM.
+    guest_user: "ops"
+    guest_password: "{{ vault_guest_password | default('change-me') }}"
+
+    # === Size ===
+    # RAM is in MB. The OS drive is in BYTES, which catches people out, so the
+    # arithmetic is spelled out here rather than pasted in as a large number.
+    guest_cores: 2
+    guest_ram_mb: 4096
+    guest_disk_bytes: 53687091200   # 50 GB
+
+  tasks:
+    # === Discovery ===
+    # Worth running once against any system you have not scripted before,
+    # because recipe question names are not guessable.
+    - name: List the recipes this system offers
+      vergeio.vergeos.vm_recipe_info:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+      register: catalog
+      tags: [discover, always]
+
+    - name: Show the recipe names
+      ansible.builtin.debug:
+        msg: "{{ catalog.recipes | map(attribute='name') | list | sort }}"
+      tags: [discover]
+
+    # resolve_options is the flag that makes this useful. Some questions are
+    # backed by a table on the system rather than a fixed list, and this turns
+    # them into the values that are actually valid on the system you are
+    # pointed at.
+    - name: Ask the recipe what it wants to know
+      vergeio.vergeos.vm_recipe_info:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: "{{ recipe_name }}"
+        questions: true
+        resolve_options: true
+      register: recipe
+      tags: [discover, always]
+
+    - name: Show which questions matter
+      ansible.builtin.debug:
+        msg:
+          # You must answer these. The deploy refuses without them.
+          required: >-
+            {{ recipe.questions | selectattr('required')
+               | map(attribute='name') | list }}
+          # These are the trap. They are optional, so nothing forces you to
+          # answer them, but their default is empty and an empty value can
+          # fail partway through building the VM. The deploy module reports
+          # them as hints.
+          empty_default: >-
+            {{ recipe.questions | rejectattr('required')
+               | selectattr('default', 'in', ['', none])
+               | map(attribute='name') | list }}
+          # Answers that Ansible will scrub from task output.
+          credentials: "{{ recipe.secret_questions }}"
+          # Questions whose valid values came from a table on this system.
+          table_backed: "{{ recipe.options.keys() | list }}"
+      tags: [discover]
+
+    # === Pick a storage tier that exists here ===
+    #
+    # SELECT_OS_TIER is optional with an empty default, and leaving it empty
+    # makes the recipe's own OS drive step fail. So it has to be answered.
+    #
+    # Writing a tier number in by hand is the wrong way to answer it, because
+    # tier numbering is per system. Plenty of systems have only tier 1, and a
+    # playbook that hardcodes tier 4 fails on every one of them with "is not
+    # a valid choice".
+    #
+    # resolve_options has already told us which tiers this system really has,
+    # so take the first one. Pass storage_tier on the command line when you
+    # want a specific tier instead.
+    - name: Choose a storage tier that exists on this system
+      ansible.builtin.set_fact:
+        storage_tier: >-
+          {{ storage_tier
+             | default(recipe.options.SELECT_OS_TIER
+                       | map(attribute='$key') | first) }}
+      tags: [always]
+
+    - name: Say which tier was chosen
+      ansible.builtin.debug:
+        msg: >-
+          Using storage tier {{ storage_tier }}. This system offers
+          {{ recipe.options.SELECT_OS_TIER | map(attribute='$key') | list }}.
+      tags: [always]
+
+    # === Deploy ===
+    - name: Deploy the VM
+      vergeio.vergeos.vm_recipe_deploy:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: "{{ vm_name }}"
+        recipe: "{{ recipe_name }}"
+        answers:
+          HOSTNAME: "{{ vm_name }}"
+          USER: "{{ guest_user }}"
+          PASSWORD: "{{ guest_password }}"
+          YB_CPU_CORES: "{{ guest_cores }}"
+          YB_RAM: "{{ guest_ram_mb }}"
+          YB_DRIVE_OS_SIZE: "{{ guest_disk_bytes }}"
+          YB_IP_ADDR_TYPE: dhcp
+          YB_NIC_ETH0: "{{ recipe_network }}"
+          SELECT_OS_TIER: "{{ storage_tier }}"
+      register: deployed
+      tags: [deploy]
+
+    - name: Report what happened
+      ansible.builtin.debug:
+        msg:
+          changed: "{{ deployed.changed }}"
+          # True when a VM of this name was already there. The module treats
+          # the VM name as its idempotence key, so running this twice does
+          # not build a second VM.
+          already_existed: "{{ deployed.already_existed }}"
+          vm_key: "{{ deployed.vm_key }}"
+          # Names only. Answer values are never echoed back.
+          answers_sent: "{{ deployed.answers_sent }}"
+          # Unanswered questions whose defaults are empty. Read these.
+          hints: "{{ deployed.hints }}"
+          simulated_steps: >-
+            {{ deployed.simulate_result.step_count | default('not simulated') }}
+      tags: [deploy]
+
+    # What you have at this point is worth being clear about. The deploy is
+    # asynchronous. The platform accepts it and hands back a VM key while the
+    # OS image is still downloading, so the VM exists but cannot boot yet.
+    # When you need to wait for a VM that is genuinely usable, use the
+    # vm_from_recipe role instead. See examples/vm_from_recipe_role.yml.

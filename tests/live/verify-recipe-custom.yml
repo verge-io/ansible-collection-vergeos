@@ -1,0 +1,511 @@
+---
+# Build a CUSTOM recipe from scratch, then deploy from it.
+#
+#   ansible-playbook verify-recipe-custom.yml
+#
+# CREATES AND DESTROYS a catalog, two source VMs and two recipes, all named
+# zz-custom-*, plus the VMs deployed from them (zz-from-custom-*). Stock
+# catalogs and recipes are only ever read.
+#
+# What this proves that the other recipe ladders cannot: the module and the
+# role work on a recipe the vendor never shipped. Authoring is deliberately
+# NOT part of the collection -- vm_recipe_deploy deploys, it does not publish
+# -- so the authoring here is done with direct API calls, which doubles as the
+# worked example for anyone building their own recipes.
+#
+# Two halves, because a custom recipe has two very different real uses:
+#
+#   Part A  a recipe published from a BLANK VM. Proves the platform's
+#           auto-published question set is derived from the source VM's real
+#           shape, that answers to it take effect, and -- since a blank drive
+#           holds no OS -- that the role's boot check correctly REFUSES. That
+#           last rung is the only place in the suite where the boot proof is
+#           shown to be capable of failing.
+#
+#   Part B  a recipe published from a REAL, BOOTED VM: deploy Debian 12 from
+#           the stock recipe, publish a custom recipe from it, then deploy
+#           from that and prove the clone boots. This is the golden-image
+#           workflow, and it is the one people actually do.
+#
+# Learned building the original of this, and still true on 26.1.8:
+#   * A recipe row takes `vm` (a live VM) or `vm_snapshot`. Setting `vm` fires
+#     the platform's set_vm hook, which snapshots the VM AND auto-publishes a
+#     question set derived from its real shape -- one YB_DRIVE_<n>_* group per
+#     drive. A custom recipe is therefore deployable with no question
+#     authoring at all.
+#   * The drive size field on machine_drives is `disksize`, not `size`
+#     ("Disk size must be greater than 0" is what `size` earns you). The
+#     vergeio.vergeos.drive module takes GB and converts.
+#
+# Do not run two copies at once. The scratch names are fixed and step 0
+# deletes them.
+- name: Custom recipe live ladder
+  hosts: localhost
+  gather_facts: false
+
+  module_defaults:
+    # Only for the objects the collection has no module for: vm_recipes.
+    ansible.builtin.uri:
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+      body_format: json
+      status_code: [200, 201, 202]
+
+  vars:
+    api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    cu_cat: zz-custom-cat
+    cu_recipe: zz-custom-recipe
+    cu_src: zz-custom-src
+    cu_vm: zz-from-custom
+    # Part B
+    cu_golden_recipe: zz-custom-golden-recipe
+    cu_golden_src: zz-custom-golden-src
+    cu_golden_vm: zz-from-custom-golden
+    stock_recipe: "Debian 12 (Bookworm)"
+    cu_net: DMZ
+    golden_answers:
+      USER: ladder
+      PASSWORD: CustomLadderScratch1!
+      YB_CPU_CORES: 1
+      YB_RAM: 2048
+      YB_DRIVE_OS_SIZE: 10737418240
+      SELECT_OS_TIER: 1
+      YB_IP_ADDR_TYPE: dhcp
+      YB_NIC_ETH0: DMZ
+
+  tasks:
+    - name: "0. Teardown first -- nothing may pre-exist"
+      ansible.builtin.include_tasks: recipe_scratch_teardown.yml
+      vars:
+        td_prefix: custom
+
+    - name: "0b. Nothing was left over to start with"
+      ansible.builtin.assert:
+        that:
+          - fz_left_vms | length == 0
+          - fz_left_recipes | length == 0
+          - fz_left_cats | length == 0
+        fail_msg: >-
+          step 0 could not clear the scratch objects: vms={{ fz_left_vms }}
+          recipes={{ fz_left_recipes }} catalogs={{ fz_left_cats }}
+        quiet: true
+
+    - name: Ladder body
+      block:
+        # ── Part A: a recipe from a blank VM ─────────────────────────────────
+
+        - name: "1. Create a catalog in the Local repository"
+          vergeio.vergeos.catalog:
+            insecure: true
+            name: "{{ cu_cat }}"
+            repository: Local
+            description: custom-recipe ladder scratch (zz- disposable)
+            publishing_scope: private
+            enabled: true
+          register: cu_cat_r
+
+        - name: "1b. Creating it is a change; re-creating it is not"
+          vergeio.vergeos.catalog:
+            insecure: true
+            name: "{{ cu_cat }}"
+            repository: Local
+            description: custom-recipe ladder scratch (zz- disposable)
+            publishing_scope: private
+            enabled: true
+          register: cu_cat_again
+
+        - name: "1c. Assert the catalog module converged"
+          ansible.builtin.assert:
+            that:
+              - cu_cat_r.changed
+              - not cu_cat_again.changed
+            fail_msg: >-
+              catalog create/converge was
+              {{ cu_cat_r.changed }}/{{ cu_cat_again.changed }}
+            quiet: true
+
+        - name: "2. Create the source VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ cu_src }}"
+            state: present
+            enabled: true
+            os_family: linux
+            cpu_cores: 1
+            ram: 1024
+            description: custom-recipe ladder source (zz- disposable)
+
+        - name: "3. Give it one drive"
+          vergeio.vergeos.drive:
+            insecure: true
+            vm_name: "{{ cu_src }}"
+            name: OS
+            state: present
+            size: 1
+            media_type: disk
+            tier: 1
+
+        - name: "4. Read the catalog and source keys back"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/{{ item }}?fields=name%2C%24key"
+          register: cu_keys
+          loop: [catalogs, vms]
+
+        - name: "4b. Keep them"
+          ansible.builtin.set_fact:
+            cu_cat_key: >-
+              {{ (cu_keys.results[0].json | selectattr('name', 'equalto', cu_cat)
+                  | first)['$key'] }}
+            cu_src_key: >-
+              {{ (cu_keys.results[1].json | selectattr('name', 'equalto', cu_src)
+                  | first)['$key'] }}
+
+        - name: "5. Publish the custom recipe from that VM"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/vm_recipes"
+            method: POST
+            body:
+              name: "{{ cu_recipe }}"
+              catalog: "{{ cu_cat_key }}"
+              vm: "{{ cu_src_key }}"
+              description: custom recipe authored by the ladder
+              version: "1.0"
+              icon: box
+          register: cu_rec_r
+
+        - name: "6. Read the recipe row back"
+          ansible.builtin.uri:
+            url: >-
+              {{ api_base }}/vm_recipes?fields={{
+              'name,$key,vm,vm_snapshot,downloaded' | urlencode }}&filter={{
+              ("name eq '" ~ cu_recipe ~ "'") | urlencode }}
+          register: cu_rec_row_r
+
+        - name: "6b. Keep the row"
+          ansible.builtin.set_fact:
+            cu_rec_row: "{{ cu_rec_row_r.json | first }}"
+
+        # Setting `vm` is not merely a reference: the platform snapshots the
+        # VM and records the snapshot on the recipe. If it did not, the recipe
+        # would deploy from a VM that keeps changing underneath it.
+        - name: "6c. The platform snapshotted the source VM for us"
+          ansible.builtin.assert:
+            that:
+              - cu_rec_row.name == cu_recipe
+              - cu_rec_row.vm | int == cu_src_key | int
+              - cu_rec_row.vm_snapshot | default(0) | int > 0
+              - cu_rec_row.downloaded | default(false) | bool
+            fail_msg: "unexpected recipe row: {{ cu_rec_row | to_json }}"
+            quiet: true
+
+        - name: "7. Read the auto-published question set, through the collection"
+          vergeio.vergeos.vm_recipe_info:
+            insecure: true
+            name: "{{ cu_recipe }}"
+            catalog: "{{ cu_cat }}"
+            questions: true
+          register: cu_qs
+          changed_when: false
+
+        # Derived from the source VM's REAL shape: one drive in, one
+        # YB_DRIVE_1_* group out. A second drive would produce YB_DRIVE_2_*.
+        - name: "7b. The questions match the VM the recipe was built from"
+          vars:
+            names: "{{ cu_qs.questions | map(attribute='name') | list }}"
+          ansible.builtin.assert:
+            that:
+              - "'YB_CPU_CORES' in names"
+              - "'YB_RAM' in names"
+              - "'YB_DRIVE_1_SIZE' in names"
+              - "'YB_DRIVE_2_SIZE' not in names"
+            fail_msg: "auto-published questions were {{ names }}"
+            quiet: true
+
+        - name: "8. Simulate through the module -- must create nothing"
+          vergeio.vergeos.vm_recipe_deploy:
+            insecure: true
+            name: "{{ cu_vm }}"
+            recipe: "{{ cu_recipe }}"
+            catalog: "{{ cu_cat }}"
+            answers: &custom_answers
+              YB_CPU_CORES: 2
+              YB_RAM: 2048
+              YB_DRIVE_1_SIZE: 2147483648
+          check_mode: true
+          register: cu_sim
+
+        - name: "8b. The simulate was clean"
+          ansible.builtin.assert:
+            that: cu_sim.simulate_result.ok | default(false)
+            fail_msg: "{{ cu_sim.simulate_result | default({}) | to_json }}"
+            quiet: true
+
+        - name: "8c. And it created nothing"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: cu_after_sim
+          changed_when: false
+
+        - name: "8d. Assert side-effect free"
+          ansible.builtin.assert:
+            that: >-
+              cu_after_sim.vms | map(attribute='name')
+              | select('equalto', cu_vm) | list | length == 0
+            fail_msg: "the simulate created {{ cu_vm }}"
+            quiet: true
+
+        # Deployed through the ROLE, not the module, and with the boot check
+        # deliberately off -- Part A's source VM has a blank unformatted
+        # drive, so there is no OS to boot. Rung 11 is where that gets proved
+        # rather than assumed.
+        - name: "9. Deploy from the custom recipe for real"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_from_recipe
+          vars:
+            vm_from_recipe_recipe: "{{ cu_recipe }}"
+            vm_from_recipe_catalog: "{{ cu_cat }}"
+            vm_from_recipe_name: "{{ cu_vm }}"
+            vm_from_recipe_insecure: true
+            vm_from_recipe_wait_timeout: 600
+            vm_from_recipe_verify_nics: false
+            vm_from_recipe_answers: *custom_answers
+
+        - name: "9b. Read the deployed VM back"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ cu_vm }}"
+          register: cu_built
+          changed_when: false
+
+        - name: "9c. The answers actually took effect"
+          ansible.builtin.assert:
+            that:
+              - cu_built.vms | length == 1
+              - (cu_built.vms | first).cpu_cores | int == 2
+              - (cu_built.vms | first).ram | int == 2048
+            fail_msg: "deployed VM was {{ cu_built.vms | to_json }}"
+            quiet: true
+
+        - name: "10. An identical re-run must converge, not build a second VM"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_from_recipe
+          vars:
+            vm_from_recipe_recipe: "{{ cu_recipe }}"
+            vm_from_recipe_catalog: "{{ cu_cat }}"
+            vm_from_recipe_name: "{{ cu_vm }}"
+            vm_from_recipe_insecure: true
+            vm_from_recipe_verify_nics: false
+            vm_from_recipe_answers: *custom_answers
+
+        - name: "10b. Still exactly one"
+          vergeio.vergeos.vm_info:
+            insecure: true
+          register: cu_conv
+          changed_when: false
+
+        - name: "10c. Assert convergence"
+          ansible.builtin.assert:
+            that: >-
+              cu_conv.vms | map(attribute='name')
+              | select('equalto', cu_vm) | list | length == 1
+            fail_msg: >-
+              the re-run produced
+              {{ cu_conv.vms | map(attribute='name')
+                 | select('equalto', cu_vm) | list | length }} VMs
+            quiet: true
+
+        # ── 11. The boot check must be able to FAIL ──────────────────────────
+        #
+        # Every other boot assertion in this suite passes. An assertion that
+        # has only ever passed has not been shown to be connected to anything.
+        # This VM was built from a blank unformatted drive, so it cannot boot
+        # -- and the role must say so rather than reporting success.
+        - name: "11. The boot proof on a VM with no OS"
+          block:
+            - name: "11a. Power on and boot-check a VM that cannot boot"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.vm_from_recipe
+              vars:
+                vm_from_recipe_recipe: "{{ cu_recipe }}"
+                vm_from_recipe_catalog: "{{ cu_cat }}"
+                vm_from_recipe_name: "{{ cu_vm }}"
+                vm_from_recipe_insecure: true
+                vm_from_recipe_verify_nics: false
+                vm_from_recipe_power_on: true
+                vm_from_recipe_verify_boot: true
+                # Short on purpose: this rung is waiting for something that
+                # will never happen, and 90s is well past the ~30s in which a
+                # real guest starts writing.
+                vm_from_recipe_boot_timeout: 90
+                vm_from_recipe_answers: *custom_answers
+
+            - name: "11b. Unreachable -- an unbootable VM passed the boot check"
+              ansible.builtin.fail:
+                msg: >-
+                  the role reported success on a VM built from a blank drive.
+                  The boot check is not connected to anything.
+          rescue:
+            - name: "11c. It must refuse, and say what is actually wrong"
+              ansible.builtin.assert:
+                that:
+                  - "'wrote nothing' in (ansible_failed_result.msg | default('') | string)"
+                fail_msg: >-
+                  refused, but not legibly:
+                  {{ ansible_failed_result.msg | default('(no message)') }}
+                quiet: true
+
+        # ── Part B: a recipe from a real, booted VM ──────────────────────────
+        #
+        # The golden-image workflow. Part A proves the mechanics; this proves
+        # the thing people actually want -- that a recipe published from a
+        # working machine produces another working machine.
+
+        - name: "12. Deploy a real Debian from the stock recipe"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_from_recipe
+          vars:
+            vm_from_recipe_recipe: "{{ stock_recipe }}"
+            vm_from_recipe_name: "{{ cu_golden_src }}"
+            vm_from_recipe_insecure: true
+            vm_from_recipe_power_on: true
+            vm_from_recipe_verify_boot: true
+            vm_from_recipe_boot_timeout: 300
+            vm_from_recipe_answers: >-
+              {{ golden_answers | combine({'HOSTNAME': cu_golden_src}) }}
+
+        - name: "12b. Stop it before publishing a recipe from it"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ cu_golden_src }}"
+            state: stopped
+
+        - name: "13. Read the golden VM's key"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/vms?fields=name%2C%24key"
+          register: cu_golden_keys
+
+        - name: "13b. Publish a custom recipe from it"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/vm_recipes"
+            method: POST
+            body:
+              name: "{{ cu_golden_recipe }}"
+              catalog: "{{ cu_cat_key }}"
+              vm: >-
+                {{ (cu_golden_keys.json
+                    | selectattr('name', 'equalto', cu_golden_src)
+                    | first)['$key'] }}
+              description: golden-image recipe authored by the ladder
+              version: "1.0"
+              icon: box
+
+        # ── 14. The golden clone must boot ──────────────────────────────
+        #
+        # Worth knowing before trusting a single run of this rung: the FIRST
+        # time it ran, the clone never finished. media=clone,
+        # status=importing, status_info empty, used_bytes frozen at the
+        # source's value, and machine_drive_status.modified unchanged for 25
+        # minutes; it did not complete inside 1800s. The next run of the same
+        # ladder completed inside five.
+        #
+        # Seen once, not reproduced, so it is NOT written up as a defect --
+        # but the signature is recorded here because a stalled clone is
+        # otherwise indistinguishable from a slow one, and because the drive
+        # reports no progress at all while it happens. If this rung starts
+        # failing on the import rather than on the boot, that is what came
+        # back.
+        # The golden recipe auto-publishes a NIC question whose default is
+        # __new_internal__, and the platform does NOT apply that default --
+        # the first run of this rung produced a VM whose eth0 was attached to
+        # nothing, and the role's verify_nics post-condition is what caught
+        # it.
+        #
+        # The questions are read rather than guessed because the names are
+        # not what you would guess: a VM with one NIC publishes YB_NIC_1,
+        # YB_NIC_1_IP_ADDR and YB_NIC_1_INTERNAL_GATEWAY, and only the bare
+        # YB_NIC_<n> selects the network. Hence the anchored regex.
+        - name: "13c. Find the auto-published NIC question"
+          vergeio.vergeos.vm_recipe_info:
+            insecure: true
+            name: "{{ cu_golden_recipe }}"
+            catalog: "{{ cu_cat }}"
+            questions: true
+          register: cu_golden_qs
+          changed_when: false
+
+        - name: "13d. There must be exactly one"
+          vars:
+            nic_qs: >-
+              {{ cu_golden_qs.questions | map(attribute='name')
+                 | select('match', '^YB_NIC_[0-9]+$') | list }}
+          ansible.builtin.assert:
+            that: nic_qs | length == 1
+            fail_msg: >-
+              expected exactly one YB_NIC_<n> question, got {{ nic_qs }}
+              out of {{ cu_golden_qs.questions | map(attribute='name')
+                        | select('match', '^YB_NIC_') | list }}
+            quiet: true
+
+        - name: "13e. Build the answer set around it"
+          ansible.builtin.set_fact:
+            cu_golden_answers: >-
+              {{ {'YB_CPU_CORES': 1, 'YB_RAM': 2048}
+                 | combine({(cu_golden_qs.questions | map(attribute='name')
+                             | select('match', '^YB_NIC_[0-9]+$')
+                             | first): cu_net}) }}
+
+        - name: "14. Deploy from the golden recipe, and prove IT boots"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.vm_from_recipe
+          vars:
+            vm_from_recipe_recipe: "{{ cu_golden_recipe }}"
+            vm_from_recipe_catalog: "{{ cu_cat }}"
+            vm_from_recipe_name: "{{ cu_golden_vm }}"
+            vm_from_recipe_insecure: true
+            vm_from_recipe_power_on: true
+            vm_from_recipe_verify_boot: true
+            vm_from_recipe_boot_timeout: 420
+            vm_from_recipe_wait_timeout: 1800
+            vm_from_recipe_answers: "{{ cu_golden_answers }}"
+
+        # The clone carries the source's installed OS, so this is the rung
+        # that says a custom recipe is actually useful: not merely that the
+        # platform built a VM, but that what it built runs.
+        - name: "14b. Report the golden clone"
+          ansible.builtin.debug:
+            msg: >-
+              '{{ cu_golden_vm }}' was deployed from a recipe published from
+              '{{ cu_golden_src }}', and its guest wrote
+              {{ vm_from_recipe_boot.drives | default([])
+                 | map(attribute='write_bytes') | sum }} bytes
+
+      always:
+        - name: "15. Teardown -- remove everything the ladder made"
+          ansible.builtin.include_tasks: recipe_scratch_teardown.yml
+          vars:
+            td_prefix: custom
+
+        - name: "15b. Teardown must have removed everything"
+          ansible.builtin.assert:
+            that:
+              - fz_left_vms | default([]) | length == 0
+              - fz_left_recipes | default([]) | length == 0
+              - fz_left_cats | default([]) | length == 0
+              - fz_left_instances | default([]) | length == 0
+            fail_msg: >-
+              teardown left vms={{ fz_left_vms | default([]) }}
+              recipes={{ fz_left_recipes | default([]) }}
+              catalogs={{ fz_left_cats | default([]) }}
+              instances={{ fz_left_instances | default([]) }}
+            quiet: true
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          custom recipe PASSED: a recipe published from a blank VM
+          auto-publishes questions matching that VM's shape, simulates
+          cleanly, deploys with the answers applied, converges on a re-run,
+          and FAILS the boot check because it has no OS -> a recipe published
+          from a real booted VM produces a clone that boots -> zero leftovers

@@ -1,0 +1,99 @@
+---
+# Did the guest actually BOOT?
+#
+# Everything else in this role verifies that the platform built the right
+# objects. Until here nothing has looked at whether the thing it built runs. A
+# VM with a correctly-sized drive, an attached NIC and status=running can sit
+# at "no bootable device" forever, and every other check passes on it.
+#
+# The signal is guest disk WRITES -- see the notes on the
+# vergeio.vergeos.vm_drive_info module for why read counters and NIC transmit
+# counters are both false positives here.
+
+# The VM's ACTUAL running state, not vm_from_recipe_power_on. The two differ on
+# the convergence path, where this role powers nothing on and the VM it found
+# may already be running. Gating on the flag would skip the check on exactly
+# the VMs it was written to catch.
+- name: Read whether the VM is running
+  vergeio.vergeos.vm_info:
+    host: "{{ vm_from_recipe_host }}"
+    username: "{{ vm_from_recipe_username }}"
+    password: "{{ vm_from_recipe_password }}"
+    insecure: "{{ vm_from_recipe_insecure }}"
+    name: "{{ vm_from_recipe_name }}"
+  register: vm_from_recipe_boot_state
+  changed_when: false
+
+- name: Boot verification requires a running VM
+  ansible.builtin.assert:
+    that: (vm_from_recipe_boot_state.vms | default([{}]) | first).running | default(false) | bool
+    fail_msg: >-
+      vm_from_recipe_verify_boot is on but VM '{{ vm_from_recipe_name }}' is
+      '{{ (vm_from_recipe_boot_state.vms | default([{}]) | first).status
+          | default('not running') }}'. A stopped VM cannot be shown to boot,
+      and silently skipping the check would report a verification that never
+      ran. Set vm_from_recipe_power_on, or start the VM.
+    quiet: true
+
+# media=disk only. An EFI disk is written by the FIRMWARE, and a cdrom is not
+# written at all -- including either would put the false positive straight
+# back in.
+- name: Wait for the guest to write to one of its disks
+  vergeio.vergeos.vm_drive_info:
+    host: "{{ vm_from_recipe_host }}"
+    username: "{{ vm_from_recipe_username }}"
+    password: "{{ vm_from_recipe_password }}"
+    insecure: "{{ vm_from_recipe_insecure }}"
+    vm: "{{ vm_from_recipe_name }}"
+    media: disk
+    stats: true
+  register: vm_from_recipe_boot
+  # Not the verdict; the assert below is, and it can say what was measured
+  # where a timed-out poll can only say how many times it tried.
+  failed_when: false
+  changed_when: false
+  retries: "{{ (vm_from_recipe_boot_timeout | int // (vm_from_recipe_poll_interval | int)) | int }}"
+  delay: "{{ vm_from_recipe_poll_interval | int }}"
+  until: >-
+    vm_from_recipe_boot.drives | default([])
+    | selectattr('write_bytes', 'defined')
+    | selectattr('write_bytes', 'gt', 0) | list | length > 0
+
+- name: A boot check needs at least one disk-media drive
+  ansible.builtin.assert:
+    that: vm_from_recipe_boot.drives | default([]) | length > 0
+    fail_msg: >-
+      VM '{{ vm_from_recipe_name }}' has no drive with media=disk, so there is
+      nothing a booting guest would write to. Set
+      vm_from_recipe_verify_boot=false for this recipe if that is expected.
+    quiet: true
+
+- name: The guest must have written to its disk
+  ansible.builtin.assert:
+    that: vm_from_recipe_writing | length > 0
+    fail_msg: >-
+      VM '{{ vm_from_recipe_name }}' is running but wrote nothing to any of its
+      disks ({{ vm_from_recipe_boot.drives | map(attribute='name') | list }})
+      in {{ vm_from_recipe_boot_timeout }}s. A running guest writes within a
+      minute or two; zero writes is what a VM sitting at "no bootable device"
+      looks like. The recipe built the VM, but what it installed does not boot.
+      If this recipe legitimately produces a read-only guest, set
+      vm_from_recipe_verify_boot=false for it.
+    quiet: true
+  vars:
+    vm_from_recipe_writing: >-
+      {{ vm_from_recipe_boot.drives | default([])
+         | selectattr('write_bytes', 'defined')
+         | selectattr('write_bytes', 'gt', 0) | list }}
+
+- name: Booted
+  ansible.builtin.debug:
+    msg: >-
+      guest is writing to
+      {{ vm_from_recipe_boot.drives | selectattr('write_bytes', 'gt', 0)
+         | list | length }} of
+      {{ vm_from_recipe_boot.drives | length }} disk(s); at least
+      {{ vm_from_recipe_boot.drives | map(attribute='write_bytes') | sum }}
+      bytes written when first observed. That is a floor caught at the moment
+      the guest started writing, not a total -- a guest can report as little as
+      1 KB here and be hundreds of MB in thirty seconds later.
