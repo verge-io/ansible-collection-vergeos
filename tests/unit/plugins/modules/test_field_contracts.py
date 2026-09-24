@@ -71,7 +71,11 @@ def _argument_spec_options(mod):
 
 # Modules that declare their API field mapping explicitly. Adding a module
 # here is the point: it opts that module into the guard.
-MAPPED_MODULES = ['network', 'nic']
+# Adding a module here opts it into the guard, which is the point: the guard
+# is only as good as its coverage. 'vm' is deliberately ABSENT -- adding it is
+# what found #87 (machine_subtype, bios_type and network are not VM fields),
+# and it goes in once that is fixed.
+MAPPED_MODULES = ['network', 'nic', 'drive', 'user']
 
 
 class TestDocumentationMatchesArgumentSpec:
@@ -158,6 +162,14 @@ class TestNoKnownBadFieldNamesComeBack:
         'nic': {
             'mac_address': 'issue #59 -- the API field is macaddress',
         },
+        'drive': {
+            'tier': 'issue #8 -- the API field is preferred_tier',
+            'read_only': 'the API field is readonly, without the underscore',
+        },
+        'user': {
+            'full_name': 'the API field is displayname',
+            'user_password': 'the API field is password',
+        },
     }
 
     @pytest.mark.parametrize('name', MAPPED_MODULES)
@@ -214,3 +226,23 @@ class TestTheLiveLadderCannotDriftFromTheCode:
             "tests/live/verify-field-contract.yml is out of step with "
             "network.UPDATE_FIELD_MAP. ladder-only=%s module-only=%s"
             % (sorted(actual - expected), sorted(expected - actual)))
+
+
+class TestVmIsNotYetMapped:
+    """`vm` is excluded from MAPPED_MODULES on purpose.
+
+    Declaring its field map is exactly what surfaced #87: `machine_subtype`,
+    `bios_type` and `network` are not columns on a VM, so the API discards
+    them with HTTP 200 and the VM never converges. Adding `vm` to
+    MAPPED_MODULES before #87 is fixed would simply make this suite red.
+
+    This test is the reminder, and it expires by itself: once vm declares a
+    map, it fails until vm is added to MAPPED_MODULES.
+    """
+
+    def test_vm_joins_the_guard_once_it_declares_a_map(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        if hasattr(vm, 'UPDATE_FIELD_MAP'):
+            assert 'vm' in MAPPED_MODULES, (
+                "vm now declares UPDATE_FIELD_MAP, so add it to "
+                "MAPPED_MODULES -- see #87")

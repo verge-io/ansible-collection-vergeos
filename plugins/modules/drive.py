@@ -177,6 +177,25 @@ def create_drive(module, client, vm):
     return True, dict(drive)
 
 
+# Module parameter -> raw VergeOS API field, for the update path.
+#
+# update_drive() PUTs these keys verbatim, so every value must be a real field
+# on the machine_drives resource. The API accepts unknown fields with HTTP 200
+# and discards them, which is how #8 shipped: 'tier' was sent where the field
+# is 'preferred_tier', so drive tier updates never applied and never
+# converged. Verified against a live 26.1.8 system; see
+# tests/live/verify-field-contract.yml and issue #75.
+#
+# Values here are field NAMES only. Two of them also need a value transform
+# (drive_type through interface_mapping, tier to a string) which stays in
+# update_drive().
+UPDATE_FIELD_MAP = {
+    'drive_type': 'interface',
+    'tier': 'preferred_tier',
+    'read_only': 'readonly',
+}
+
+
 def update_drive(module, client, drive):
     """Update an existing drive using SDK"""
     changed = False
@@ -196,7 +215,7 @@ def update_drive(module, client, drive):
     if module.params.get('drive_type') is not None:
         target_interface = interface_mapping.get(module.params['drive_type'], 'virtio-scsi')
         if drive_dict.get('interface') != target_interface:
-            update_data['interface'] = target_interface
+            update_data[UPDATE_FIELD_MAP['drive_type']] = target_interface
             changed = True
 
     # Check tier. The API field is preferred_tier and is returned as a
@@ -209,13 +228,13 @@ def update_drive(module, client, drive):
         except (TypeError, ValueError):
             current_tier = None
         if current_tier != module.params['tier']:
-            update_data['preferred_tier'] = str(module.params['tier'])
+            update_data[UPDATE_FIELD_MAP['tier']] = str(module.params['tier'])
             changed = True
 
     # Check read_only
     if module.params.get('read_only') is not None:
         if drive_dict.get('readonly') != module.params['read_only']:
-            update_data['readonly'] = module.params['read_only']
+            update_data[UPDATE_FIELD_MAP['read_only']] = module.params['read_only']
             changed = True
 
     if not changed:
