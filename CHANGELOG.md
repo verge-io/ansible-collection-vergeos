@@ -5,10 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-09-24
+
+### Added
+
+- **`network`: `interface_network`** (#60), the uplink a vnet reaches the
+  physical fabric through. Maps to the API's `interface_vnet`; give the name
+  of a physical vnet and the module resolves it to the key the API stores. An
+  empty string detaches; a name that does not resolve fails by name rather
+  than silently doing nothing. Without this there was **no way to build a vnet
+  attached to anything** — the module accepted what looked like a VLAN-tagged
+  network on the fabric, reported success, and produced a network whose tag
+  was carried onto nothing.
+- **`network`: `rate_limit`** (#61), in **mbytes per second** — not bits, not
+  bytes. `0` is an explicit "uncapped" and is applied like any other value;
+  omitting the parameter leaves the existing value alone. The two are not the
+  same thing.
+- **Continuous integration** (#66). The first workflow this repository has
+  ever had: unit tests on ansible-core 2.15 and 2.20, `ansible-test sanity` on
+  both, `ansible-lint` at the production profile, and a `ansible-galaxy
+  collection build`. `sanity` and the rest are required status checks on
+  `dev` and `main`, with `strict` so a branch must be up to date before it
+  merges.
+- **A contract harness for the compare-and-map defect class** (#75).
+  `tests/live/verify-field-contract.yml` asserts, against a live system, that
+  every API field a module sends exists on the resource, that every value
+  round-trips, and that a second apply reports `changed=false`.
+  `tests/unit/plugins/modules/test_field_contracts.py` asserts the structural
+  half in CI, including that the live ladder cannot drift from the code it
+  checks. Covers `network` and `nic`.
 
 ### Fixed
 
+- **`nic`: a MAC address supplied in uppercase never converged** (#59). The
+  API stores MACs lowercase with colons and returns them that way whatever was
+  sent, so comparing an operator's `AA:BB:CC:00:5E:0B` against the stored
+  value literally never matched and every run issued a PUT. Both sides are now
+  folded to the stored form, and the create path sends it too. Case and
+  separator are both insensitive, which is what `qm config` and OVF
+  `rasd:Address` emit. Fourth recurrence of the class behind #8, #10 and #18 —
+  and the first where the field *name* was correct and the *value comparison*
+  was not.
+- **The unit suite did not pass on `main`** (#66): 10 failed, 16 passed, 47
+  errors. Four separate defects, none of them the environment incompatibility
+  originally diagnosed — `patch.dict('sys.modules')` deleting ansible-core on
+  exit; every module test patching the definition site rather than the module
+  under test, so nothing was mocked and each test made live HTTPS calls; a
+  `pyvergeos.exceptions` stub whose attributes were not exception classes, so
+  `side_effect` returned instead of raising; and `dict(mock)` silently
+  returning `{}` because `dict()` prefers the `keys` mapping protocol. Now 140
+  passing tests in 0.2s.
+- **`ansible-test sanity` never passed on ansible-core 2.15** (#77), the
+  version `requires_ansible` advertises as the floor. 2.15 runs 46 sanity
+  tests to 2.20's 34, and the run was crashing at test #2 on an unparsable
+  DOCUMENTATION block, skipping the other 44. Fixing that exposed four further
+  defects: six sanity-ignore files whose every entry named a file that does not
+  exist, missing `__future__`/`__metaclass__` boilerplate in the unit tests,
+  and an `EXAMPLES` block that was a multi-document YAML stream.
+- **`build_ignore` shipped the entire test tree** (#15). `tests/` with a
+  trailing slash matches nothing — patterns are fnmatch against the path
+  relative to the collection root. 57 test entries in the 2.0.1 artifact, 0
+  now. `.probe`, `.pytest_cache` and `.github` excluded too, since
+  `ansible-galaxy` does not read `.gitignore`.
+- **Two documented commands that silently did nothing** (#16).
+  `examples/snapshot_workflow.yml` told the operator to delete a snapshot with
+  `examples/vm_snapshots.yml --tags delete`; that playbook defines no tags, so
+  the command matched zero tasks and **exited 0** with the snapshot still in
+  place. It now points at `examples/delete_snapshot.yml`.
+  `examples/snapshot_by_tag.yml` advertised `vm_snapshot` with `state: info`,
+  which fails argument validation; listing is `operation: list`.
+- **The shipped VLAN example taught a broken pattern** (#60). "Create a
+  VLAN-tagged external network" carried a tag and no uplink — the exact
+  combination that produces an isolated network while reporting success.
 - **`network`: three API field mappings the platform silently discarded**
   (#18). `dhcp_end` was sent as `dhcp_end` where the API field is `dhcp_stop`,
   so a DHCP scope was created with a start and no end; `dns_servers` was sent
