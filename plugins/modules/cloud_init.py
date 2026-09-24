@@ -31,10 +31,23 @@ options:
   datasource:
     description:
       - The cloud-init datasource type.
-      - Set to C(nocloud) to enable cloud-init (default with I(state=present)).
-      - Use I(state=absent) to disable cloud-init and remove its files.
+      - C(nocloud) enables cloud-init. It is the default with
+        O(state=present), so this option only needs naming to do something
+        else.
+      - C(none) is what the platform stores for a VM with cloud-init off, and
+        is what a freshly created VM reads. Setting it with O(state=present)
+        stages the files without turning cloud-init on; O(state=absent)
+        disables it and removes the files too.
+      - The empty string used to be offered here and is gone. The platform
+        rejects it outright - measured on 26.1.8, C(PUT cloudinit_datasource)
+        of C('') returns "value '' is not in list for field
+        'cloudinit_datasource'" - and the module never sent it anyway,
+        because O(state=present) coerces any falsy datasource to C(nocloud).
+        So the one alternative the option offered silently meant the default,
+        while C(none), the only value that turns cloud-init off, could not be
+        selected at all.
     type: str
-    choices: [ nocloud, '' ]
+    choices: [ nocloud, none ]
   user_data:
     description:
       - Contents of the /user-data cloud-init file.
@@ -405,7 +418,7 @@ def main():
     argument_spec.update(
         vm_name=dict(type='str'),
         vm_id=dict(type='str'),
-        datasource=dict(type='str', choices=['nocloud', '']),
+        datasource=dict(type='str', choices=['nocloud', 'none']),
         user_data=dict(type='str'),
         meta_data=dict(type='str'),
         network_config=dict(type='str'),
@@ -438,6 +451,8 @@ def main():
 
     # Validate required parameters for present state
     if module.params['state'] == 'present':
+        # The documented default, applied here rather than in the argument
+        # spec so that state=absent does not inherit it.
         if not module.params.get('datasource'):
             module.params['datasource'] = 'nocloud'
 
