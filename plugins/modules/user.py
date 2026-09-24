@@ -183,6 +183,21 @@ def create_user(module, client):
     return True, dict(user)
 
 
+# Module parameter -> raw VergeOS API field, for the update path.
+#
+# Note 'password': it is write-only. The API accepts it and never returns it,
+# so it is correctly absent from a user read with fields=all. That is why
+# update_password exists (#73) -- there is nothing to compare against, so
+# rewriting it unconditionally made every run report changed. Do not "fix"
+# its absence from the read schema; it is not a missing field.
+UPDATE_FIELD_MAP = {
+    'email': 'email',
+    'enabled': 'enabled',
+    'full_name': 'displayname',
+    'user_password': 'password',
+}
+
+
 def update_user(module, client, user):
     """Update an existing user using SDK"""
     changed = False
@@ -193,18 +208,18 @@ def update_user(module, client, user):
     # Check simple fields
     if module.params.get('email') is not None:
         if user_dict.get('email') != module.params['email']:
-            update_data['email'] = module.params['email']
+            update_data[UPDATE_FIELD_MAP['email']] = module.params['email']
             changed = True
 
     if module.params.get('enabled') is not None:
         if user_dict.get('enabled') != module.params['enabled']:
-            update_data['enabled'] = module.params['enabled']
+            update_data[UPDATE_FIELD_MAP['enabled']] = module.params['enabled']
             changed = True
 
     # Map full_name to displayname
     if module.params.get('full_name') is not None:
         if user_dict.get('displayname') != module.params['full_name']:
-            update_data['displayname'] = module.params['full_name']
+            update_data[UPDATE_FIELD_MAP['full_name']] = module.params['full_name']
             changed = True
 
     # Password: there is nothing to diff against -- VergeOS does not return a
@@ -212,7 +227,7 @@ def update_user(module, client, user):
     # never converge. Only rewrite when explicitly asked to.
     if (module.params.get('user_password')
             and module.params.get('update_password') == 'always'):
-        update_data['password'] = module.params['user_password']
+        update_data[UPDATE_FIELD_MAP['user_password']] = module.params['user_password']
         changed = True
 
     if not changed:

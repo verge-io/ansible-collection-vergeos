@@ -168,6 +168,49 @@
         state: absent
 
 
+- name: "Field contract -- drive and user field names"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # MUST match drive.UPDATE_FIELD_MAP.values() and
+    # user.UPDATE_FIELD_MAP.values(). 'password' is deliberately absent: it is
+    # write-only, the API never returns it, and that is why update_password
+    # exists (#73). Asserting its presence would be asserting a bug.
+    drive_api_fields: [interface, preferred_tier, readonly]
+    user_api_fields: [email, enabled, displayname]
+    auth: &probe_auth
+      host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+      username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true, true) }}"
+
+  tasks:
+    - name: Read an existing user
+      vergeio.vergeos.user:
+        <<: *probe_auth
+        name: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+        state: present
+      check_mode: true
+      register: probe_user
+
+    - name: "PROPERTY 1 -- every user field the module sends exists"
+      ansible.builtin.assert:
+        that: item in (probe_user.user | default({}))
+        fail_msg: >-
+          The user module sends '{{ item }}', which is not a field on a user.
+          The API accepts unknown fields with HTTP 200 and discards them.
+        quiet: true
+      loop: "{{ user_api_fields }}"
+      when: probe_user.user is defined
+
+    - name: RESULT
+      ansible.builtin.debug:
+        msg: >-
+          drive/user field names declared:
+          drive={{ drive_api_fields | join(',') }}
+          user={{ user_api_fields | join(',') }}
+
+
 - name: "Field contract -- nic"
   hosts: localhost
   gather_facts: false
