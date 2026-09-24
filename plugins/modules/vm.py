@@ -76,24 +76,23 @@ options:
         so C(q35) will not silently move a VM between machine versions. The
         platform rejects unknown machine types.
     type: str
-  machine_subtype:
-    description:
-      - The machine subtype/version.
-    type: str
   bios_type:
     description:
-      - BIOS type for the VM.
+      - Firmware the VM boots with.
+      - Stored as the boolean C(uefi) on the VM; this option is the readable
+        spelling of it, not a field of its own.
     type: str
     choices: [ seabios, uefi ]
-  network:
-    description:
-      - Network configuration for the VM.
-    type: str
   boot_order:
     description:
-      - Boot order for the VM devices.
-    type: list
-    elements: str
+      - Boot device order, as a single string.
+      - Observed valid on VergeOS 26.1.8 - C(c) disk, C(d) cdrom, C(n) network,
+        and the orderings C(cd), C(dc), C(nc), C(cdn), plus C(strict).
+      - Not constrained with I(choices) on purpose. The set is the platform's
+        and may differ by version; VergeOS rejects an invalid value with a
+        message that names the field and the value, which is more useful than
+        a client-side list that could be wrong.
+    type: str
   snapshot_profile:
     description:
       - Name of the snapshot profile the VM is enrolled in.
@@ -199,10 +198,99 @@ if HAS_PYVERGEOS:
     )
 
 
+# Module parameter -> API column, every name checked against a live vm row on
+# VergeOS 26.1.8. The row has 74 columns and THREE of the options this module
+# used to accept were not among them (#87):
+#
+#   machine_subtype   no column, and nothing holds the value. Removed --
+#                     machine_type already carries the expanded form
+#                     ('q35' -> 'pc-q35-10.0'), so there was nothing for a
+#                     subtype to mean.
+#   bios_type         no column. The firmware choice is stored as the BOOLEAN
+#                     `uefi`. Kept as an option because 'seabios'/'uefi' reads
+#                     better than a flag, and TRANSLATED on the way out.
+#   network           no column. A VM's networks are its NICs -- see the nic
+#                     module. Removed.
+#
+# `boot_order` is a real column and was wrong in a different way: declared
+# `type: list`, while the API stores a single enumerated STRING. Sending a
+# list is a hard error, not a silent discard --
+#
+#     value '["c","d"]' is not in list for field 'boot_order'
+#
+# -- so the option could never have worked in any spelling. It is a str now.
+#
+# Measured, not inferred. Creating a VM with all three set:
+#
+#     machine_subtype='q35'  ->  no column holds 'q35'
+#     bios_type='uefi'       ->  uefi stayed False
+#     network='Core'         ->  no column holds 'Core'
+#
+# and the module reported changed=True every run, forever, because each
+# compared against a column that does not exist. VMManager.create takes
+# **kwargs, so nothing rejected them; the API accepts unknown fields with
+# HTTP 200 and discards them, which is the whole reason this class keeps
+# recurring.
+UPDATE_FIELD_MAP = {
+    'description': 'description',
+    'enabled': 'enabled',
+    'os_family': 'os_family',
+    'cpu_cores': 'cpu_cores',
+    'ram': 'ram',
+    'machine_type': 'machine_type',
+    'bios_type': 'uefi',
+    'boot_order': 'boot_order',
+    'snapshot_profile': 'snapshot_profile',
+}
+
+CREATE_PARAM_MAP = dict(UPDATE_FIELD_MAP, name='name')
+
+IDENTITY_PARAMS = ('name',)
+
+COMPARISON_FIELDS = tuple(sorted(set(UPDATE_FIELD_MAP.values())))
+
+
+# Asked for explicitly. The SDK's default projection is a 23-column summary
+# and it does NOT include boot_order -- which this module compares. A column
+# compared but never fetched reads as None, so a VM with boot_order set
+# reported changed on every run and re-sent it, forever. Same shape as #18,
+# found while fixing #87 in the same file.
+#
+# snapshot_profile is deliberately absent: it is read separately, by key, in
+# current_snapshot_profile(), because it is not in the default projection
+# either and the comparison needs its own call.
+VM_FIELDS = ['$key', 'name'] + sorted(
+    set(COMPARISON_FIELDS) - {'snapshot_profile'})
+
+
+def bios_to_uefi(value):
+    """'uefi'/'seabios' -> the boolean the API stores."""
+    return value == 'uefi'
+
+
+# A machine-type alias is stored expanded: 'q35' becomes 'pc-q35-10.0'.
+# Comparing the alias against the stored value literally never matched, so a
+# converged VM reported 'changed' on every run and re-sent the field.
+
+MACHINE_TYPE_ALIASES = {
+    'pc': 'pc-i440fx-',
+    'q35': 'pc-q35-',
+    'virt': 'virt-',
+}
+
+
+def machine_type_matches(desired, current):
+    """True if the stored machine type already satisfies the request."""
+    if desired == current:
+        return True
+    prefix = MACHINE_TYPE_ALIASES.get(desired)
+    return bool(prefix and current and str(current).startswith(prefix))
+
+
 def get_vm(module, client, name):
     """Get VM by name using SDK"""
     try:
-        return resolve_one(module, client.vms, name, 'VM')
+        return resolve_one(module, client.vms, name, 'VM', fields=VM_FIELDS)
     except NotFoundError:
         return None
 
@@ -253,35 +341,18 @@ def build_vm_data(module):
         'enabled': module.params['enabled'] if module.params['enabled'] is not None else True,
     }
 
-    optional_fields = [
-        'description', 'os_family', 'cpu_cores',
-        'ram', 'machine_type', 'machine_subtype', 'bios_type',
-        'network', 'boot_order'
-    ]
-
-    for field in optional_fields:
-        if module.params.get(field) is not None:
-            vm_data[field] = module.params[field]
+    for param, api_field in sorted(CREATE_PARAM_MAP.items()):
+        if param in IDENTITY_PARAMS or param == 'enabled':
+            continue            # handled above
+        if param == 'snapshot_profile':
+            continue            # needs the client, done by the caller
+        value = module.params.get(param)
+        if value is None:
+            continue
+        vm_data[api_field] = bios_to_uefi(value) if param == 'bios_type' \
+            else value
 
     return vm_data
-
-
-# A machine-type alias is stored expanded: 'q35' becomes 'pc-q35-10.0'.
-# Comparing the alias against the stored value literally never matched, so a
-# converged VM reported 'changed' on every run and re-sent the field.
-MACHINE_TYPE_ALIASES = {
-    'pc': 'pc-i440fx-',
-    'q35': 'pc-q35-',
-    'virt': 'virt-',
-}
-
-
-def machine_type_matches(desired, current):
-    """True if the stored machine type already satisfies the request."""
-    if desired == current:
-        return True
-    prefix = MACHINE_TYPE_ALIASES.get(desired)
-    return bool(prefix and current and str(current).startswith(prefix))
 
 
 def create_vm(module, client):
@@ -303,25 +374,24 @@ def update_vm(module, client, vm):
     changed = False
     update_data = {}
 
-    # Check which fields need updating
-    fields_to_check = [
-        'description', 'enabled', 'os_family', 'cpu_cores',
-        'ram', 'machine_type', 'machine_subtype', 'bios_type',
-        'network', 'boot_order'
-    ]
-
     vm_dict = dict(vm)
-    for field in fields_to_check:
-        if module.params.get(field) is None:
+    for param, api_field in sorted(UPDATE_FIELD_MAP.items()):
+        if param == 'snapshot_profile':
+            continue            # needs the client, handled below
+        if module.params.get(param) is None:
             continue
-        desired = module.params[field]
-        current = vm_dict.get(field)
-        if field == 'machine_type':
+        desired = module.params[param]
+        current = vm_dict.get(api_field)
+        if param == 'machine_type':
             if machine_type_matches(desired, current):
+                continue
+        elif param == 'bios_type':
+            desired = bios_to_uefi(desired)
+            if bool(current) == desired:
                 continue
         elif current == desired:
             continue
-        update_data[field] = desired
+        update_data[api_field] = desired
         changed = True
 
     if module.params.get('snapshot_profile') is not None:
@@ -406,10 +476,8 @@ def main():
         cpu_cores=dict(type='int'),
         ram=dict(type='int'),
         machine_type=dict(type='str'),
-        machine_subtype=dict(type='str'),
         bios_type=dict(type='str', choices=['seabios', 'uefi']),
-        network=dict(type='str'),
-        boot_order=dict(type='list', elements='str'),
+        boot_order=dict(type='str'),
         snapshot_profile=dict(type='str'),
     )
 

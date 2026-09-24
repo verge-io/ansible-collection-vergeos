@@ -72,11 +72,11 @@ def _argument_spec_options(mod):
 # Modules that declare their API field mapping explicitly. Adding a module
 # here is the point: it opts that module into the guard.
 # Adding a module here opts it into the guard, which is the point: the guard
-# is only as good as its coverage. 'vm' is deliberately ABSENT -- adding it is
-# what found #87 (machine_subtype, bios_type and network are not VM fields),
-# and it goes in once that is fixed.
+# is only as good as its coverage. 'vm' was the last holdout: adding it is what
+# found #87 (machine_subtype, bios_type and network are not VM fields), and it
+# joins now that #87 is fixed. Every module with a field map is covered.
 MAPPED_MODULES = ['network', 'nic', 'drive', 'user', 'catalog', 'api_key',
-                  'group', 'vnet_rule']
+                  'group', 'vnet_rule', 'vm']
 
 
 class TestDocumentationMatchesArgumentSpec:
@@ -115,6 +115,12 @@ class TestEveryDiffedFieldIsFetched:
             assert api_field in network.COMPARISON_FIELDS, (
                 "network diffs %r but never fetches it" % api_field)
         assert network.UPLINK_API_FIELD in network.COMPARISON_FIELDS
+
+    def test_vm(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        for api_field in vm.UPDATE_FIELD_MAP.values():
+            assert api_field in vm.COMPARISON_FIELDS, (
+                "vm diffs %r but never fetches it" % api_field)
 
     def test_vnet_rule(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import vnet_rule
@@ -176,6 +182,40 @@ class TestCreateAndUpdatePathsAgree:
             assert param in spec, (
                 "network maps %r to an API field but does not accept it as an "
                 "option -- the mapping is dead code" % param)
+
+    def test_vm_update_is_a_subset_of_create(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        create = set(vm.CREATE_PARAM_MAP)
+        update = set(vm.UPDATE_FIELD_MAP)
+        assert update <= create
+        assert create - update == set(vm.IDENTITY_PARAMS)
+
+    def test_vm_mapped_parameters_are_all_real_options(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        spec = _argument_spec_options(vm)
+        for param in set(vm.CREATE_PARAM_MAP) | set(vm.UPDATE_FIELD_MAP):
+            assert param in spec, (
+                "vm maps %r to an API field but does not accept it as an "
+                "option -- the mapping is dead code" % param)
+
+    def test_vm_bios_type_is_translated_not_sent(self):
+        """#87's subtlest part. `bios_type` stays as an option because
+        'seabios'/'uefi' reads better than a flag -- but it is not a field.
+        The column is the boolean `uefi`, and the translation is the fix."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        assert vm.UPDATE_FIELD_MAP['bios_type'] == 'uefi'
+        assert vm.bios_to_uefi('uefi') is True
+        assert vm.bios_to_uefi('seabios') is False
+
+    def test_vm_fetches_boot_order_which_the_default_projection_omits(self):
+        """Found while fixing #87, in the same file: boot_order is compared
+        but is not in the SDK's default projection, so it read as None and the
+        VM reported changed on every run."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        assert 'boot_order' in vm.VM_FIELDS
+        for column in set(vm.COMPARISON_FIELDS) - {'snapshot_profile'}:
+            assert column in vm.VM_FIELDS, (
+                'vm compares %r but does not fetch it' % column)
 
     def test_vnet_rule_update_is_a_subset_of_create(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import vnet_rule
@@ -325,6 +365,13 @@ class TestNoKnownBadFieldNamesComeBack:
             'full_name': 'the API field is displayname',
             'user_password': 'the API field is password',
         },
+        'vm': {
+            'machine_subtype': 'issue #87 -- no such column, and nothing holds '
+                               'the value; machine_type carries the expanded '
+                               'form already',
+            'bios_type': 'issue #87 -- the column is the boolean uefi',
+            'network': "issue #87 -- a VM's networks are its NICs",
+        },
         'vnet_rule': {
             'rule_action': "the API column is action; 'action' cannot be an "
                            'Ansible option name without confusion',
@@ -382,7 +429,7 @@ class TestTheLiveLadderCannotDriftFromTheCode:
     honest against the code.
     """
 
-    def _ladder_fields(self):
+    def _ladder_fields(self, var_name='network_api_fields'):
         import os
         import yaml
         here = os.path.dirname(os.path.abspath(__file__))
@@ -391,10 +438,22 @@ class TestTheLiveLadderCannotDriftFromTheCode:
         assert os.path.exists(path), "the live ladder is missing: %s" % path
         plays = yaml.safe_load(open(path))
         for play in plays:
-            fields = (play.get('vars') or {}).get('network_api_fields')
+            fields = (play.get('vars') or {}).get(var_name)
             if fields:
                 return set(fields)
-        pytest.fail("network_api_fields not found in the live ladder")
+        pytest.fail("%s not found in the live ladder" % var_name)
+
+    def test_vm_ladder_field_list_matches_the_module(self):
+        """vm is the module this guard was built for -- #87 was three
+        parameters that were not columns, and the ladder is what proves the
+        remaining ones are."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        expected = set(vm.UPDATE_FIELD_MAP.values())
+        actual = self._ladder_fields('vm_api_fields')
+        assert actual == expected, (
+            "verify-field-contract.yml's vm_api_fields has drifted from "
+            "vm.UPDATE_FIELD_MAP. ladder-only=%s module-only=%s"
+            % (sorted(actual - expected), sorted(expected - actual)))
 
     def test_ladder_field_list_matches_the_module(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import network
@@ -406,21 +465,35 @@ class TestTheLiveLadderCannotDriftFromTheCode:
             % (sorted(actual - expected), sorted(expected - actual)))
 
 
-class TestVmIsNotYetMapped:
-    """`vm` is excluded from MAPPED_MODULES on purpose.
+class TestEveryDeclaredMapIsGuarded:
+    """A module that declares a field map but is not in MAPPED_MODULES is
+    guarded by nothing.
 
-    Declaring its field map is exactly what surfaced #87: `machine_subtype`,
-    `bios_type` and `network` are not columns on a VM, so the API discards
-    them with HTTP 200 and the VM never converges. Adding `vm` to
-    MAPPED_MODULES before #87 is fixed would simply make this suite red.
-
-    This test is the reminder, and it expires by itself: once vm declares a
-    map, it fails until vm is added to MAPPED_MODULES.
+    This replaces the `vm` placeholder that existed while #87 was open. The
+    placeholder did its job -- declaring vm's map is what surfaced #87, and it
+    failed until vm joined the list -- but the rule it encoded is general, not
+    about vm: the guard is only as good as its coverage, and coverage is opt-in.
     """
 
-    def test_vm_joins_the_guard_once_it_declares_a_map(self):
-        from ansible_collections.vergeio.vergeos.plugins.modules import vm
-        if hasattr(vm, 'UPDATE_FIELD_MAP'):
-            assert 'vm' in MAPPED_MODULES, (
-                "vm now declares UPDATE_FIELD_MAP, so add it to "
-                "MAPPED_MODULES -- see #87")
+    def test_no_module_declares_a_map_without_joining_the_guard(self):
+        import glob
+        import importlib
+        import os
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.abspath(os.path.join(here, '..', '..', '..', '..'))
+        pattern = os.path.join(root, 'plugins', 'modules', '*.py')
+
+        unguarded = []
+        for path in sorted(glob.glob(pattern)):
+            name = os.path.basename(path)[:-3]
+            if name.startswith('__'):
+                continue
+            mod = importlib.import_module(
+                'ansible_collections.vergeio.vergeos.plugins.modules.%s' % name)
+            if hasattr(mod, 'UPDATE_FIELD_MAP') and name not in MAPPED_MODULES:
+                unguarded.append(name)
+
+        assert not unguarded, (
+            "these modules declare UPDATE_FIELD_MAP but are not in "
+            "MAPPED_MODULES, so nothing audits them: %s" % unguarded)
