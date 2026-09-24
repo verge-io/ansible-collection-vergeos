@@ -77,7 +77,7 @@ def _argument_spec_options(mod):
 # joins now that #87 is fixed. Every module with a field map is covered.
 MAPPED_MODULES = ['network', 'nic', 'drive', 'user', 'catalog', 'api_key',
                   'group', 'vnet_rule', 'vm', 'nas_volume', 'nas_nfs_share',
-                  'vm_export', 'tenant']
+                  'vm_export', 'tenant', 'auth_source', 'file']
 
 
 class TestDocumentationMatchesArgumentSpec:
@@ -238,6 +238,37 @@ class TestEveryDiffedFieldIsFetched:
             tenants as shared,
         )
         assert 'machine#status#node#$display as host_node' in shared.NODE_FIELDS
+
+    def test_auth_source(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            auth_source,
+        )
+        for api_field in auth_source.UPDATE_FIELD_MAP.values():
+            assert api_field in auth_source.COMPARISON_FIELDS, (
+                "auth_source diffs %r but never fetches it" % api_field)
+        # settings is the exception and deliberately so: it is fetched by key
+        # with include_settings, because the API returns client_secret in
+        # cleartext and the list projection must not carry it.
+        for column in set(auth_source.COMPARISON_FIELDS) - {'settings'}:
+            assert column in auth_source.SOURCE_FIELDS, (
+                'auth_source compares %r but does not fetch it' % column)
+        assert 'settings' not in auth_source.SOURCE_FIELDS
+
+    def test_file(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import file
+        for api_field in file.UPDATE_FIELD_MAP.values():
+            assert api_field in file.COMPARISON_FIELDS, (
+                "file diffs %r but never fetches it" % api_field)
+        for column in file.COMPARISON_FIELDS:
+            assert column in file.FILE_FIELDS, (
+                'file compares %r but does not fetch it' % column)
+
+    def test_file_fetches_the_size_idempotence_turns_on(self):
+        """`filesize` is not in UPDATE_FIELD_MAP -- it is not settable -- but
+        it is the whole basis of "already uploaded". A projection that dropped
+        it would re-upload the entire catalogue on every run."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import file
+        assert 'filesize' in file.FILE_FIELDS
 
     def test_api_key_fetches_every_column_it_returns(self):
         """find_keys() asks for LIST_FIELDS explicitly rather than trusting
@@ -559,6 +590,59 @@ class TestCreateAndUpdatePathsAgree:
             'change_password'
         assert 'require_password_change' not in shared.UPDATE_FIELD_MAP
 
+    def test_auth_source_update_is_a_subset_of_create(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            auth_source,
+        )
+        create = set(auth_source.CREATE_PARAM_MAP)
+        update = set(auth_source.UPDATE_FIELD_MAP)
+        assert update <= create
+        assert create - update == set(auth_source.IDENTITY_PARAMS)
+
+    def test_auth_source_mapped_parameters_are_all_real_options(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            auth_source,
+        )
+        spec = _argument_spec_options(auth_source)
+        for param in set(auth_source.CREATE_PARAM_MAP) \
+                | set(auth_source.UPDATE_FIELD_MAP):
+            assert param in spec, (
+                'auth_source maps %r to an API field but does not accept it '
+                'as an option -- the mapping is dead code' % param)
+
+    def test_auth_source_driver_is_create_only(self):
+        """Swapping the provider under an existing source would repoint
+        everyone who logs in through it, so the module refuses rather than
+        trying. It is identity, not a setting."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            auth_source,
+        )
+        assert 'driver' in auth_source.IDENTITY_PARAMS
+        assert 'driver' not in auth_source.UPDATE_FIELD_MAP
+        assert 'driver' in auth_source.CREATE_PARAM_MAP
+
+    def test_file_update_is_a_subset_of_create(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import file
+        create = set(file.CREATE_PARAM_MAP)
+        update = set(file.UPDATE_FIELD_MAP)
+        assert update <= create
+        assert create - update == set(file.IDENTITY_PARAMS)
+
+    def test_file_mapped_parameters_are_all_real_options(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules import file
+        spec = _argument_spec_options(file)
+        for param in set(file.CREATE_PARAM_MAP) | set(file.UPDATE_FIELD_MAP):
+            assert param in spec, (
+                'file maps %r to an API field but does not accept it as an '
+                'option -- the mapping is dead code' % param)
+
+    def test_file_tier_is_preferred_tier_for_the_third_time(self):
+        """#8 on drives, again on nas_volume, and again here. The option is
+        `tier`; the column is `preferred_tier`, and it stores a string."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import file
+        assert file.UPDATE_FIELD_MAP['tier'] == 'preferred_tier'
+        assert 'tier' not in file.COMPARISON_FIELDS
+
     def test_nic_mapped_parameters_are_all_real_options(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import nic
         spec = _argument_spec_options(nic)
@@ -627,6 +711,14 @@ class TestNoKnownBadFieldNamesComeBack:
             'require_password_change': 'the column is change_password; the '
                                        "SDK's create() does the rename",
         },
+        'file': {
+            'tier': 'issue #8 for the third time, on a third table -- the '
+                    'column is preferred_tier and it stores a string',
+        },
+        # auth_source needs no renames: all seven mapped parameters are real
+        # columns on a live auth_sources row (26.1.8, 16 columns). Empty
+        # rather than absent so the parametrised test below still covers it.
+        'auth_source': {},
         # api_key needs no renames on the write path either -- but its READ
         # path does: the API spells the last-login pair lastlogin_*, and that
         # mapping lives in module_utils/api_keys.py so the info module cannot
