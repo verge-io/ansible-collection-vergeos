@@ -2,32 +2,19 @@
 # ansible-lint configuration.
 #
 # The CI workflow runs `ansible-lint --profile production`; the profile is
-# passed explicitly there and is not set here, so this file only narrows what
-# is linted.
-
-exclude_paths:
-  # One live ladder still calls a module the collection does not have yet:
-  #
-  #     api_key  -> arrives with #30
-  #
-  # catalog landed with #32, so verify-recipe-custom.yml and
-  # verify-recipe-fuzz.yml came off this list. verify-recipe-edges.yml calls
-  # both, so it stays until #30 -- then this whole section goes.
-  #
-  # The ladder is correct -- it was written against the full port and simply
-  # lands ahead of it. ansible-lint resolves module references against
-  # whatever is installed, so it reports the reference as a typo.
-  #
-  # `syntax-check` cannot be waived inline: it comes from ansible-playbook's
-  # own parser, so `# noqa: syntax-check[unknown-module]` has no effect. The
-  # alternative, skip_list, would disable unknown-module repo-wide and let a
-  # genuinely misspelled module name through in examples/ -- which is
-  # user-facing and worse. Excluding one internal test file is the smaller
-  # loss.
-  #
-  # Nothing is left unguarded: tests/unit/test_module_references.py audits
-  # EVERY vergeio.vergeos.* reference in the repository, including this file,
-  # against an explicit allowlist that fails once the module exists.
-  #
-  # Remove the line below when #30 lands.
-  - tests/live/verify-recipe-edges.yml
+# passed explicitly there and is not set here.
+#
+# The list below is deliberately empty. It held three entries -- for
+# verify-recipe-custom.yml, verify-recipe-fuzz.yml and verify-recipe-edges.yml
+# -- because those ladders called `catalog` and `api_key` before either module
+# was in the collection. #32 and #30 landed them and all three came off. Every
+# file in the repository is linted.
+#
+# Before adding one back: `syntax-check` cannot be waived inline, because it
+# comes from ansible-playbook's own parser rather than from lint, so
+# `# noqa: syntax-check[unknown-module]` has no effect. That is the pressure
+# that produced the three entries above. If you need one again, pair it with a
+# self-expiring entry in tests/unit/test_module_references.py, so the waiver
+# cannot outlive its reason -- that is how these three expired on schedule
+# rather than becoming permanent.
+exclude_paths: []

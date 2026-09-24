@@ -1,0 +1,142 @@
+---
+# Live-verify ladder for the api_key / api_key_info modules
+# (VergeOS 26.1.8).
+#
+# Touches ONLY scratch keys named zz-ansible-verify-key; standing keys are
+# never touched. Cleanup-first and cleanup-always (rescue), per the
+# crashed-ladder lesson in this directory's README.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook verify-api-key.yml
+
+- name: API key module live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    scratch: zz-ansible-verify-key
+    key_user: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+    api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+
+  tasks:
+    - name: "0. Cleanup-first: remove any leftover scratch keys"
+      vergeio.vergeos.api_key:
+        user: "{{ key_user }}"
+        name: "{{ scratch }}"
+        state: absent
+
+    - name: "API key ladder (cleanup runs even on failure)"
+      block:
+        - name: "1. Create scratch key with description + allow list"
+          vergeio.vergeos.api_key:
+            user: "{{ key_user }}"
+            name: "{{ scratch }}"
+            description: "ansible live-verify scratch key"
+            ip_allow_list: ["192.168.1.0/24"]
+            state: present
+          register: create
+          no_log: true
+
+        - name: "Verify: Create scratch key with description + allow list"
+          ansible.builtin.assert:
+            that:
+              - create.changed
+              - create.secret is defined
+              - create.api_key.name == scratch
+              - create.api_key.ip_allow_list == ["192.168.1.0/24"]
+
+        - name: "2. Re-run identically — must be idempotent, no secret"
+          vergeio.vergeos.api_key:
+            user: "{{ key_user }}"
+            name: "{{ scratch }}"
+            description: "ansible live-verify scratch key"
+            ip_allow_list: ["192.168.1.0/24"]
+            state: present
+          register: rerun
+
+        - name: "Verify: Re-run identically — must be idempotent, no secret"
+          ansible.builtin.assert:
+            that:
+              - not rerun.changed
+              - rerun.secret is not defined
+            fail_msg: "NOT idempotent: {{ rerun.actions }}"
+
+        - name: "3. Drift: change description, widen allow list"
+          vergeio.vergeos.api_key:
+            user: "{{ key_user }}"
+            name: "{{ scratch }}"
+            description: "rotated description"
+            ip_allow_list: ["192.168.1.0/24", "10.0.0.0/8"]
+            state: present
+          register: drift
+
+        - name: "Verify: Drift: change description, widen allow list"
+          ansible.builtin.assert:
+            that:
+              - drift.changed
+              - drift.api_key.description == "rotated description"
+              - drift.api_key.ip_allow_list == ["192.168.1.0/24", "10.0.0.0/8"]
+
+        - name: "4. Read back via api_key_info (no secrets ever)"
+          vergeio.vergeos.api_key_info:
+            user: "{{ key_user }}"
+            name: "{{ scratch }}"
+          register: info
+
+        - name: "Verify: Read back via api_key_info (no secrets ever)"
+          ansible.builtin.assert:
+            that:
+              - info.api_keys | length == 1
+              - info.api_keys[0].description == "rotated description"
+              - "'secret' not in info.api_keys[0]"
+
+        - name: "5. The created secret authenticates (Bearer)"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/vms?limit=1"
+            headers:
+              Authorization: "Bearer {{ create.secret }}"
+            validate_certs: false
+            status_code: 200
+          no_log: true
+
+      rescue:
+        - name: Ladder failed — still clean up below
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+    - name: "6. Delete scratch key (always)"
+      vergeio.vergeos.api_key:
+        user: "{{ key_user }}"
+        name: "{{ scratch }}"
+        state: absent
+      register: delete
+
+    - name: "7. Confirm gone"
+      vergeio.vergeos.api_key_info:
+        user: "{{ key_user }}"
+        name: "{{ scratch }}"
+      register: gone
+
+    - name: "Verify: Confirm gone"
+      ansible.builtin.assert:
+        that: ["gone.api_keys | length == 0"]
+
+    - name: "8. Revoked secret is dead (401)"
+      ansible.builtin.uri:
+        url: "{{ api_base }}/vms?limit=1"
+        headers:
+          Authorization: "Bearer {{ create.secret | default('missing') }}"
+        validate_certs: false
+        status_code: 401
+      no_log: true
+      when: create.secret is defined
+
+    - name: Fail the run if the ladder failed before cleanup
+      ansible.builtin.fail:
+        msg: "Ladder failed before cleanup — see the first failed task above"
+      when: ladder_failed | default(false)
+
+    - name: "Report: Fail the run if the ladder failed before cleanup"
+      ansible.builtin.debug:
+        msg: "api_key ladder PASSED: create(secret once) → idempotent → drift → info → bearer 200 → delete → bearer 401"

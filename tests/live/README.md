@@ -65,6 +65,8 @@ precisely because nothing read that table.
 |---|---|
 | `verify-field-contract.yml` | the compare-and-map contract for `network`, `nic`, `drive`, `user` (#75) |
 | `verify-catalog.yml` | `catalog` create/converge/scope/delete, plus the apostrophe and `{brace}` name guards (#32) |
+| `verify-api-key.yml` | `api_key` / `api_key_info`, including that a revoked secret really is dead (#30) |
+| `verify-key-rotation.yml` | the `api_key_rotation` role: verify-before-revoke (#30) |
 | `verify-recipe-deploy.yml` | `vm_recipe_deploy` end to end |
 | `verify-recipe-matrix.yml` | every recipe on the system, simulated |
 | `verify-recipe-real.yml` | real deployments — boot proved, DHCP confirmed, torn down |
@@ -88,17 +90,17 @@ Helpers, not run directly:
 
 ### Not here yet
 
-`verify-recipe-edges.yml` calls `vergeio.vergeos.api_key`, which arrives with
-#30, so it is still excluded from `ansible-lint` — see `.ansible-lint`, and
-`tests/unit/test_module_references.py`, which audits every
-`vergeio.vergeos.*` reference against a self-expiring allowlist.
-
-`verify-recipe-custom.yml` and `verify-recipe-fuzz.yml` came off that list
-when `catalog` landed with #32.
+Nothing. `verify-recipe-custom.yml`, `verify-recipe-fuzz.yml` and
+`verify-recipe-edges.yml` were excluded from `ansible-lint` until `catalog`
+(#32) and `api_key` (#30) existed; both landed, all three exclusions are gone,
+and `.ansible-lint` now has no `exclude_paths` at all.
+`tests/unit/test_module_references.py` still audits every
+`vergeio.vergeos.*` reference in the repository, against an allowlist that is
+now empty.
 
 The remaining ladders from the port (`verify-vm-clone`, `verify-vm-export`,
-`verify-nas-modules`, `verify-snapshot-profile` and others)
-land with their modules — see the tracking issue #57.
+`verify-nas-modules`, `verify-snapshot-profile` and others) land with their
+modules — see the tracking issue #57.
 
 ## Adding one
 

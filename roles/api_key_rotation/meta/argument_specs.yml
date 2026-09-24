@@ -1,0 +1,68 @@
+---
+argument_specs:
+  main:
+    short_description: Verify-before-revoke API key rotation
+    description:
+      - Creates a new generation of an API key named
+        C(<key_name>-<suffix>), proves the new secret authenticates with a
+        live Bearer request, and only then deletes every older generation.
+      - The ordering is the point. A rotation that revokes the old credential
+        before confirming the new one works is how automation locks itself
+        out. A failed verification leaves the old key untouched.
+      - Refuses a suffix collision rather than silently reusing a generation.
+    author:
+      - VergeIO (@vergeio)
+    options:
+      api_key_rotation_host:
+        description: VergeOS hostname or IP. Defaults to C(VERGEOS_HOST).
+        type: str
+        required: true
+      api_key_rotation_username:
+        description: Username. Defaults to C(VERGEOS_USERNAME).
+        type: str
+      api_key_rotation_password:
+        description: Password. Defaults to C(VERGEOS_PASSWORD).
+        type: str
+      api_key_rotation_insecure:
+        description: Skip SSL validation. Defaults to C(VERGEOS_INSECURE).
+        type: bool
+      api_key_rotation_user:
+        description: The user the key belongs to.
+        type: str
+        required: true
+      api_key_rotation_key_name:
+        description:
+          - Logical key name. Generations are named C(<key_name>-<suffix>).
+        type: str
+        required: true
+      api_key_rotation_description:
+        description: Description applied to the new generation.
+        type: str
+        default: "rotated by the api_key_rotation role"
+      api_key_rotation_ip_allow_list:
+        description: Source addresses permitted to use the new key.
+        type: list
+        elements: str
+        default: []
+      api_key_rotation_ip_deny_list:
+        description: Source addresses denied use of the new key.
+        type: list
+        elements: str
+        default: []
+      api_key_rotation_secret_dest:
+        description:
+          - Path to write the new secret to, at mode 0600. Empty means do not
+            persist; read C(api_key_rotation_secret) from the role instead.
+        type: str
+        default: ""
+      api_key_rotation_suffix:
+        description:
+          - Generation suffix, defaulting to a second-granular timestamp. Must
+            be unique per rotation - a collision is refused.
+        type: str
+      api_key_rotation_verify_bearer:
+        description:
+          - Prove the new secret works before revoking the old ones. Disabling
+            this removes the safety property the role exists for.
+        type: bool
+        default: true

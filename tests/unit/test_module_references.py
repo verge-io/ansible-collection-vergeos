@@ -25,9 +25,11 @@ import pytest
 
 # Referenced by a ladder or example, not yet in the collection. Each entry
 # must name the issue that removes it.
-FUTURE = {
-    'api_key': 'arrives with #30',
-}
+# Empty, and meant to stay that way. It held 'catalog' (#32) and 'api_key'
+# (#30) while their ladders sat on this branch ahead of their modules; both
+# landed and both entries expired, which is the mechanism working. Add an
+# entry only for a module that is genuinely arriving, always with its issue.
+FUTURE = {}
 
 _REFERENCE = re.compile(r'vergeio\.vergeos\.(\w+)')
 

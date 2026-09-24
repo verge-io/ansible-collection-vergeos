@@ -6,7 +6,7 @@ galaxy_info:
     Deploy a VM from a VergeOS recipe and wait for it to be usable, verifying
     what the recipe actually built.
   license: GPL-3.0-or-later
-  min_ansible_version: "2.14"
+  min_ansible_version: "2.15"
   galaxy_tags:
     - vergeos
     - vergeio
