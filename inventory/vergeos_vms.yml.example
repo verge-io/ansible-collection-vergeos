@@ -4,6 +4,14 @@
 # This is an API-only inventory plugin - it does NOT set ansible_host
 # and does not support SSH connections to VMs. Use the host variables
 # (vergeos_site_url, vergeos_vm_id, vergeos_name) with VergeOS modules.
+#
+# IMPORTANT: put `delegate_to: localhost` on every VergeOS module task in a
+# play that targets these hosts. The hosts here are VM records, not machines
+# you can reach; delegating runs the module locally, and it also keeps the
+# module on the interpreter running ansible-playbook. Without it Ansible
+# discovers an interpreter per inventory host, which usually has no pyvergeos
+# installed, and every task fails with "The pyvergeos SDK is required".
+# See "Example Playbook with Inventory" in the README.
 
 plugin: vergeio.vergeos.vergeos_vms
 

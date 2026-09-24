@@ -17,11 +17,20 @@
   gather_facts: false
 
   vars:
-    vergeos_sites:
-      - name: sitea
-        host: "{{ lookup('env', 'VERGEOS_SITEA_HOST') | default('sitea.example.com', true) }}"
-      - name: siteb
-        host: "{{ lookup('env', 'VERGEOS_SITEB_HOST') | default('siteb.example.com', true) }}"
+    # Defaults to the single system in VERGEOS_HOST, like every other example.
+    # It used to default to sitea.example.com / siteb.example.com, which do not
+    # resolve, so the playbook could not run as shipped.
+    #
+    # For a genuinely multi-site run, set VERGEOS_SITEA_HOST and
+    # VERGEOS_SITEB_HOST; siteb is included only when it is set.
+    vergeos_sites: >-
+      {{
+        [{'name': 'sitea',
+          'host': lookup('env', 'VERGEOS_SITEA_HOST')
+                  | default(lookup('env', 'VERGEOS_HOST'), true)}]
+        + ([{'name': 'siteb', 'host': lookup('env', 'VERGEOS_SITEB_HOST')}]
+           if lookup('env', 'VERGEOS_SITEB_HOST') else [])
+      }}
     vergeos_username: "{{ lookup('env', 'VERGEOS_USERNAME') | default('admin', true) }}"
     vergeos_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
     vergeos_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true) }}"

@@ -508,3 +508,45 @@ class TestVmCheckMode:
         mock_module.exit_json.assert_called_once()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is True  # Would change, but didn't
+
+
+class TestMachineTypeMatching:
+    """A machine-type alias is stored expanded, so literal comparison fails.
+
+    The platform expands 'q35' to 'pc-q35-10.0' on write. Comparing the alias
+    against the stored value literally never matched, so a fully converged VM
+    reported changed on every run and re-sent the field. Verified live on
+    26.1.8, where examples/create_vm.yml reported changed forever.
+    """
+
+    def _fn(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules.vm import (
+            machine_type_matches,
+        )
+        return machine_type_matches
+
+    @pytest.mark.parametrize('desired,current', [
+        ('q35', 'pc-q35-10.0'),
+        ('q35', 'pc-q35-9.2'),
+        ('pc', 'pc-i440fx-3.1'),
+        ('pc-q35-10.0', 'pc-q35-10.0'),
+    ])
+    def test_converged(self, desired, current):
+        assert self._fn()(desired, current) is True
+
+    @pytest.mark.parametrize('desired,current', [
+        # Different family -- a real change.
+        ('q35', 'pc-i440fx-3.1'),
+        ('pc', 'pc-q35-10.0'),
+        # Pinning an exact version against a different one is a real change.
+        ('pc-q35-9.2', 'pc-q35-10.0'),
+        # Never treat a missing value as converged.
+        ('q35', None),
+        ('q35', ''),
+    ])
+    def test_needs_change(self, desired, current):
+        assert self._fn()(desired, current) is False
+
+    def test_alias_does_not_match_unrelated_prefix(self):
+        # 'pc' must not swallow every pc-* type; it means i440fx.
+        assert self._fn()('pc', 'pc-q35-10.0') is False

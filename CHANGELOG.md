@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`network`: three API field mappings the platform silently discarded**
+  (#18). `dhcp_end` was sent as `dhcp_end` where the API field is `dhcp_stop`,
+  so a DHCP scope was created with a start and no end; `dns_servers` was sent
+  verbatim on the update path where the field is `dnslist`, so DNS never
+  applied to an existing network; `subnet_mask` does not exist in the vnet
+  schema at all. The API accepts unknown fields with HTTP 200 and discards
+  them, so all three reported success. Third recurrence of the class behind
+  #8 and #10.
+- **`network`: never converged.** Setting any of the three parameters above
+  made every run report `changed`, because the update path compared against
+  API fields that do not exist. `get_network()` now also fetches the fields it
+  diffs -- the SDK's default field set omits `dnslist`.
+- **`network`: `network_type` choices were wrong in both directions** (#18).
+  `vlan` and `overlay` were offered and rejected by the platform; `dmz` is
+  valid and was blocked. VLAN networks were unreachable through this module
+  and can now be created with `layer2_type: vlan` plus `vlan_id`.
+- **`network`: `DOCUMENTATION` was unparsable** (#17). An unquoted
+  `C(Validation error: Gateway is outside of network)` contains `": "`, which
+  YAML reads as a mapping key inside a plain scalar, taking the whole block
+  with it: `ansible-doc` reported the module as undocumented and
+  `validate-modules` raised 28 errors. Now a folded scalar.
+- **`network_info` returned 25 of 98 fields**, hiding `dnslist`, port
+  mirroring, rate limits and more. Now returns the whole resource plus the two
+  aliased status joins (#25): `all` expands to the vnet's own columns and
+  never includes a traversal, so requesting it alone would have dropped
+  `running` and `status`. Note the field list is passed as a list: on
+  pyvergeos 1.2.7 the string `"all"` made the SDK send a per-character field
+  list and the API returned a single field (pyvergeos#101, fixed on pyvergeos
+  dev; the list form is correct on every version this collection supports).
+- **`vm`: `machine_type` never converged.** The platform expands the alias
+  `q35` to `pc-q35-10.0`, so comparing the alias literally never matched and
+  every run reported `changed`. Aliases now match any version of their family,
+  and an exact machine type can be pinned -- the `choices` list previously
+  allowed only aliases, which made remediating a deprecated machine type
+  impossible.
+- **`user`: supplying `user_password` made every run report `changed`.**
+  VergeOS never returns a stored password, so there is nothing to compare;
+  the password was rewritten unconditionally. New `update_password` option,
+  defaulting to `on_create`. Use `always` for rotation.
+- **`vm_snapshot`: creating an existing snapshot name failed** instead of
+  converging, so any play taking a named snapshot could not be re-run.
+- **"The pyvergeos SDK is required" misdiagnosed the cause.** When Ansible
+  runs a module under a discovered interpreter that lacks pyvergeos, the
+  message told the operator to install a package that was already installed.
+  It now names the interpreter it actually ran under and points at the two
+  real fixes (`delegate_to: localhost`, or pinning
+  `ansible_python_interpreter`). The inventory example carries the same note:
+  hosts from the inventory plugin are VM records, not reachable machines, so
+  module tasks in those plays must delegate.
+- **`examples/snapshot_by_tag.yml`**: the summary play referenced
+  `snapshot_prefix`, a var set in a *different* play, so it failed with
+  "'snapshot_prefix' is undefined".
+- **`examples/vm_snapshots.yml`** was hardcoded to `web-server-01`, so it
+  either failed outright or -- worse -- operated on whatever real VM carried
+  that name. It now requires `-e vm_name=`, and the destructive restore step
+  is opt-in behind `-e allow_restore=true`.
+- **`examples/setup_tags.yml`** defaulted to `sitea.example.com` /
+  `siteb.example.com`, which do not resolve, so it could not run as shipped.
+  It now defaults to the single system in `VERGEOS_HOST`.
+- **`examples/create_vm.yml`** used the legacy
+  `ip_address` + `subnet_mask` + `gateway` form the API now rejects with
+  "Validation error: Gateway is outside of network".
+
+### Removed
+
+- **`network`: the `subnet_mask` parameter.** No such field exists in the vnet
+  schema, so it was never applied -- the value went into the request body and
+  was discarded with HTTP 200. Supplying it now fails argument validation
+  rather than being silently ignored. Use `network` (CIDR) instead, which the
+  API requires for vnet creation.
+
+### Changed
+
+- **`network`: `version_added` for the `network` (CIDR) option corrected from
+  `2.0.1` to `2.1.0`.** `validate-modules` rejects a patch release, and the
+  collection's next release carrying a documented option is a minor.
+
 ## [2.0.1] - 2026-09-21
 
 ### Added

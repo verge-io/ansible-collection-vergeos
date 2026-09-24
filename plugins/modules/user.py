@@ -30,7 +30,28 @@ options:
     description:
       - Password for the user account.
       - Required when creating a new user.
+      - >-
+        Whether an existing user's password is rewritten is governed by
+        O(update_password).
     type: str
+  update_password:
+    description:
+      - When to apply O(user_password) to a user that already exists.
+      - V(on_create) only sets the password when the user is created.
+      - V(always) rewrites the password on every run.
+      - >-
+        The default is V(on_create) because VergeOS never returns a stored
+        password, so there is nothing to compare against. Before 2.1.0 the
+        password was rewritten unconditionally, which made any task that
+        supplied O(user_password) report RV(ignore:changed) on every run and
+        never converge.
+      - >-
+        V(always) is the correct choice for password rotation, and it will
+        report changed every run by design.
+    type: str
+    choices: [ always, on_create ]
+    default: on_create
+    version_added: "2.1.0"
   email:
     description:
       - Email address for the user.
@@ -185,8 +206,11 @@ def update_user(module, client, user):
             update_data['displayname'] = module.params['full_name']
             changed = True
 
-    # Handle password update separately
-    if module.params.get('user_password'):
+    # Password: there is nothing to diff against -- VergeOS does not return a
+    # stored password -- so rewriting it unconditionally meant the task could
+    # never converge. Only rewrite when explicitly asked to.
+    if (module.params.get('user_password')
+            and module.params.get('update_password') == 'always'):
         update_data['password'] = module.params['user_password']
         changed = True
 
@@ -216,6 +240,8 @@ def main():
         name=dict(type='str', required=True),
         state=dict(type='str', default='present', choices=['present', 'absent']),
         user_password=dict(type='str', no_log=True),
+        update_password=dict(type='str', default='on_create',
+                             choices=['always', 'on_create']),
         email=dict(type='str'),
         full_name=dict(type='str'),
         enabled=dict(type='bool'),
