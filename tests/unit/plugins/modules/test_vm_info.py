@@ -3,34 +3,31 @@
 
 """Unit tests for vm_info module"""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 
 # Mock the pyvergeos module before importing the module under test
-@pytest.fixture(autouse=True)
-def mock_pyvergeos():
-    """Mock pyvergeos SDK for all tests"""
-    with patch.dict('sys.modules', {
-        'pyvergeos': MagicMock(),
-        'pyvergeos.exceptions': MagicMock(),
-    }):
-        yield
+# `mock_pyvergeos` now lives in tests/unit/conftest.py, which stubs the SDK
+# only when it is genuinely absent and gives the stub real exception
+# classes. The local copy replaced pyvergeos.exceptions with a MagicMock,
+# which made every NotFoundError un-raisable. See issue #66.
 
 
 class TestVmInfo:
     """Tests for vm_info module"""
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
-    def test_returns_all_vms_when_no_name_specified(self, mock_get_client):
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.HAS_PYVERGEOS', True)
+    def test_returns_all_vms_when_no_name_specified(self, mock_get_client, make_resource):
         """Test that all VMs are returned when name is not specified"""
         # Setup mock client
         mock_client = MagicMock()
         mock_vm1 = MagicMock()
-        mock_vm1.__iter__ = lambda self: iter({'$key': 1, 'name': 'vm1', 'cpu_cores': 2}.items())
+        mock_vm1_state = {'$key': 1, 'name': 'vm1', 'cpu_cores': 2}
+        mock_vm1 = make_resource(mock_vm1_state)
         mock_vm2 = MagicMock()
-        mock_vm2.__iter__ = lambda self: iter({'$key': 2, 'name': 'vm2', 'cpu_cores': 4}.items())
+        mock_vm2_state = {'$key': 2, 'name': 'vm2', 'cpu_cores': 4}
+        mock_vm2 = make_resource(mock_vm2_state)
         mock_client.vms.list.return_value = [mock_vm1, mock_vm2]
         mock_get_client.return_value = mock_client
 
@@ -63,14 +60,15 @@ class TestVmInfo:
         assert call_kwargs['changed'] is False
         assert 'vms' in call_kwargs
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
-    def test_returns_specific_vm_when_name_specified(self, mock_get_client):
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.HAS_PYVERGEOS', True)
+    def test_returns_specific_vm_when_name_specified(self, mock_get_client, make_resource):
         """Test that specific VM is returned when name is specified"""
         # Setup mock client
         mock_client = MagicMock()
         mock_vm = MagicMock()
-        mock_vm.__iter__ = lambda self: iter({'$key': 1, 'name': 'web-server', 'cpu_cores': 4}.items())
+        mock_vm_state = {'$key': 1, 'name': 'web-server', 'cpu_cores': 4}
+        mock_vm = make_resource(mock_vm_state)
         mock_client.vms.get.return_value = mock_vm
         mock_get_client.return_value = mock_client
 
@@ -99,8 +97,8 @@ class TestVmInfo:
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is False
 
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client')
-    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.get_vergeos_client')
+    @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.HAS_PYVERGEOS', True)
     def test_returns_empty_list_when_vm_not_found(self, mock_get_client):
         """Test that empty list is returned when VM is not found"""
         from pyvergeos.exceptions import NotFoundError
@@ -146,8 +144,8 @@ class TestVmInfo:
                 'insecure': False, 'name': None
             }
 
-            with patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.get_vergeos_client'):
-                with patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True):
+            with patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.get_vergeos_client'):
+                with patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.HAS_PYVERGEOS', True):
                     from ansible_collections.vergeio.vergeos.plugins.modules import vm_info
                     try:
                         vm_info.main()
