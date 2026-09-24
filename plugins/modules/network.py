@@ -25,10 +25,41 @@ options:
     description:
       - The desired state of the network.
       - C(present) ensures the network exists with the specified configuration.
-      - C(absent) ensures the network is deleted.
+      - C(absent) ensures the network is deleted. A running vnet is stopped
+        first - the API refuses to delete one that is running, and C(absent)
+        already means destroy it.
+      - C(running) and C(stopped) also set its power. A vnet is a router
+        machine; until it is running, staged firewall rules are configuration
+        and nothing more.
+      - C(restarted) restarts a running vnet. It is an event rather than a
+        state to converge on, so it always reports changed. Use
+        RV(need_restart) to decide whether one is outstanding - a
+        configuration change to a running vnet sets it, and until the restart
+        happens the live router keeps the old value.
+      - The power states imply C(present)- the configuration is created or
+        converged first, then the power is set.
     type: str
-    choices: [ present, absent ]
+    choices: [ present, absent, running, stopped, restarted ]
     default: present
+  apply_rules:
+    description:
+      - Apply staged firewall rules as part of powering on or restarting.
+      - This is the SDK's default, and usually what is wanted after staging a
+        policy - but it decides whether a rule set becomes live, so it is
+        named here rather than left incidental.
+      - Ignored for O(state=stopped).
+    type: bool
+    default: true
+    version_added: "2.2.0"
+  power_timeout:
+    description:
+      - Seconds to wait for the vnet to reach the requested power state.
+      - On expiry the module fails and says what it was still reading, rather
+        than reporting a power change that did not finish. Measured on
+        26.1.8, power on takes about a second and power off about two.
+    type: int
+    default: 60
+    version_added: "2.2.0"
   description:
     description:
       - Description of the network.
@@ -148,9 +179,9 @@ author:
 EXAMPLES = r'''
 - name: Create an internal network
   vergeio.vergeos.network:
-    host: "192.168.1.100"
+    host: "vergeos.example.com"
     username: "admin"
-    password: "password"
+    password: "secret"
     name: "internal-network"
     description: "Internal production network"
     state: present
@@ -169,9 +200,9 @@ EXAMPLES = r'''
 # that carries VLAN 100 onto nothing -- and the module still reports success.
 - name: Create a VLAN-tagged external network on the physical fabric
   vergeio.vergeos.network:
-    host: "192.168.1.100"
+    host: "vergeos.example.com"
     username: "admin"
-    password: "password"
+    password: "secret"
     name: "vlan-100"
     state: present
     network_type: external
@@ -183,9 +214,9 @@ EXAMPLES = r'''
 
 - name: Cap a network at 100 MB/s and move it to a different uplink
   vergeio.vergeos.network:
-    host: "192.168.1.100"
+    host: "vergeos.example.com"
     username: "admin"
-    password: "password"
+    password: "secret"
     name: "vlan-100"
     state: present
     rate_limit: 100
@@ -193,19 +224,69 @@ EXAMPLES = r'''
 
 - name: Remove the bandwidth cap and detach from the fabric
   vergeio.vergeos.network:
-    host: "192.168.1.100"
+    host: "vergeos.example.com"
     username: "admin"
-    password: "password"
+    password: "secret"
     name: "vlan-100"
     state: present
     rate_limit: 0
     interface_network: ""
 
+# A vnet is a router machine. Staged firewall rules are configuration until
+# it runs, which is the gap this closes: vnet_rule and vnet_apply both report
+# "not running, staged rules take effect when it starts" and neither could
+# start it.
+- name: Start a vnet, applying whatever rules are staged on it
+  vergeio.vergeos.network:
+    host: "vergeos.example.com"
+    username: "admin"
+    password: "secret"
+    name: "vlan-100"
+    state: running
+
+- name: Start it without letting staged rules become live
+  vergeio.vergeos.network:
+    host: "vergeos.example.com"
+    username: "admin"
+    password: "secret"
+    name: "vlan-100"
+    state: running
+    apply_rules: false
+
+- name: Stop a vnet
+  vergeio.vergeos.network:
+    host: "vergeos.example.com"
+    username: "admin"
+    password: "secret"
+    name: "vlan-100"
+    state: stopped
+
+# Changing configuration on a RUNNING vnet updates the record and sets
+# need_restart; the live router keeps the old value until it is restarted.
+- name: Change the MTU and make it take effect
+  vergeio.vergeos.network:
+    host: "vergeos.example.com"
+    username: "admin"
+    password: "secret"
+    name: "vlan-100"
+    state: present
+    mtu: 1400
+  register: vnet
+
+- name: Restart only if one is owed
+  vergeio.vergeos.network:
+    host: "vergeos.example.com"
+    username: "admin"
+    password: "secret"
+    name: "vlan-100"
+    state: restarted
+  when: vnet.need_restart
+
 - name: Delete a network
   vergeio.vergeos.network:
-    host: "192.168.1.100"
+    host: "vergeos.example.com"
     username: "admin"
-    password: "password"
+    password: "secret"
     name: "old-network"
     state: absent
 '''
@@ -225,12 +306,32 @@ network:
     dhcp_start: "10.0.0.100"
     dhcp_stop: "10.0.0.200"
     dnslist: "8.8.8.8,8.8.4.4"
+running:
+  description:
+    - Whether the vnet's router is running.
+    - Read through the projection C(machine#status#running as running). It is
+      not a vnet column and is absent from C(fields=all).
+  returned: when the network exists
+  type: bool
+  version_added: "2.2.0"
+need_restart:
+  description:
+    - Whether the vnet needs restarting for its configuration to take effect.
+    - Measured on 26.1.8- changing C(mtu) on a running vnet sets this, and
+      until the restart happens the live router keeps the old value. A run
+      that reports C(changed) on such a field has changed the record, not the
+      router.
+  returned: when the network exists
+  type: bool
+  version_added: "2.2.0"
 changed:
   description: Whether the module made any changes
   returned: always
   type: bool
   sample: true
 '''
+
+import time
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
@@ -260,7 +361,8 @@ def get_network(module, client, name):
     module reports 'changed' on every run and never converges (issue #18).
     """
     try:
-        return resolve_one(module, client.networks, name, 'network', fields=COMPARISON_FIELDS)
+        return resolve_one(module, client.networks, name, 'network',
+                           fields=NETWORK_FIELDS)
     except NotFoundError:
         return None
 
@@ -328,6 +430,25 @@ UPLINK_API_FIELD = 'interface_vnet'
 # never fetched reads as None, so the comparison never matches.
 COMPARISON_FIELDS = (['$key', 'name', UPLINK_API_FIELD]
                      + sorted(set(UPDATE_FIELD_MAP.values())))
+
+# Power state, which is NOT a vnet column.
+#
+# `running` is a join through the vnet's router machine. It is present in the
+# SDK's default projection and absent from GET /vnets?fields=all -- measured
+# on 26.1.8, 98 fields and no `running` among them. This module names its
+# projection, so a field not listed here does not arrive at all: before these
+# two lines the module could not see power state, would have read every vnet
+# as stopped, and would have powered on something already up on every run.
+# That is the same defect as #18, #92 and the `vm` power-state bug, and it is
+# why the fetch list and the diff list are separate.
+#
+# `need_restart` IS a real column. Measured: changing mtu on a running vnet
+# sets it, and until the restart happens the live router keeps the old value.
+POWER_FIELDS = ['need_restart', 'machine#status#running as running']
+
+# What get_network() asks for: everything diffed, plus the power state the
+# module reports and gates on.
+NETWORK_FIELDS = COMPARISON_FIELDS + POWER_FIELDS
 
 
 def normalize_value(param, value):
@@ -430,19 +551,215 @@ def update_network(module, client, network):
 
 
 def delete_network(module, client, network):
-    """Delete a network using SDK"""
+    """Delete a network, stopping it first if it is running.
+
+    The API refuses to delete a running vnet -- "Network must be stopped to
+    delete" -- and before the module could power one off, the only way out of
+    that was a REST call the collection did not have. So `state: absent` on a
+    running network failed with an opaque API error and no way to act on it.
+
+    Stopping first is not an extra side effect: `absent` already means destroy
+    it, and there is no reading of "delete this network" under which leaving
+    it running was the intent.
+    """
     if module.check_mode:
         return True
 
+    if is_running(dict(network)) is True:
+        network.power_off()
+        wait_for_power(module, client, module.params['name'], False)
+        # Re-resolve: the object was fetched before the power change and
+        # delete() goes through the manager it was bound to.
+        network = get_network(module, client, module.params['name']) or network
+
     network.delete()
     return True
+
+
+def power_result(row):
+    """The module's return, with the two power facts surfaced.
+
+    `need_restart` is reported rather than buried in the row: a configuration
+    change to a running vnet sets it, and a run that reports `changed` on such
+    a field has changed the record and not the router. An operator who cannot
+    see that has no way to know a restart is owed.
+    """
+    row = dict(row or {})
+    return {
+        'network': row,
+        'running': is_running(row),
+        'need_restart': bool(row.get('need_restart')),
+    }
+
+
+def is_running(row):
+    """Power state, or None when the projection did not supply it.
+
+    None is deliberately distinct from False. `running` is a join rather than
+    a column, so a row fetched without POWER_FIELDS has no opinion at all --
+    and a module that read "no opinion" as "stopped" would power on a running
+    vnet on every run and report a change every time.
+    """
+    value = dict(row).get('running')
+    return None if value is None else bool(value)
+
+
+def _poll(module, client, name, satisfied, wanted, reading):
+    """Poll until ``satisfied(row)``, or fail saying what it read.
+
+    Failing on expiry rather than returning is the point. A power task that
+    quietly gives up and reports success is how a play goes green against a
+    stopped router -- and `vm` does exactly that, looping thirty times and
+    then returning changed=True whatever the VM ended up doing.
+    """
+    deadline = time.time() + max(1, int(module.params['power_timeout']))
+    row = None
+    while time.time() < deadline:
+        time.sleep(1)
+        current = get_network(module, client, name)
+        if current is None:
+            module.fail_json(
+                msg="Network '%s' disappeared while waiting for it to be %s"
+                    % (name, wanted))
+        row = dict(current)
+        if satisfied(row):
+            return row
+
+    module.fail_json(
+        msg="Network '%s' did not reach %s within %ss; it still reads %s. "
+            "These operations are asynchronous, but on a healthy system a "
+            "vnet powers on in about a second and off in about two, so this "
+            "is not slowness."
+        % (name, wanted, module.params['power_timeout'],
+           reading(row or {})))
+
+
+def wait_for_power(module, client, name, running):
+    """Poll until the vnet reports the requested power state."""
+    return _poll(
+        module, client, name,
+        lambda row: is_running(row) is running,
+        'running' if running else 'stopped',
+        lambda row: 'running=%s' % row.get('running'))
+
+
+def wait_for_restart(module, client, name):
+    """Poll until the restart has demonstrably happened.
+
+    ``need_restart`` does NOT clear synchronously. Measured on 26.1.8: the
+    module read it back immediately after ``restart()`` and got True, and the
+    same flag was False moments later. Reading straight through would have
+    reported a restart that had not finished and left the ladder asserting
+    against a router mid-reset.
+
+    The post-condition is both halves -- the debt cleared AND the router still
+    up. A reset that cleared the flag by falling over is not a restart.
+    """
+    return _poll(
+        module, client, name,
+        lambda row: not row.get('need_restart') and is_running(row) is True,
+        'restarted (need_restart clear, still running)',
+        lambda row: 'need_restart=%s running=%s'
+                    % (row.get('need_restart'), row.get('running')))
+
+
+# Power goes through the SDK's power_on/power_off/restart, which POST to
+# `vnet_actions` with {"vnet": key, "action": ...}.
+#
+# NOT `PUT /vnets/<key>?action=poweron`. That returns HTTP 200 with an empty
+# body and does nothing at all -- measured on 26.1.8, and it cost a ladder run
+# to find, because 200 reads as success and the network simply stayed stopped
+# for the full timeout. Recorded here so nobody "simplifies" this into a PUT.
+
+
+def require_power_state(module, row):
+    """Refuse to act on a row that cannot say whether it is running.
+
+    Guessing here is not conservative in either direction: read as stopped, a
+    running vnet is powered on again on every run; read as running, a stopped
+    one is never started. So the module says which projection is missing
+    instead of picking one.
+    """
+    if is_running(row) is None:
+        module.fail_json(
+            msg="Network '%s' did not report a power state, so it could not "
+                "be determined. `running` is not a vnet column -- it is a "
+                "join, fetched as 'machine#status#running as running', and it "
+                "is absent from fields=all. This module names its projection "
+                "in NETWORK_FIELDS; a row from anywhere else cannot answer "
+                "this." % module.params['name'])
+
+
+def power_on_network(module, client, network):
+    """Ensure the vnet's router is running."""
+    name = module.params['name']
+    row = dict(network)
+    require_power_state(module, row)
+
+    if is_running(row) is True:
+        return False, row
+
+    if module.check_mode:
+        row['running'] = True
+        return True, row
+
+    network.power_on(apply_rules=module.params['apply_rules'])
+    return True, wait_for_power(module, client, name, True)
+
+
+def power_off_network(module, client, network):
+    """Ensure the vnet's router is stopped."""
+    name = module.params['name']
+    row = dict(network)
+    require_power_state(module, row)
+
+    if is_running(row) is False:
+        return False, row
+
+    if module.check_mode:
+        row['running'] = False
+        return True, row
+
+    network.power_off()
+    return True, wait_for_power(module, client, name, False)
+
+
+def restart_network(module, client, network):
+    """Restart the vnet's router.
+
+    Always a change. A restart is an event, not a state to converge on: there
+    is no reading of the system that means "has already been restarted for
+    this reason". RV(need_restart) is what says whether one is outstanding.
+    """
+    name = module.params['name']
+    row = dict(network)
+    require_power_state(module, row)
+
+    if is_running(row) is not True:
+        module.fail_json(
+            msg="Network '%s' is not running, so there is nothing to restart. "
+                "Use state=running to start it." % name)
+
+    if module.check_mode:
+        return True, row
+
+    network.restart(apply_rules=module.params['apply_rules'])
+    # Measured: a reset never drops `running` at one-second resolution, so
+    # waiting for the router to come back would return immediately and prove
+    # nothing. What a restart demonstrably clears is need_restart -- and not
+    # synchronously, which is the whole reason this waits.
+    return True, wait_for_restart(module, client, name)
 
 
 def main():
     argument_spec = vergeos_argument_spec()
     argument_spec.update(
         name=dict(type='str', required=True),
-        state=dict(type='str', default='present', choices=['present', 'absent']),
+        state=dict(type='str', default='present',
+                   choices=['present', 'absent', 'running', 'stopped',
+                            'restarted']),
+        apply_rules=dict(type='bool', default=True),
+        power_timeout=dict(type='int', default=60),
         description=dict(type='str'),
         network_type=dict(type='str', choices=['internal', 'external', 'dmz']),
         ip_address=dict(type='str'),
@@ -476,18 +793,54 @@ def main():
 
         if state == 'absent':
             if network:
+                stopped_first = is_running(dict(network)) is True
                 delete_network(module, client, network)
-                module.exit_json(changed=True, msg=f"Network '{name}' deleted")
+                module.exit_json(
+                    changed=True,
+                    msg=f"Network '{name}' deleted"
+                        + (' (stopped first)' if stopped_first else ''))
             else:
                 module.exit_json(changed=False, msg=f"Network '{name}' does not exist")
 
-        elif state == 'present':
-            if network:
-                changed, updated_network = update_network(module, client, network)
-                module.exit_json(changed=changed, network=updated_network)
-            else:
-                changed, new_network = create_network(module, client)
-                module.exit_json(changed=changed, network=new_network)
+        # The power states imply present. Configuration is converged first,
+        # so a vnet this run powers on comes up with the settings the play
+        # asked for rather than with whatever it had before.
+        if network:
+            changed, row = update_network(module, client, network)
+        else:
+            changed, row = create_network(module, client)
+
+        if changed and not module.check_mode:
+            # Re-read through the named projection. Neither create() nor
+            # save() returns a row carrying `running` -- it is a join, not a
+            # column -- so the object they hand back cannot answer the
+            # question the power branch is about to ask. Only when something
+            # changed: an unchanged run already holds the row get_network()
+            # fetched, and a second call for the same answer is a second call.
+            network = get_network(module, client, name)
+            if network is not None:
+                row = dict(network)
+
+        if state == 'present':
+            module.exit_json(changed=changed, **power_result(row))
+
+        if module.check_mode and network is None:
+            # A network that does not exist yet, in check mode. There is
+            # nothing to power, and saying so beats reporting a power change
+            # against an object that was never created.
+            module.exit_json(
+                changed=True,
+                msg=f"check mode: would create '{name}' and set it {state}",
+                **power_result(row))
+
+        if state == 'running':
+            powered, row = power_on_network(module, client, network)
+        elif state == 'stopped':
+            powered, row = power_off_network(module, client, network)
+        else:
+            powered, row = restart_network(module, client, network)
+
+        module.exit_json(changed=changed or powered, **power_result(row))
 
     except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
         sdk_error_handler(module, e)
