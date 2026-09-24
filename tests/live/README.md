@@ -64,6 +64,8 @@ precisely because nothing read that table.
 | Ladder | Covers |
 |---|---|
 | `verify-field-contract.yml` | the compare-and-map contract for `network`, `nic`, `drive`, `user` (#75) |
+| `verify-vnet-rule.yml` | `vnet_rule` / `vnet_apply` — firewall rules and the explicit apply (#44, #19) |
+| `verify-network-policy.yml` | the `network_policy` role, enforcing a rule set with one apply (#44) |
 | `verify-rbac.yml` | `group` / `group_info` / `permission` and the `rbac` role (#34) |
 | `verify-member.yml` | `member` add/converge/remove, and that the right membership row is taken (#92) |
 | `verify-catalog.yml` | `catalog` create/converge/scope/delete, plus the apostrophe and `{brace}` name guards (#32) |
@@ -87,6 +89,7 @@ Helpers, not run directly:
 | `recipe_scratch_teardown.yml` | tear down scratch recipe objects |
 | `recipe_real_teardown.yml` | tear down real deployments |
 | `recipe_real_cleanup.yml` | reconcile anything a failed run left |
+| `scratch_net_tasks.yml` | create/delete the scratch network the firewall ladders run against |
 | `recipe_real_one.yml`, `recipe_bulk_one.yml`, `recipe_concurrency_worker.yml` | worker playbooks invoked by the ladders above |
 | `ansible.cfg`, `localhost.ini` | shared config and the interpreter pin |
 

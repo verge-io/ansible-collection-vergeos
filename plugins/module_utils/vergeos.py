@@ -88,6 +88,30 @@ def get_vergeos_client(module):
     )
 
 
+# Fields a module must name when it needs a vnet's power state.
+#
+#   need_fw_apply   a real vnet column
+#   running         NOT a column. It is a join through the router machine,
+#                   which the SDK requests as
+#                   "machine#status#running as running". A raw
+#                   GET /vnets?fields=all does not return it at all, measured
+#                   on 26.1.8. Asking for the bare name happens to work on
+#                   pyvergeos 1.6.1 because the SDK maps it; the alias form is
+#                   what works on the 1.2.7 floor, which network_info already
+#                   learned the hard way (#25).
+#
+# Getting this wrong is not a small bug: `running` reads as None, every
+# network looks stopped, and a module that branches on it silently stops doing
+# its job while reporting success. It lives here, not in each module, because
+# two copies of one field contract is the drift #75 exists to stop.
+VNET_STATUS_FIELDS = [
+    '$key',
+    'name',
+    'need_fw_apply',
+    'machine#status#running as running',
+]
+
+
 def resolve_one(module, manager, name, kind, **list_kwargs):
     """Resolve a name to exactly one object, or refuse to guess.
 
