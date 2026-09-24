@@ -158,6 +158,7 @@ machine:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -212,7 +213,7 @@ def main():
     client = get_vergeos_client(module)
 
     try:
-        vm = client.vms.get(name=params['vm'])
+        vm = resolve_one(module, client.vms, params['vm'], 'VM')
         drives = vm_drives(vm, media=params.get('media'))
 
         if params['stats']:

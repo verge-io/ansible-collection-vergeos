@@ -110,6 +110,7 @@ drive:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -126,10 +127,10 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_vm(client, vm_name):
+def get_vm(module, client, vm_name):
     """Get VM by name using SDK"""
     try:
-        return client.vms.get(name=vm_name)
+        return resolve_one(module, client.vms, vm_name, 'VM')
     except NotFoundError:
         return None
 
@@ -262,7 +263,7 @@ def main():
 
     try:
         # Get VM
-        vm = get_vm(client, vm_name)
+        vm = get_vm(module, client, vm_name)
         if not vm:
             module.fail_json(msg=f"VM '{vm_name}' not found")
 

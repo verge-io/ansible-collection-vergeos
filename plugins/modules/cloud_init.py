@@ -173,6 +173,7 @@ datasource:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -199,7 +200,7 @@ def get_vm(client, module, vm_name=None, vm_id=None):
 
     if vm_name:
         try:
-            return client.vms.get(name=vm_name)
+            return resolve_one(module, client.vms, vm_name, 'VM')
         except NotFoundError:
             module.fail_json(msg=f"VM '{vm_name}' not found")
 

@@ -88,6 +88,70 @@ def get_vergeos_client(module):
     )
 
 
+def resolve_one(module, manager, name, kind, **list_kwargs):
+    """Resolve a name to exactly one object, or refuse to guess.
+
+    VergeOS does not enforce unique names on the tables this collection looks
+    up by name. The SDK's ``get(name=...)`` is a documented *single*-get: it
+    issues ``list(filter="name eq <quoted>", limit=1)[0]``, so it returns the
+    FIRST match and cannot see, let alone report, a second. Confirmed on
+    26.1.8 -- two catalogs created with the same name both succeed, and
+    ``get(name=)`` silently returns one of them.
+
+    That is fine for the SDK, whose contract is a single-get. It is not fine
+    here, because the collection offers name-based UX over those tables and
+    then updates and deletes what it finds (issue #72).
+
+    Matching is done CLIENT-SIDE rather than with ``list(name=...)``. The
+    server-side filter is the obvious choice and is wrong for us: pyVergeOS#100
+    stripped ``{`` from a filter literal, so a braced name resolved to a
+    different object, and the fix shipped in pyvergeos **1.2.8** -- one patch
+    above this collection's floor of 1.2.7. Client-side equality has no
+    escaping surface at all and behaves identically on every supported
+    version. ``member.py`` already routed around ``get(name=)`` for the
+    related apostrophe reason; this generalises that.
+
+    Args:
+        module: AnsibleModule, used to fail loudly on ambiguity.
+        manager: an SDK manager, e.g. ``client.vms``.
+        name: the name to resolve.
+        kind: human-readable noun for messages, e.g. "VM".
+        **list_kwargs: forwarded to ``manager.list()`` -- ``fields=`` to limit
+            the projection, or extra selectors such as ``category_name=``.
+
+    Returns:
+        The single matching object.
+
+    Raises:
+        NotFoundError: when nothing matches. This preserves the contract of
+            the ``get(name=)`` it replaces, so existing ``try/except
+            NotFoundError`` blocks keep working unchanged.
+        Calls ``module.fail_json`` when more than one object matches.
+    """
+    fields = list_kwargs.get('fields')
+    if fields is not None and 'all' not in fields and 'name' not in fields:
+        # Matching needs the name back. A projection that omits it would make
+        # every row compare unequal and the lookup would silently find nothing.
+        list_kwargs = dict(list_kwargs, fields=list(fields) + ['name'])
+
+    matches = [obj for obj in manager.list(**list_kwargs)
+               if dict(obj).get('name') == name]
+
+    if not matches:
+        raise NotFoundError("%s with name '%s' not found" % (kind, name))
+
+    if len(matches) > 1:
+        keys = [str(dict(o).get('$key')) for o in matches]
+        module.fail_json(
+            msg="Found %d %s objects named '%s' (keys: %s); refusing to guess "
+                "which one you meant. VergeOS does not enforce unique names on "
+                "this table. Delete the duplicates, or rename them so the "
+                "target is unambiguous."
+                % (len(matches), kind, name, ', '.join(keys)))
+
+    return matches[0]
+
+
 def sdk_error_handler(module, e):
     """
     Map pyvergeos SDK exceptions to module.fail_json() calls.

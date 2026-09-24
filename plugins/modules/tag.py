@@ -139,6 +139,7 @@ vm_name:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -155,29 +156,29 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_tag(client, name, category_name):
+def get_tag(module, client, name, category_name):
     """Get tag by name and category using SDK"""
     try:
-        return client.tags.get(name=name, category_name=category_name)
+        return resolve_one(module, client.tags, name, 'tag', category_name=category_name)
     except NotFoundError:
         return None
 
 
-def get_category(client, name):
+def get_category(module, client, name):
     """Get tag category by name using SDK"""
     try:
-        return client.tag_categories.get(name=name)
+        return resolve_one(module, client.tag_categories, name, 'tag category')
     except NotFoundError:
         return None
 
 
-def get_vm(client, name=None, vm_id=None):
+def get_vm(module, client, name=None, vm_id=None):
     """Get VM by name or ID using SDK"""
     try:
         if vm_id is not None:
             return client.vms.get(key=vm_id)
         elif name is not None:
-            return client.vms.get(name=name)
+            return resolve_one(module, client.vms, name, 'VM')
     except NotFoundError:
         return None
     return None
@@ -321,19 +322,19 @@ def main():
         # Get category if specified
         category = None
         if category_name:
-            category = get_category(client, category_name)
+            category = get_category(module, client, category_name)
             if not category:
                 module.fail_json(msg=f"Tag category '{category_name}' not found")
 
         # Get existing tag
         tag = None
         if category:
-            tag = get_tag(client, tag_name, category_name)
+            tag = get_tag(module, client, tag_name, category_name)
 
         # Handle VM tagging operations
         if vm_name or vm_id:
             # Get the VM
-            vm = get_vm(client, name=vm_name, vm_id=vm_id)
+            vm = get_vm(module, client, name=vm_name, vm_id=vm_id)
             vm_identifier = vm_name or str(vm_id)
 
             if not vm:

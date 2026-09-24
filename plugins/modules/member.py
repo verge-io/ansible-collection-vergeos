@@ -66,6 +66,7 @@ member:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -82,10 +83,10 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_group(client, group_name):
+def get_group(module, client, group_name):
     """Get group by name using SDK"""
     try:
-        return client.groups.get(name=group_name)
+        return resolve_one(module, client.groups, group_name, 'group')
     except NotFoundError:
         return None
 
@@ -156,7 +157,7 @@ def main():
 
     try:
         # Get group
-        group = get_group(client, group_name)
+        group = get_group(module, client, group_name)
         if not group:
             module.fail_json(msg=f"Group '{group_name}' not found")
 

@@ -27,7 +27,7 @@ class TestVmStatePresent:
 
         # Setup mock client
         mock_client = MagicMock()
-        mock_client.vms.get.side_effect = NotFoundError("VM not found")
+        mock_client.vms.list.return_value = []
         mock_new_vm = MagicMock()
         mock_new_vm_state = {
             '$key': 1, 'name': 'new-vm', 'cpu_cores': 4, 'ram': 8192
@@ -84,7 +84,7 @@ class TestVmStatePresent:
             '$key': 1, 'name': 'existing-vm', 'cpu_cores': 2, 'ram': 4096
         }
         mock_vm = make_resource(mock_vm_state)
-        mock_client.vms.get.return_value = mock_vm
+        mock_client.vms.list.return_value = [mock_vm]
         mock_get_client.return_value = mock_client
 
         # Create mock module with updated params
@@ -135,7 +135,7 @@ class TestVmStatePresent:
         }
         mock_vm = make_resource(mock_vm_state)
         mock_vm.save.return_value = {'$key': 1, 'name': 'existing-vm', 'enabled': False, 'description': 'x'}
-        mock_client.vms.get.return_value = mock_vm
+        mock_client.vms.list.return_value = [mock_vm]
         mock_get_client.return_value = mock_client
 
         mock_module = MagicMock()
@@ -170,7 +170,7 @@ class TestVmStatePresent:
             '$key': 1, 'name': 'existing-vm', 'cpu_cores': 4, 'ram': 8192
         }
         mock_vm = make_resource(mock_vm_state)
-        mock_client.vms.get.return_value = mock_vm
+        mock_client.vms.list.return_value = [mock_vm]
         mock_get_client.return_value = mock_client
 
         # Create mock module with matching params
@@ -222,7 +222,7 @@ class TestVmStateAbsent:
         mock_vm = MagicMock()
         mock_vm_state = {'$key': 1, 'name': 'delete-me'}
         mock_vm = make_resource(mock_vm_state)
-        mock_client.vms.get.return_value = mock_vm
+        mock_client.vms.list.return_value = [mock_vm]
         mock_get_client.return_value = mock_client
 
         # Create mock module
@@ -269,7 +269,7 @@ class TestVmStateAbsent:
 
         # Setup mock client
         mock_client = MagicMock()
-        mock_client.vms.get.side_effect = NotFoundError("VM not found")
+        mock_client.vms.list.return_value = []
         mock_get_client.return_value = mock_client
 
         # Create mock module
@@ -325,7 +325,7 @@ class TestVmStatePower:
         vm_state = {'$key': 1, 'name': 'my-vm', 'status': 'stopped'}
         mock_vm = make_resource(vm_state)
         mock_vm.power_on.side_effect = lambda *a, **k: vm_state.update(status='running')
-        mock_client.vms.get.return_value = mock_vm
+        mock_client.vms.list.return_value = [mock_vm]
         mock_get_client.return_value = mock_client
 
         # Create mock module
@@ -375,7 +375,7 @@ class TestVmStatePower:
         vm_state = {'$key': 1, 'name': 'my-vm', 'status': 'running'}
         mock_vm = make_resource(vm_state)
         mock_vm.power_off.side_effect = lambda *a, **k: vm_state.update(status='stopped')
-        mock_client.vms.get.return_value = mock_vm
+        mock_client.vms.list.return_value = [mock_vm]
         mock_get_client.return_value = mock_client
 
         # Create mock module
@@ -422,7 +422,7 @@ class TestVmCheckMode:
         from pyvergeos.exceptions import NotFoundError
 
         mock_client = MagicMock()
-        mock_client.vms.get.side_effect = NotFoundError("VM not found")
+        mock_client.vms.list.return_value = []
         mock_get_client.return_value = mock_client
 
         mock_module = MagicMock()
@@ -469,7 +469,7 @@ class TestVmCheckMode:
         mock_vm = MagicMock()
         mock_vm_state = {'$key': 1, 'name': 'delete-me'}
         mock_vm = make_resource(mock_vm_state)
-        mock_client.vms.get.return_value = mock_vm
+        mock_client.vms.list.return_value = [mock_vm]
         mock_get_client.return_value = mock_client
 
         mock_module = MagicMock()
