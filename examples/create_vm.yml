@@ -20,9 +20,8 @@
         name: "production-network"
         description: "Production internal network"
         network_type: internal
-        ip_address: "10.0.100.0"
-        subnet_mask: "255.255.255.0"
-        gateway: "10.0.100.1"
+        network: "10.0.100.0/24"
+        ip_address: "10.0.100.1"
         dhcp_enabled: true
         dhcp_start: "10.0.100.100"
         dhcp_end: "10.0.100.200"

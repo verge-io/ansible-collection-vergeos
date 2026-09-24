@@ -39,6 +39,12 @@ options:
   mac_address:
     description:
       - MAC address for the NIC. If not specified, one will be auto-generated.
+      - >-
+        Case-insensitive and separator-insensitive. The VergeOS API stores
+        MACs lowercase with colons, so C(AA:BB:CC:00:5E:0B),
+        C(aa:bb:cc:00:5e:0b) and C(AA-BB-CC-00-5E-0B) are the same address and
+        all converge. The value sent to the API is normalised to the stored
+        form.
     type: str
   enabled:
     description:
@@ -165,6 +171,34 @@ def get_nic(client, vm, target_network):
         return None
 
 
+# Module parameter -> raw VergeOS API field, for the update path.
+#
+# update_nic() PUTs these keys verbatim, so every value must be a real field
+# on the machine_nics resource. The API accepts unknown fields with HTTP 200
+# and discards them, which is how #8, #10 and #18 all shipped unnoticed.
+# tests/live/verify-field-contract.yml asserts this against a live system and
+# tests/unit/plugins/modules/test_field_contracts.py asserts the shape of it
+# offline. See issue #75.
+UPDATE_FIELD_MAP = {
+    'network': 'vnet',
+    'enabled': 'enabled',
+    'nic_type': 'interface',
+    'mac_address': 'macaddress',
+}
+
+
+def normalize_mac(mac):
+    """Fold a MAC to the form the VergeOS API stores: lowercase, colons.
+
+    A MAC address is case-insensitive and separator-insensitive, but a string
+    comparison is neither. The API normalises on write and returns
+    'aa:bb:cc:00:5e:01' whatever you sent it, so comparing a user-supplied
+    'AA:BB:CC:00:5E:01' against the stored value literally never matches and
+    every run issues a PUT and reports changed. See issue #59.
+    """
+    return (mac or '').strip().lower().replace('-', ':')
+
+
 def create_nic(module, client, vm, network):
     """Create a new NIC using SDK"""
     # Map our friendly nic_type names to SDK interface names
@@ -183,7 +217,7 @@ def create_nic(module, client, vm, network):
     }
 
     if module.params.get('mac_address'):
-        nic_data['mac_address'] = module.params['mac_address']
+        nic_data['mac_address'] = normalize_mac(module.params['mac_address'])
 
     if module.check_mode:
         return True, nic_data
@@ -203,26 +237,30 @@ def update_nic(module, client, nic, target_network):
     # Check if network needs to be updated (SDK may use 'vnet' or 'network')
     current_network = nic_dict.get('vnet') or nic_dict.get('network')
     if current_network != target_network_key:
-        update_data['vnet'] = target_network_key
+        update_data[UPDATE_FIELD_MAP['network']] = target_network_key
         changed = True
 
     # Check enabled
     if module.params.get('enabled') is not None:
         if nic_dict.get('enabled') != module.params['enabled']:
-            update_data['enabled'] = module.params['enabled']
+            update_data[UPDATE_FIELD_MAP['enabled']] = module.params['enabled']
             changed = True
 
     # Check interface type
     if module.params.get('nic_type') is not None:
         if nic_dict.get('interface') != module.params['nic_type']:
-            update_data['interface'] = module.params['nic_type']
+            update_data[UPDATE_FIELD_MAP['nic_type']] = module.params['nic_type']
             changed = True
 
-    # Check MAC address (SDK uses 'mac_address' or 'macaddress')
+    # Check MAC address (SDK uses 'mac_address' or 'macaddress').
+    # Both sides are normalised: the API stores lowercase with colons, so a
+    # literal comparison against a user-supplied uppercase MAC never matches.
     if module.params.get('mac_address') is not None:
-        current_mac = nic_dict.get('mac_address') or nic_dict.get('macaddress')
-        if current_mac != module.params['mac_address']:
-            update_data['macaddress'] = module.params['mac_address']
+        current_mac = normalize_mac(nic_dict.get('mac_address')
+                                    or nic_dict.get('macaddress'))
+        desired_mac = normalize_mac(module.params['mac_address'])
+        if current_mac != desired_mac:
+            update_data[UPDATE_FIELD_MAP['mac_address']] = desired_mac
             changed = True
 
     if not changed:
