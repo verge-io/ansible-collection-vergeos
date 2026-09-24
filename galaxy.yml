@@ -15,10 +15,16 @@ tags:
   - virtualization
   - infrastructure
   - cloud
-repository: https://github.com/verge-io/ansible-vergeos
-documentation: https://github.com/verge-io/ansible-vergeos
+# These three ship inside MANIFEST.json and are what Galaxy renders as the
+# Repository / Documentation / Issue Tracker links on the collection page.
+# They pointed at verge-io/ansible-vergeos, which 404s; the repository is
+# verge-io/ansible-collection-vergeos. Wrong metadata was harmless while
+# unpublished and is not once it is published -- it shipped in the v2.1.0
+# artifact. tests/unit/test_galaxy_metadata.py keeps them honest.
+repository: https://github.com/verge-io/ansible-collection-vergeos
+documentation: https://github.com/verge-io/ansible-collection-vergeos/blob/main/README.md
 homepage: https://verge.io
-issues: https://github.com/verge-io/ansible-vergeos/issues
+issues: https://github.com/verge-io/ansible-collection-vergeos/issues
 build_ignore:
   - .git
   - .gitignore
