@@ -1,0 +1,257 @@
+---
+# Live ladder for the image_pipeline role.
+#
+# Builds a small synthetic qcow2 on the controller rather than pulling
+# a distro cloud image: the pipeline under test is qcow2 -> OVA ->
+# upload -> import -> specs -> snapshot, and none of that cares whether
+# the disk is bootable. A 1 GB sparse image exercises every step in
+# seconds instead of minutes.
+#
+# Everything created is zz-* and removed in the always: block.
+#
+# Rung 5 is new. Under --check the ported role did not skip cleanly: the
+# tempfile was skipped, the next task templated its .path anyway, and the run
+# died inside Ansible's own templating with
+#
+#   Error while resolving value for 'argv' ...
+#   object of type 'dict' has no attribute 'path'
+#
+# A pipeline that builds and uploads things is exactly what someone dry-runs
+# before letting it near a cluster.
+- name: Image pipeline live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    src: /tmp/zz-golden-src.qcow2
+    tmpl: zz-golden
+    media: zz-golden.ova
+  tasks:
+    - name: "0. Clean leftovers"
+      block:
+        - name: "0a. Remove any previous template"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ tmpl }}"
+            state: absent
+        - name: "0b. Remove any previous media"
+          vergeio.vergeos.file:
+            insecure: true
+            name: "{{ media }}"
+            state: absent
+
+    - name: "0c. Create the synthetic source image"
+      ansible.builtin.command:
+        argv: [qemu-img, create, -f, qcow2, "{{ src }}", 1G]
+      changed_when: true
+
+    - name: "1. Refuse a missing source image"
+      block:
+        - name: "1a. Point at a file that does not exist"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.image_pipeline
+          vars:
+            image_pipeline_src: /tmp/zz-does-not-exist.qcow2
+            image_pipeline_template_name: "{{ tmpl }}"
+        - name: "1b. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "a missing source image was accepted"
+      rescue:
+        - name: "1c. Refused, as it should be"
+          ansible.builtin.debug:
+            msg: "missing source refused"
+
+    - name: "2. Build the template"
+      block:
+        - name: "2a. Run the pipeline"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.image_pipeline
+          vars:
+            image_pipeline_src: "{{ src }}"
+            image_pipeline_template_name: "{{ tmpl }}"
+            image_pipeline_cores: 2
+            image_pipeline_ram_mb: 1024
+
+        - name: "2b. It reported a build, not a no-op"
+          ansible.builtin.assert:
+            that: image_pipeline_result.created | bool
+            fail_msg: "first run should have built the template"
+
+        - name: "2c. The template VM exists, stopped, with the right specs"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ tmpl }}"
+          register: tmpl_info
+          changed_when: false
+
+        - name: "2d. Assert specs and power state"
+          ansible.builtin.assert:
+            that:
+              - tmpl_info.vms | length == 1
+              - (tmpl_info.vms | first).cpu_cores == 2
+              - (tmpl_info.vms | first).ram == 1024
+              - not (tmpl_info.vms | first).running
+            fail_msg: "template wrong: {{ tmpl_info.vms }}"
+
+        - name: "2e. The golden snapshot exists"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ tmpl }}"
+            operation: list
+          register: snaps
+          changed_when: false
+
+        - name: "2f. Assert the snapshot"
+          ansible.builtin.assert:
+            that: >-
+              'golden' in (snaps.snapshots | default([])
+                           | map(attribute='name') | list)
+            fail_msg: >-
+              no golden snapshot:
+              {{ snaps.snapshots | default([]) | map(attribute='name') | list }}
+
+        - name: "2g. The template has no NICs"
+          vergeio.vergeos.vm_nic_info:
+            insecure: true
+            vm: "{{ tmpl }}"
+          register: nics
+          changed_when: false
+
+        - name: "2h. Assert no network binding was baked in"
+          ansible.builtin.assert:
+            that: nics.nics | default([]) | length == 0
+            fail_msg: >-
+              a golden template must carry no NICs; got
+              {{ nics.nics | default([]) | map(attribute='name') | list }}
+
+        - name: "3. Re-run -- an existing template is never rebuilt"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.image_pipeline
+          vars:
+            image_pipeline_src: "{{ src }}"
+            image_pipeline_template_name: "{{ tmpl }}"
+
+        - name: "3b. Reported as a zero-change no-op"
+          ansible.builtin.assert:
+            that: not (image_pipeline_result.created | bool)
+            fail_msg: "second run rebuilt an existing template"
+
+        - name: "3c. Still exactly one VM by that name"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ tmpl }}"
+          register: tmpl_again
+          changed_when: false
+
+        - name: "3d. Assert no duplicate import"
+          ansible.builtin.assert:
+            that: tmpl_again.vms | length == 1
+            fail_msg: "the re-run produced a duplicate"
+
+        - name: "3e. And says so both ways round"
+          ansible.builtin.assert:
+            that:
+              - image_pipeline_result.already_present | bool
+              - not (image_pipeline_result.created | bool)
+            fail_msg: >-
+              a zero-change run must report already_present, not just a
+              falsy created: {{ image_pipeline_result }}
+
+        # --- check mode ---------------------------------------------------
+        - name: "5. Check mode builds nothing and says so"
+          when: true
+          check_mode: true
+          block:
+            - name: "5a. Dry-run against a template name that is free"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.image_pipeline
+              vars:
+                image_pipeline_src: "{{ src }}"
+                image_pipeline_template_name: "{{ tmpl }}-dry"
+
+        - name: "5b. It did not claim to have created anything"
+          ansible.builtin.assert:
+            that:
+              - not (image_pipeline_result.created | bool)
+              - not (image_pipeline_result.already_present | bool)
+            fail_msg: >-
+              a check-mode run reported {{ image_pipeline_result }}. created
+              must describe what the RUN did, not what the cluster contains,
+              because that is what a caller keys off to decide whether to
+              publish the artefact.
+
+        - name: "5c. And really built nothing"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ tmpl }}-dry"
+          register: dry_run
+          changed_when: false
+
+        - name: "5d. Assert no template appeared"
+          ansible.builtin.assert:
+            that: dry_run.vms | length == 0
+            fail_msg: "check mode imported a template for real"
+
+      rescue:
+        - name: Record the failure
+          ansible.builtin.set_fact:
+            ladder_failed: true
+        - name: Re-raise
+          ansible.builtin.fail:
+            msg: "image_pipeline ladder FAILED -- see the task above"
+
+      always:
+        - name: "6. Remove the template"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ tmpl }}"
+            state: absent
+
+        - name: "6b. Remove the media"
+          vergeio.vergeos.file:
+            insecure: true
+            name: "{{ media }}"
+            state: absent
+
+        - name: "6c. Remove any dry-run template"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ tmpl }}-dry"
+            state: absent
+
+        - name: "6d. ...and its media"
+          vergeio.vergeos.file:
+            insecure: true
+            name: "{{ tmpl }}-dry.ova"
+            state: absent
+
+        - name: "6e. Remove the local source image"
+          ansible.builtin.file:
+            path: "{{ src }}"
+            state: absent
+
+        - name: "6f. Confirm zero leftovers"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ tmpl }}"
+          register: leftover
+          changed_when: false
+
+        - name: "6g. Assert clean"
+          ansible.builtin.assert:
+            that: leftover.vms | length == 0
+            fail_msg: "template left behind"
+
+    - name: Stop if the ladder failed
+      ansible.builtin.fail:
+        msg: "image_pipeline ladder FAILED"
+      when: ladder_failed | default(false)
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          image_pipeline ladder PASSED: missing source refused -> qcow2
+          packed, uploaded, imported as a stopped template with the
+          declared specs -> golden snapshot taken -> template carries no
+          NICs -> a re-run is a zero-change no-op with no duplicate, and
+          says so both ways round -> check mode builds nothing and does not
+          claim it did -> zero leftovers

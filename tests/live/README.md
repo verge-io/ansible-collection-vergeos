@@ -66,6 +66,9 @@ precisely because nothing read that table.
 | `verify-field-contract.yml` | the compare-and-map contract for `network`, `nic`, `drive`, `user` (#75) |
 | `verify-health-report.yml` | the `health_report` role — capacity, snapshot age and NAS verdicts (#45) |
 | `verify-billing-export.yml` | the `billing_export` role — and that its numbers agree with `tenant_info` (#46, #27) |
+| `verify-image-pipeline.yml` | the `image_pipeline` role — qcow2 to OVA to a versioned golden template (#49) |
+| `verify-vm-backup.yml` | the `vm_backup` role — snapshot schedule, export volume, NFS exposure, export retention (#52) |
+| `verify-restore-drill.yml` | the `restore_drill` role — and that a drill which should fail does (#53) |
 | `verify-rebalance-advisor.yml` | the `rebalance_advisor` role — and that the live collector produces every field the planner reads (#47) |
 | `verify-tier-policy.yml` | the `tier_policy` role — drift, enforcement, and the tiers the platform accepts but does not have (#48) |
 | `verify-drive-health.yml` | `physical_drive_info` and the `drive_health` role — SMART triage, and that every flag it reads is a real column (#37) |
