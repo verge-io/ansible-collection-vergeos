@@ -256,7 +256,14 @@ def main():
         name=dict(type='str', required=True),
         state=dict(type='str', default='present', choices=['present', 'absent']),
         user_password=dict(type='str', no_log=True),
+        # no_log=False is deliberate and required. Ansible warns about any
+        # option whose NAME contains "password" unless told otherwise, and
+        # this one is a policy choice ('always' / 'on_create'), not a secret.
+        # Without it every user task prints "Module did not set no_log for
+        # update_password", which is noise that teaches operators to skip
+        # warnings -- and the next warning may matter.
         update_password=dict(type='str', default='on_create',
+                             no_log=False,
                              choices=['always', 'on_create']),
         email=dict(type='str'),
         full_name=dict(type='str'),
