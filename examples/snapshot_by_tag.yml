@@ -70,6 +70,14 @@
   connection: local
   gather_facts: false
 
+  # Play vars do not cross plays. snapshot_prefix is set in the play above,
+  # which targets `all`; this play targets localhost and could not see it, so
+  # the summary died with "'snapshot_prefix' is undefined". ansible-core
+  # finalizes task args before running the task, so an undefined reference
+  # inside a debug msg fails the play outright.
+  vars:
+    snapshot_prefix: "ansible-snapshot"
+
   tasks:
     - name: Display snapshot summary
       ansible.builtin.debug:
