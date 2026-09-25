@@ -142,9 +142,9 @@ class TestNoServerSideNameFilter:
     """Matching must stay client-side.
 
     list(name=...) is the obvious implementation and is wrong for this
-    collection: pyVergeOS#100 stripped '{' from a filter literal, so a braced
-    name resolved to a DIFFERENT object. The fix shipped in pyvergeos 1.2.8 --
-    one patch above this collection's floor of 1.2.7 (requirements.txt).
+    collection: get(name=) cannot see a second row (#72). pyVergeOS#100
+    also stripped '{' from a filter literal until pyvergeos 1.2.8, which
+    is now the floor (requirements.txt). The lookup stays client-side.
     """
 
     def test_name_is_not_passed_to_the_server(self, make_resource):

@@ -216,15 +216,15 @@ SERVER_SETTINGS_KEYS = ('debug',)
 def find_source(module, client, name, include_settings):
     """The named source, or None.
 
-    Two calls rather than one ``get(name=...)``, for a reason that is NOT the
-    usual one. Auth source names are genuinely unique -- the API answers a
-    second source of the same name with ``Validation error: unique
-    constraint`` -- so #72/#85's "refuse to guess between duplicates" does not
-    arise here. What does arise is pyVergeOS#100: ``get(name=)`` builds an
-    OData filter from the name, and the brace-stripping fix for that landed in
-    pyvergeos 1.2.8, one patch above this collection's floor. A display name is
-    free text on the login screen. Matching client-side has no escaping
-    surface at all.
+    Two calls rather than one ``get(name=...)``. Auth source names are
+    genuinely unique -- the API answers a second source of the same name
+    with ``Validation error: unique constraint`` -- so #72/#85's "refuse to
+    guess between duplicates" does not arise here. The path stayed
+    client-side while pyVergeOS#100 was open: ``get(name=)`` builds an
+    OData filter from a display name, and ``quote_value()`` did not escape
+    ``{`` until pyvergeos 1.2.8. That fix is in the floor now. The lookup
+    is unchanged; a display name is free text on the login screen, and
+    client-side equality has no escaping surface.
     """
     try:
         found = resolve_one(module, client.auth_sources, name, 'auth source',

@@ -174,8 +174,8 @@
       register: restore_drill_state
       changed_when: false
 
-    # The power field on a raw VM row is `running` (bool). The
-    # documented `power_state` does not exist on it.
+    # Power on a VM row is `running` (bool). `status` is the string.
+    # There is no `power_state` key.
     - name: Verdict
       ansible.builtin.set_fact:
         restore_drill_passed: >-

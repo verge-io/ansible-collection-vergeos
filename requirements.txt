@@ -1,31 +1,19 @@
-# The floor is higher than main's >=1.0.1 because this branch adds modules
-# that need managers the older SDK does not have. Measured by installing each
-# version and introspecting VergeClient against the 24 managers our modules
-# reach for:
+# Floor.
 #
-#   1.0.1  missing: physical_drives      (breaks physical_drive_info, drive_health)
-#   1.1.0  missing: physical_drives
-#   1.2.0  missing: physical_drives
-#   1.2.3  missing: none                 <- hard minimum for manager availability
-#   1.2.5  adds the OData escaping fix (pyvergeos#72) that any .get(name=...)
-#          with an apostrophe in the name depends on
-#   1.2.7  what the 887 unit tests and 24 live ladders are actually verified
-#          against
+# Manager availability is satisfied at 1.2.3 (physical_drives exists).
+# 1.2.5 adds the OData apostrophe escape (pyvergeos#72). 1.2.7 was the
+# previous verified floor.
 #
-# Declaring 1.2.7 rather than the 1.2.3 hard minimum: claiming support for a
-# version nothing has been run on is not support. Lower it if someone runs the
-# suite against 1.2.3/1.2.5 and it passes.
+# 1.2.8 is the brace fix: quote_value() escapes '{' (pyVergeOS#100,
+# PR #114). That version was prepared (pyVergeOS#122) and not published
+# to PyPI. The next published release is 1.6.1, which contains the fix,
+# so `>=1.2.8` installs 1.6.1 from PyPI. Verified through 1.6.1 on
+# 2026-09-23. See docs/SDK-COMPATIBILITY.md.
 #
-# Note this is NOT required for the update-persistence or drive-tier fixes any
-# more -- those write API field names directly and need no SDK cooperation.
-# Verified against BOTH released 1.2.7 and origin/dev (22 commits ahead) on
-# 2026-09-22: 15 live ladders, identical task counts, failed=0 on both, plus
-# 929 unit tests. See docs/SDK-COMPATIBILITY.md.
-#
-# Do not raise this floor until pyvergeos#96/#97/#98 are RELEASED -- they are
-# fixed on dev and unreleased -- and do not swap client-side name matching for
-# list(name=...) when it moves, because #100 is still open and survives #96.
-pyvergeos>=1.2.7
+# Client-side name matching stays. #100 is no longer the reason: the
+# floor includes the fix. Ambiguous names still are (#72), and switching
+# lookups to list(name=...) is a behavior change, not part of this floor.
+pyvergeos>=1.2.8
 #
 # physical_drive_info node: scoping needs the PhysicalDriveManager(
 # node_key=...) fix from pyVergeOS#143 / PR #144. That landed on the

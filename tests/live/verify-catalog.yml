@@ -209,9 +209,10 @@
         # neighbour and created nothing), and deleting it reported
         # changed=true having destroyed the neighbour. Filed as a platform
         # parser defect and closed as client-side under-quoting
-        # (verge-io/engineering#20); fixed in pyvergeos 1.2.8, one patch
-        # above this collection's floor. The module matches client-side,
-        # which is immune on every supported version. This is the guard.
+        # (verge-io/engineering#20). Fixed in pyvergeos 1.2.8, which this
+        # collection now requires; 1.6.1 is the published release, and this
+        # rung passes there (right object, neighbour untouched). The module
+        # still matches client-side. This is the guard.
         - name: "10. A neighbour whose name differs only by a brace token"
           vergeio.vergeos.catalog:
             name: "{{ cat_neighbour }}"
