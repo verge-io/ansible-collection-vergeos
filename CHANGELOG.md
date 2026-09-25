@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`cloud_init` and `windows_unattend`: an identical re-apply reported `changed` on every run** (#125). Neither module compared what was stored with what was asked for. `cloud_init` PUT the datasource and rewrote every file; `windows_unattend` PUT `cloudinit_datasource: nocloud` and rewrote `/unattend.xml`, including in check mode. A GET of the file row does not return contents (`fields=all`, `fields=contents` and `fields=most` all omit them). The comparison uses `cloudinit_files.get_content()`, which returns the stored contents, and the `render` value on the list row (`no` and `No` are the same setting). The datasource is written only when it differs. `changed` is true only when a write happens, and in check mode only when a write would happen.
+
 - **`vm`: `state: absent` in check mode claimed a running VM was deleted** (#127). The platform refuses with "Virtual Machine must be stopped to delete", and the module will not power the VM off to get around that. Check mode returned before reading the row, so a dry run reported `changed=true` and "deleted" and the real run failed. Both modes now fail with that refusal and point at `state=stopped`. A stopped VM in check mode reports "would delete".
 
 - **`vm_import`: a second `state: present` failed with "This name is already in use"** (#129). The module posted a new import on every run, and check mode said it would create a VM that already existed. It now resolves `name` first and, when that VM exists, returns `changed=false` with its id, in check mode too. Same converge-instead-of-collide shape as `vm_snapshot`.

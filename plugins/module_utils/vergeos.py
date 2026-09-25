@@ -198,6 +198,52 @@ def sdk_error_handler(module, e):
         module.fail_json(msg=f"Unexpected error: {e}")
 
 
+def cloudinit_datasource_differs(current, desired):
+    """True when the VM's cloudinit_datasource is not the requested value.
+
+    The platform stores the lowercase form (``nocloud``, ``none``). A match
+    is not a write: putting the same value again is what made every run
+    report changed (#125).
+    """
+    return str(current or '').lower() != str(desired or '').lower()
+
+
+def _normalize_cloudinit_render(value):
+    """Map a render value to the form the API stores.
+
+    Modules send the friendly name ``No``. The list row comes back ``no``.
+    Those are the same setting, and treating them as different rewrites the
+    file on every run.
+    """
+    text = str(value or '').strip().lower()
+    return {
+        'no': 'no',
+        'variables': 'variables',
+        'jinja2': 'jinja2',
+    }.get(text, text)
+
+
+def cloudinit_file_needs_update(client, file_key, contents, stored_render,
+                                desired_render='No'):
+    """True when the stored cloud-init file is not what would be written.
+
+    ``GET cloudinit_files/<key>`` does not return contents, including with
+    ``fields=all``, ``fields=contents`` and ``fields=most``.
+    ``client.cloudinit_files.get_content(key)`` returns the stored contents
+    exactly, and it has been on pyvergeos since the collection's 1.2.7 floor.
+    ``render`` is on the list row. A missing render is not evidence of drift.
+    """
+    stored = client.cloudinit_files.get_content(int(file_key))
+    if isinstance(stored, bytes):
+        stored = stored.decode('utf-8')
+    if stored != contents:
+        return True
+    if stored_render is None:
+        return False
+    return (_normalize_cloudinit_render(stored_render)
+            != _normalize_cloudinit_render(desired_render))
+
+
 def vergeos_argument_spec():
     """
     Returns argument spec for VergeOS modules.
