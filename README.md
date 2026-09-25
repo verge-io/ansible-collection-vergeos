@@ -98,6 +98,7 @@ Every module in `plugins/modules/`. A read-only module only gathers facts.
 | `node_maintenance` | Put a VergeOS node into or out of maintenance mode | no |
 | `permission` | Manage VergeOS permissions for a user or group | no |
 | `physical_drive_info` | Gather SMART and vSAN health for VergeOS physical drives | yes |
+| `site_info` | Gather site preflight facts for a VergeOS system | yes |
 | `snapshot_profile` | Manage snapshot profiles in VergeOS | no |
 | `tag` | Manage tags and VM tag assignments in VergeOS | no |
 | `tag_category` | Manage tag categories in VergeOS | no |
