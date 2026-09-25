@@ -42,6 +42,10 @@ options:
         VM is not modified. The refusal names both VMs.
       - An id that does not exist is reported as not found, including when
         a VM is named. A missing key is not described as another VM's snapshot.
+      - If lookup through the named VM reports the snapshot as not found,
+        the module reads that snapshot once with no VM scope, and only on
+        that error. A row that belongs to another VM is still refused, and
+        the message names both VMs.
     type: str
   description:
     description:
@@ -61,7 +65,8 @@ options:
       - The VM must be powered off for restore. This is destructive; changes
         since the snapshot are lost.
       - Restore refuses a snapshot whose C(machine) is not the named VM's
-        C(machine). A key from another VM does not revert that VM.
+        C(machine). A key from another VM does not revert that VM. If the
+        SDK reports that key as not found, the refusal still names both VMs.
       - C(list) lists snapshots (returns all snapshots or filtered by VM).
       - C(delete) deletes a snapshot.
       - Delete with I(vm_name) or I(vm_id) refuses a snapshot that belongs
@@ -128,7 +133,9 @@ EXAMPLES = r'''
     snapshot_id: "45"
     operation: restore
   # snapshot_id must be a snapshot of web-server-01. A key from another
-  # VM is refused, and that VM is not modified.
+  # VM is refused, and that VM is not modified. If the SDK reports the
+  # key as not found, the module reads the snapshot once with no VM
+  # scope, and only on that error, so the refusal still names both VMs.
 
 - name: Delete a snapshot of this VM
   vergeio.vergeos.vm_snapshot:
@@ -462,7 +469,7 @@ def _unscoped_snapshot(client, snapshot_key):
 
     ``vm.snapshots.get(key)`` raises NotFoundError for a missing key and,
     since pyVergeOS #174, for a key whose ``machine`` is not this VM.
-    Those two are the same exception. This GET is not VM-scoped, so a
+    Those two are the same exception. This GET has no VM scope, so a
     foreign row comes back and a missing key does not.
     """
     try:
