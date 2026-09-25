@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`physical_drive_info` `node:` returned zero drives on every released pyvergeos** (#145). Since the scoped `PhysicalDriveManager(node_key=...)` call, a per-node scan was `changed=false` with no failure and no warning, including through `drive_health`. Released SDKs from 1.2.7 through 1.6.1 still filter `node eq <key>` on `machine_drive_phys`, which has no `node` column. The parent_drive walk (pyVergeOS#143) is unreleased. The module uses that scoped manager only when the installed SDK has it, and otherwise matches `node_name` client-side. A node that exists but has no drives warns instead of looking healthy. The floor stays `pyvergeos>=1.2.7`.
+
 - **`vm_from_recipe`: a failed image import burned the whole wait, then advised raising it** (#131). The platform marks a drive `status: errors` within about two seconds and does not retry, but `media` stays `import`. `vm_drive_info` counted every `media=import` drive as unfinished, so the role waited out `vm_from_recipe_wait_timeout` and then suggested raising it. Terminal failure status `errors` is now reported on `failed_drives` and left out of `importing`. The wait exits on the next poll, and the assertion quotes the platform's `status_info` without the timeout advice.
 
 - **Inventory `group_by: cluster` created no groups, and `vergeos_cluster` was always null** (#130). The plugin read `cluster`. `VMManager.list()` returns `cluster_name` and `cluster_key` and has no `cluster` field. Groups are now named from the cluster name (`cluster_example_lab`) and `vergeos_cluster` is that name. `vergeos_cluster_key` carries the id.

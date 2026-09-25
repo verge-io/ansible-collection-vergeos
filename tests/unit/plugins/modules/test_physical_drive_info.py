@@ -3,9 +3,13 @@
 
 """Unit tests for the physical_drive_info module.
 
-The module had none. The triage helper underneath was well covered; the module
-around it -- the projection it asks for and the node filter it applies -- was
-not tested at all, and the node filter never worked.
+The triage helper underneath was well covered; the projection and the node
+filter were not, and the node filter has been wrong twice. Matching
+``node in location`` never matched, because location is the slot. Scoping
+through PhysicalDriveManager(node_key=...) then returned nothing on every
+released pyvergeos, because that manager filters ``node eq <key>`` against
+a column that does not exist (pyVergeOS#143, unreleased). Mocking the
+manager hid the second one.
 """
 
 from __future__ import (absolute_import, division, print_function)
@@ -160,57 +164,140 @@ class TestTheProjection:
             mod.DRIVE_FIELDS
 
 
+def fixed_manager(rows):
+    """A PhysicalDriveManager stand-in that has the #143 method.
+
+    It has to be a real class. A MagicMock grows ``_parent_drive_filter_for_node``
+    on demand, and that is the mock that hid issue #145.
+    """
+    created = []
+
+    class Manager:
+        def __init__(self, client, node_key=None):
+            created.append({'client': client, 'node_key': node_key})
+
+        def _parent_drive_filter_for_node(self, node_key):
+            return 'parent_drive eq %s' % node_key
+
+        def list(self, fields=None):
+            created[-1]['fields'] = fields
+            return rows
+
+    Manager.created = created
+    return Manager
+
+
+class BrokenManager:
+    """Released-SDK shape: no parent_drive walk. Must not be constructed
+    when the module is on the client-side path."""
+
+    def __init__(self, client, node_key=None):
+        raise AssertionError(
+            'PhysicalDriveManager(node_key=) was constructed, but this '
+            'class has no _parent_drive_filter_for_node. Released pyvergeos '
+            'filters "node eq <key>" and returns no drives.')
+
+
 class TestTheNodeFilter:
-    def test_filtering_by_node_scopes_through_the_sdk(self):
-        """node: must construct PhysicalDriveManager(client, node_key=...),
-        not filter the unscoped fleet client-side. client.physical_drives is
-        unscoped only; the pyVergeOS#143 fix lives on the constructor."""
+    def test_a_magicmock_is_not_the_143_fix(self):
+        """MagicMock grows any attribute and is callable. Treating that as
+        the #143 method is how the scoped call shipped untested."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            physical_drive_info as mod,
+        )
+        assert mod.sdk_node_scope_uses_parent_drive(MagicMock) is False
+
+    def test_filtering_by_node_scopes_through_the_sdk_when_the_fix_is_present(self):
+        """node: uses PhysicalDriveManager(client, node_key=...) only when
+        the installed class has the #143 parent_drive walk."""
         from ansible_collections.vergeio.vergeos.plugins.modules import (
             physical_drive_info as mod,
         )
         client = make_client()
-        scoped = MagicMock()
-        scoped.list.return_value = [
-            make_row(dict(captured_rows()[1], node_name='node2')),
-        ]
+        rows = [make_row(dict(captured_rows()[1], node_name='node2'))]
+        manager = fixed_manager(rows)
 
-        with patch.object(mod, 'PhysicalDriveManager', return_value=scoped) as ctor:
+        with patch.object(mod, 'PhysicalDriveManager', manager):
             module = make_module(base_params(node='node2'))
             run_main(module, client)
 
-        ctor.assert_called_once()
-        assert ctor.call_args[0][0] is client
-        assert ctor.call_args[1]['node_key'] == 2
-        scoped.list.assert_called_once_with(fields=mod.DRIVE_FIELDS)
+        assert manager.created[0]['client'] is client
+        assert manager.created[0]['node_key'] == 2
+        assert manager.created[0]['fields'] == mod.DRIVE_FIELDS
         client.physical_drives.list.assert_not_called()
+        module.warn.assert_not_called()
 
         drives = module.exit_json.call_args[1]['drives']
         assert len(drives) == 1
         assert drives[0]['node_name'] == 'node2'
 
-    def test_a_node_filter_used_to_match_nothing_at_all(self):
-        """The old bug, pinned. `location` is the slot ("nvme0"), so no node
-        name is ever a substring of it -- matching on location returned an
-        empty list on every system, and "0 drives, none failing" read as good
-        news. Scoping now goes through the SDK by node key."""
+    def test_without_the_fix_the_node_is_matched_client_side(self):
+        """The floor path. Released managers do not have the #143 method,
+        so the fleet is listed once and matched on node_name. location is
+        the slot ("nvme0"); a node name is not a substring of it, which is
+        why the earlier location match returned nothing on every system."""
         from ansible_collections.vergeio.vergeos.plugins.modules import (
             physical_drive_info as mod,
         )
         client = make_client()
-        scoped = MagicMock()
-        scoped.list.return_value = [
-            make_row(dict(captured_rows()[0], node_name='node1')),
-        ]
+        module = make_module(base_params(node='node1'))
 
-        with patch.object(mod, 'PhysicalDriveManager', return_value=scoped):
-            module = make_module(base_params(node='node1'))
+        with patch.object(mod, 'PhysicalDriveManager', BrokenManager):
             run_main(module, client)
 
         drives = module.exit_json.call_args[1]['drives']
-        assert drives, 'the node filter matched nothing'
+        assert len(drives) == 1
+        assert drives[0]['node_name'] == 'node1'
         assert all('node1' not in str(d.get('location')) for d in drives), (
             'this test is only meaningful while location does NOT contain '
             'the node name')
+        client.physical_drives.list.assert_called_once_with(fields=mod.DRIVE_FIELDS)
+        module.warn.assert_not_called()
+
+    def test_a_resolved_node_with_no_drives_warns(self):
+        """resolve_one has proved the node exists. Zero drives must not
+        come back as a silent success."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            physical_drive_info as mod,
+        )
+        client = make_client()
+        client.nodes.list.return_value = client.nodes.list.return_value + [
+            make_row({'$key': 3, 'name': 'node3'}),
+        ]
+        module = make_module(base_params(node='node3'))
+
+        with patch.object(mod, 'PhysicalDriveManager', BrokenManager):
+            run_main(module, client)
+
+        module.exit_json.assert_called_once()
+        assert module.exit_json.call_args[1]['drives'] == []
+        module.fail_json.assert_not_called()
+        module.warn.assert_called_once()
+        msg = module.warn.call_args[0][0]
+        assert msg.startswith("no drives matched node 'node3'.")
+        assert 'node1' in msg and 'node2' in msg
+
+    def test_an_empty_sdk_scope_falls_back_when_the_fleet_has_the_node(self):
+        """The #143 method can be present and still return nothing -- that
+        is what ``node eq`` did. Drives the fleet can see for this node
+        are reported, and the disagreement is warned about."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            physical_drive_info as mod,
+        )
+        client = make_client()
+        manager = fixed_manager([])
+        module = make_module(base_params(node='node1'))
+
+        with patch.object(mod, 'PhysicalDriveManager', manager):
+            run_main(module, client)
+
+        drives = module.exit_json.call_args[1]['drives']
+        assert len(drives) == 1
+        assert drives[0]['node_name'] == 'node1'
+        module.warn.assert_called_once()
+        msg = module.warn.call_args[0][0]
+        assert "no drives matched node 'node1'" in msg
+        assert 'node_name' in msg
 
     def test_an_unknown_node_fails_instead_of_reporting_silence(self):
         """A typo must not read as "0 drives, none failing"."""
@@ -232,6 +319,97 @@ class TestTheNodeFilter:
 
         assert len(module.exit_json.call_args[1]['drives']) == 2
         client.physical_drives.list.assert_called_once()
+
+
+def _installed_node_filters(node_key=1):
+    """Run the real PhysicalDriveManager.list(node_key=) and return filters.
+
+    A recording client answers the #143 walk when the installed SDK takes
+    it, and records every filter the manager actually sends. ``node eq``
+    is what released pyvergeos sends; the API then returns [] because that
+    column does not exist. This stub does the same.
+    """
+    from pyvergeos.resources.physical_drives import PhysicalDriveManager
+
+    calls = []
+
+    class Client:
+        def _request(self, method, endpoint, params=None):
+            params = params or {}
+            calls.append(params)
+            endpoint = str(endpoint)
+            filt = str(params.get('filter') or '')
+            if endpoint.startswith('nodes/'):
+                return {'$key': node_key, 'name': 'node1', 'machine': 10}
+            if endpoint == 'machine_drives':
+                return [{'$key': 77}]
+            if 'node eq ' in filt:
+                return []
+            if 'parent_drive eq ' in filt:
+                return [dict(captured_rows()[0], node_name='node1')]
+            return []
+
+    PhysicalDriveManager(Client(), node_key=node_key).list(fields=['$key'])
+    return [params.get('filter', '') for params in calls if params.get('filter')]
+
+
+class TestInstalledSdkQueryShape:
+    def test_node_path_follows_the_installed_managers_query(self):
+        """Do not mock PhysicalDriveManager.
+
+        Mocked-manager tests planted the row the scoped list was supposed
+        to return, so they passed while every released SDK returned [].
+        This drives the installed class's list(node_key=) and then runs
+        the module against that same class. On a released SDK the module
+        must not send ``node eq``; it must return the node's drives from
+        the client-side node_name match.
+        """
+        from pyvergeos.resources.physical_drives import (
+            PhysicalDriveManager as Real,
+        )
+        from ansible_collections.vergeio.vergeos.plugins.modules import (
+            physical_drive_info as mod,
+        )
+
+        filters = _installed_node_filters()
+        emits_node_eq = any('node eq ' in f for f in filters)
+        emits_parent = any('parent_drive eq ' in f for f in filters)
+        assert emits_node_eq or emits_parent, filters
+        assert not (emits_node_eq and emits_parent), filters
+        assert mod.sdk_node_scope_uses_parent_drive(Real) is emits_parent
+        assert mod.sdk_node_scope_uses_parent_drive(Real) is (not emits_node_eq)
+
+        client = make_client()
+        if emits_parent:
+            def _request(method, endpoint, params=None):
+                params = params or {}
+                endpoint = str(endpoint)
+                filt = str(params.get('filter') or '')
+                if endpoint.startswith('nodes/'):
+                    return {'$key': 1, 'name': 'node1', 'machine': 10}
+                if endpoint == 'machine_drives':
+                    return [{'$key': 77}]
+                if 'parent_drive eq ' in filt:
+                    return [dict(captured_rows()[0], node_name='node1')]
+                if 'node eq ' in filt:
+                    return []
+                return []
+
+            client._request.side_effect = _request
+
+        module = make_module(base_params(node='node1'))
+        run_main(module, client)
+
+        module.fail_json.assert_not_called()
+        drives = module.exit_json.call_args[1]['drives']
+        assert [d['node_name'] for d in drives] == ['node1']
+
+        if emits_node_eq:
+            # The broken filter was not sent, and the fleet match did not
+            # have to recover from an empty scoped list.
+            client._request.assert_not_called()
+            module.warn.assert_not_called()
+            client.physical_drives.list.assert_called_once()
 
 
 class TestSeverityFloor:
