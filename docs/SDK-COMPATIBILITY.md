@@ -13,7 +13,7 @@ on.
 | 1.2.5 | OData apostrophe escape (pyvergeos#72) |
 | 1.2.7 | Previous floor. Last release published before the brace fix. `quote_value()` still did not escape `{` |
 | **1.2.8** | `quote_value()` escapes `{` (pyVergeOS#100, PR #114). Prepared in pyVergeOS#122 and **not published to PyPI** |
-| **1.6.1** | First release PyPI publishes at or above 1.2.8. Contains the brace fix, plus the 1.4–1.6 refactors (declarative accessors, int-coercion on polymorphic refs, `cluster_status` and `machine_drive_stats`, partial snapshots, snapshot-wait). Verified through this version |
+| **1.6.1** | First release PyPI publishes at or above 1.2.8. Contains the brace fix, plus the 1.4 through 1.6 refactors (declarative accessors, int-coercion on polymorphic refs, `cluster_status` and `machine_drive_stats`, partial snapshots, snapshot-wait). Verified through this version |
 
 `>=1.2.8` therefore installs **1.6.1** from PyPI today. There is no 1.3, 1.4
 or 1.5 package, and there is no 1.2.8 package.
