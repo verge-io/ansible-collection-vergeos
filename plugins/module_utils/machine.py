@@ -6,8 +6,10 @@
 """pyvergeos glue for reading a VM's machine-level hardware.
 
 A VM's drives and NICs come from public SDK managers scoped to the VM. Their
-per-drive IO counters do not: there is no public manager for
-``machine_drive_stats``, so drive_write_stats() reads the table directly.
+per-drive IO counters do too, as of pyvergeos 1.5.0: ``machine_drive_stats``
+and the scoped ``drive.drive_stats`` accessor (pyVergeOS#128).
+drive_write_stats() still reads the table with ``client._request()`` because
+this collection floors at pyvergeos>=1.2.7, which has no such manager.
 """
 
 from __future__ import absolute_import, division, print_function
@@ -56,7 +58,12 @@ def drive_write_stats(client, drive_keys):
     809 MB of writes on a VM that had never been powered on. The same aliasing
     applies to machine_nic_stats/parent_nic.
 
-    There is no public SDK manager for this table, so it is read directly.
+    pyvergeos 1.5.0 added a public manager for this table
+    (``client.machine_drive_stats``, and ``drive.drive_stats`` on a drive;
+    pyVergeOS#128). The read stays on ``_request`` because the collection
+    floor is pyvergeos>=1.2.7, where that manager does not exist. A later
+    switch must keep the parent_drive filter: path-key access addresses the
+    stats row's own $key, not the drive.
     """
     keys = [k for k in (drive_keys or []) if k not in (None, '')]
     if not keys:

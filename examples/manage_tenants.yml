@@ -54,7 +54,9 @@
     # A tenant that cannot be placed does not fail -- it returns to stopped
     # and the platform reports no reason (#24). When the task above times
     # out, its `placement` return says which nodes were never given a
-    # physical host, and what the cluster had available at the time.
+    # physical host, the cluster's N-1 headroom (same arithmetic as a
+    # cluster_info drain check of the largest node), and what RAM was
+    # already committed. The headroom figure is not itself a verdict.
 
     - name: Report the tenant fleet
       vergeio.vergeos.tenant_info:

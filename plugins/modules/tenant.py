@@ -230,6 +230,12 @@ placement:
       for it" from "slow to boot".
     - This reports figures; it does not predict placement. See
       C(plugins/module_utils/clusters.py) for why no verdict is offered.
+    - C(capacity.n1_headroom_mb) is the N-1 figure. It is the VM RAM that
+      survives losing the largest online node, minus RAM already committed.
+      That is the same arithmetic as a C(cluster_info) drain check of that
+      node.
+      A request larger than the figure has still been placed, so the module
+      shows the comparison and does not refuse the power-on because of it.
   returned: on power-on timeout
   type: dict
   contains:
@@ -239,7 +245,11 @@ placement:
       elements: dict
       returned: always
     capacity:
-      description: Cluster RAM and core figures, and per-node VM RAM.
+      description:
+        - Cluster RAM and core figures, per-node VM RAM, and N-1 headroom.
+        - C(n1_headroom_mb) is VM RAM surviving loss of the largest online
+          node, minus RAM already committed. It is a figure, not a prediction
+          that the platform will refuse to place the tenant.
       type: dict
       returned: when the cluster tables could be read
   sample:
@@ -252,6 +262,9 @@ placement:
     capacity:
       online_ram_mb: 137472
       used_ram_mb: 74752
+      n1_headroom_mb: -6400
+      n1_survivor_ram_mb: 68352
+      n1_largest_node: node2
 '''
 
 import time
@@ -281,6 +294,7 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.clusters import (
     describe_capacity,
     fetch_cluster_status,
     fetch_nodes,
+    n1_headroom,
 )
 
 if HAS_PYVERGEOS:
@@ -502,8 +516,10 @@ def placement_report(module, client, key):
 
     It deliberately does NOT say whether the node SHOULD have fit. Issue #24
     proposed N-1 headroom as the rule; measuring again on 26.1.8 refuted it in
-    both directions (see plugins/module_utils/clusters.py). Asserting a
-    mechanism that is wrong would be worse than the silence it replaces.
+    both directions (see plugins/module_utils/clusters.py). The figure is
+    included so the operator can see the comparison. Asserting "so it cannot
+    be placed", or refusing the power-on before it is sent, would block a
+    size the platform has actually started.
     """
     detail = {'nodes': [], 'capacity': {}}
     lines = []
@@ -540,9 +556,31 @@ def placement_report(module, client, key):
                                  for n in placed))
 
     try:
-        facts = capacity_facts(fetch_cluster_status(client), fetch_nodes(client))
+        status_rows = fetch_cluster_status(client)
+        node_rows = fetch_nodes(client)
+        facts = capacity_facts(status_rows, node_rows)
+        head = n1_headroom(status_rows, node_rows)
+        if head:
+            facts['n1_headroom_mb'] = head['headroom_mb']
+            facts['n1_survivor_ram_mb'] = head['survivor_ram_mb']
+            facts['n1_largest_node'] = head['largest_node']
+            facts['n1_largest_node_ram_mb'] = head['largest_node_ram_mb']
         detail['capacity'] = facts
         lines.append(describe_capacity(facts))
+        # Only when a node was never placed. A node that has a host and is
+        # slow to boot is a different failure, and borrowing this comparison
+        # for it would point at headroom that did not apply.
+        if unplaced and head:
+            lines.append(
+                "N-1 headroom is %d MB: %d MB of VM RAM survives losing "
+                "'%s' (%d MB), and %d MB is already committed. %s"
+                % (head['headroom_mb'],
+                   head['survivor_ram_mb'],
+                   head['largest_node'],
+                   head['largest_node_ram_mb'],
+                   head['used_ram_mb'],
+                   ', '.join("'%s' requests %d MB"
+                             % (n['name'], n['ram_mb']) for n in unplaced)))
     except (APIError, VergeConnectionError, NotFoundError):
         lines.append('cluster capacity figures could not be read')
 

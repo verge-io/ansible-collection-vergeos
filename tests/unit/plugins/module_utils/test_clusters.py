@@ -15,6 +15,7 @@ __metaclass__ = type
 from ansible_collections.vergeio.vergeos.plugins.module_utils.clusters import (
     drain_capacity,
     failover_reserved,
+    n1_headroom,
     usable_ram,
 )
 
@@ -126,6 +127,75 @@ def test_estimated_capacity_is_flagged_in_the_reason():
     result = drain_capacity({'online_ram': 2000, 'used_ram': 500}, nodes, 'a')
     assert result['estimated'] is True
     assert 'overstates' in result['reason']
+
+
+def test_issue_24_headroom_is_survivor_minus_committed():
+    """The figure the original report measured, from the drain arithmetic.
+
+    committed 54585 MB, nodes 68352 / 69120 MB. Losing the larger node leaves
+    68352 MB, so N-1 headroom is 13767 MB. That is drain_capacity asked about
+    node2, not online_ram - used_ram (which is the free-RAM number the issue
+    showed does not predict placement).
+    """
+    status = [{'cluster': 1, 'online_ram': 137472, 'used_ram': 54585}]
+    head = n1_headroom(status, NODES)
+    assert head['largest_node'] == 'node2'
+    assert head['largest_node_ram_mb'] == 69120
+    assert head['survivor_ram_mb'] == 68352
+    assert head['headroom_mb'] == 13767
+    assert head['used_ram_mb'] == 54585
+
+
+def test_headroom_matches_drain_of_the_largest_node():
+    """Same inputs, same answer. Two copies of this arithmetic would drift."""
+    head = n1_headroom([STATUS], NODES)
+    drained = drain_capacity(STATUS, NODES, 'node2')
+    assert head['survivor_ram_mb'] == drained['survivor_ram_mb']
+    assert head['headroom_mb'] == drained['survivor_ram_mb'] - drained['used_ram_mb']
+    assert head['headroom_mb'] == 68352 - 87040
+
+
+def test_the_refuted_cases_are_figures_not_gates():
+    """Both directions from the re-measurement, as numbers only.
+
+    A. committed 9216, headroom 59136. A 65536 MB node started anyway.
+    B. committed 74752, headroom -6400. An 8192 MB node never placed.
+    The function returns the figure in both cases and has no fits flag.
+    """
+    above = n1_headroom([dict(STATUS, used_ram=9216)], NODES)
+    below = n1_headroom([dict(STATUS, used_ram=74752)], NODES)
+    assert above['headroom_mb'] == 68352 - 9216
+    assert below['headroom_mb'] == 68352 - 74752
+    assert 'fits' not in above
+    assert 'fits' not in below
+
+
+def test_n1_headroom_is_none_when_it_cannot_be_computed():
+    assert n1_headroom([], []) is None
+    assert n1_headroom(None, None) is None
+    blind = [{'name': 'node1', 'vm_ram': 68352},
+             {'name': 'node2', 'vm_ram': 69120}]
+    assert n1_headroom([STATUS], blind) is None
+
+
+def test_n1_headroom_reports_the_tighter_cluster():
+    """A tenant node lands in one cluster. The roomier cluster's headroom
+    would hide the constraint."""
+    status = [
+        {'cluster': 1, 'used_ram': 1000, 'online_ram': 3000},
+        {'cluster': 2, 'used_ram': 9000, 'online_ram': 10000},
+    ]
+    nodes = [
+        {'name': 'a', 'cluster': 1, 'vm_ram': 1000, 'running': True},
+        {'name': 'b', 'cluster': 1, 'vm_ram': 2000, 'running': True},
+        {'name': 'c', 'cluster': 2, 'vm_ram': 4000, 'running': True},
+        {'name': 'd', 'cluster': 2, 'vm_ram': 6000, 'running': True},
+    ]
+    head = n1_headroom(status, nodes)
+    # Cluster 1: lose b, survivor 1000, headroom 0.
+    # Cluster 2: lose d, survivor 4000, headroom 4000 - 9000 = -5000.
+    assert head['largest_node'] == 'd'
+    assert head['headroom_mb'] == -5000
 
 
 def test_failover_reservation_gap_is_reported():
