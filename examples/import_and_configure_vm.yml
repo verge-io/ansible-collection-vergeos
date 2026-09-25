@@ -58,7 +58,10 @@
       ansible.builtin.pause:
         seconds: 5
 
-    - name: Attach NIC to the External network
+    # An OVA import brings its own NIC, usually on the wrong network.
+    # nic_index 0 moves that NIC onto network_name. Omitting it would add
+    # a second NIC and leave the imported one where it landed.
+    - name: Move the imported NIC onto the External network
       vergeio.vergeos.nic:
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
@@ -66,6 +69,7 @@
         insecure: "{{ vergeos_insecure }}"
         vm_name: "{{ vm_name }}"
         network: "{{ network_name }}"
+        nic_index: 0
         state: present
         nic_type: virtio
         enabled: true
@@ -80,7 +84,7 @@
           VM: {{ vm_name }}
           Network: {{ network_name }}
           NIC Type: virtio
-          Status: {{ 'Created' if nic_result.changed else 'Already exists' }}
+          Status: {{ 'Updated' if nic_result.changed else 'Already exists' }}
 
     - name: Configure cloud-init for the imported VM
       vergeio.vergeos.cloud_init:

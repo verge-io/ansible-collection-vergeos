@@ -17,8 +17,14 @@ description:
   - NICs connect VMs to VergeOS virtual networks (vnets).
   - Each VM has a machine key that is used for hardware operations like NIC management.
 notes:
-  - VMs imported from OVA may have default NICs that need to be updated to attach to the correct network.
-  - Use this module to ensure NICs are attached to the correct VergeOS virtual network.
+  - >-
+    A NIC is identified by the network it is attached to. C(state=present)
+    adds a NIC when the VM has none on I(network). C(state=absent) removes
+    only a NIC on that network, and changes nothing when there isn't one.
+  - >-
+    An OVA import often arrives with a default NIC on the wrong network.
+    Set I(nic_index) to move that NIC onto I(network) instead of adding a
+    second one. Without I(nic_index) the imported NIC is left where it is.
 options:
   vm_name:
     description:
@@ -33,9 +39,31 @@ options:
   state:
     description:
       - The desired state of the NIC.
+      - >-
+        C(present) ensures the VM has a NIC on I(network), adding one when
+        it does not. C(absent) removes the NIC on I(network) and is a no-op
+        when the VM has no NIC there.
     type: str
     choices: [ present, absent ]
     default: present
+  nic_index:
+    description:
+      - >-
+        Move an existing NIC onto I(network) instead of adding one, when
+        the VM has no NIC on I(network) yet.
+      - >-
+        The index is 0-based, in the order the API returns the VM's NICs.
+        C(0) is the first NIC, which is the default NIC an OVA import
+        brings.
+      - >-
+        Consulted only when no NIC is already attached to I(network). A
+        NIC on that network is updated in place, so a second run converges
+        whether or not I(nic_index) is set.
+      - >-
+        Not valid with C(state=absent). Removal always targets the NIC on
+        I(network) and never a NIC chosen by position.
+    type: int
+    version_added: "2.2.0"
   mac_address:
     description:
       - MAC address for the NIC. If not specified, one will be auto-generated.
@@ -92,6 +120,16 @@ EXAMPLES = r'''
     vm_name: "web-server-01"
     network: "old-network"
     state: absent
+
+- name: Move the NIC an OVA import created onto the right network
+  vergeio.vergeos.nic:
+    host: "192.168.1.100"
+    username: "admin"
+    password: "password"
+    vm_name: "imported-vm-01"
+    network: "external"
+    nic_index: 0
+    state: present
 '''
 
 RETURN = r'''
@@ -143,33 +181,58 @@ def get_network(module, client, network_name):
         return None
 
 
-def get_nic(client, vm, target_network):
-    """Get NIC by VM and network using SDK
-
-    Returns the NIC if it exists with the correct network, or the first NIC
-    for the VM if it needs to be updated.
-    """
+def list_nics(vm):
+    """Return the VM's NICs, or an empty list when the machine has none."""
     try:
-        nics = list(vm.nics.list())
-        target_network_key = dict(target_network).get('$key')
-
-        # First, check if any NIC is already on the target network
-        # The SDK may return either 'vnet' or 'network' as the field name
-        for nic in nics:
-            nic_dict = dict(nic)
-            nic_network = nic_dict.get('vnet') or nic_dict.get('network')
-            if nic_network == target_network_key:
-                return nic
-
-        # If no NIC is on the target network, return the first NIC for this VM
-        # (we'll update it to use the target network)
-        if nics:
-            return nics[0]
-
-        # No NICs exist for this VM
-        return None
+        return list(vm.nics.list())
     except (NotFoundError, AttributeError):
-        return None
+        return []
+
+
+def nic_on_network(nics, target_network):
+    """Return the NIC attached to target_network, or None.
+
+    Matching is by vnet key only (the SDK may also expose it as ``network``).
+    A NIC on any other network is not a match. Returning the VM's first NIC
+    here is what made ``state=absent`` delete a NIC on a different network,
+    and what made declaring two NICs re-point the same one on every run.
+    See issue #118.
+    """
+    target_network_key = dict(target_network).get('$key')
+    for nic in nics:
+        nic_dict = dict(nic)
+        # The SDK may return either 'vnet' or 'network' as the field name.
+        nic_network = nic_dict.get('vnet') or nic_dict.get('network')
+        if nic_network == target_network_key:
+            return nic
+    return None
+
+
+def get_nic(client, vm, target_network):
+    """Return the NIC attached to target_network, or None.
+
+    ``client`` is unused; kept so existing callers do not change shape.
+    """
+    return nic_on_network(list_nics(vm), target_network)
+
+
+def nic_at_index(module, vm, nic_index):
+    """Return the NIC at nic_index so the caller can move it.
+
+    Used only for ``state=present`` when nothing is on the target network.
+    An index past the end fails rather than falling back to another NIC.
+    """
+    nics = list_nics(vm)
+    count = len(nics)
+    if nic_index < 0 or nic_index >= count:
+        vm_name = module.params['vm_name']
+        module.fail_json(
+            msg=f"nic_index {nic_index} is out of range: VM '{vm_name}' has "
+                f"{count} NIC(s). Indexes start at 0, in the order the API "
+                "returns them. Omit nic_index to add a NIC instead of "
+                "moving one."
+        )
+    return nics[nic_index]
 
 
 # Module parameter -> raw VergeOS API field, for the update path.
@@ -235,7 +298,9 @@ def update_nic(module, client, nic, target_network):
     nic_dict = dict(nic)
     target_network_key = dict(target_network).get('$key')
 
-    # Check if network needs to be updated (SDK may use 'vnet' or 'network')
+    # vnet differs only when nic_index selected a NIC that is not already
+    # on the target network. A NIC found by network is already equal here.
+    # The SDK may use 'vnet' or 'network' as the field name.
     current_network = nic_dict.get('vnet') or nic_dict.get('network')
     if current_network != target_network_key:
         update_data[UPDATE_FIELD_MAP['network']] = target_network_key
@@ -293,6 +358,7 @@ def main():
         mac_address=dict(type='str'),
         enabled=dict(type='bool'),
         nic_type=dict(type='str', choices=['virtio', 'e1000', 'rtl8139']),
+        nic_index=dict(type='int'),
     )
 
     module = AnsibleModule(
@@ -324,6 +390,14 @@ def main():
         nic = get_nic(client, vm, network)
 
         if state == 'absent':
+            # Removal is by network only. An index would select a NIC on a
+            # different network, which is the #118 bug.
+            if module.params.get('nic_index') is not None:
+                module.fail_json(
+                    msg="nic_index cannot be used with state=absent. "
+                        f"absent removes only the NIC on network '{network_name}', "
+                        "and does nothing when the VM has no NIC there."
+                )
             if nic:
                 delete_nic(module, client, nic)
                 module.exit_json(changed=True, msg=f"NIC removed from VM '{vm_name}'")
@@ -331,12 +405,15 @@ def main():
                 module.exit_json(changed=False, msg="NIC does not exist")
 
         elif state == 'present':
+            # No NIC on this network. nic_index opts in to moving one that
+            # is attached somewhere else (the OVA-import case). Otherwise
+            # add a NIC and leave every other NIC where it is.
+            if not nic and module.params.get('nic_index') is not None:
+                nic = nic_at_index(module, vm, module.params['nic_index'])
             if nic:
-                # Update existing NIC (may need to change network)
                 changed, updated_nic = update_nic(module, client, nic, network)
                 module.exit_json(changed=changed, nic=updated_nic)
             else:
-                # No NIC exists, create one
                 changed, new_nic = create_nic(module, client, vm, network)
                 module.exit_json(changed=changed, nic=new_nic)
 
