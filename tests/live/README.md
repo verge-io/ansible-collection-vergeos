@@ -95,6 +95,7 @@ precisely because nothing read that table.
 | `verify-network-policy.yml` | the `network_policy` role, enforcing a rule set with one apply (#44) |
 | `verify-rbac.yml` | `group` / `group_info` / `permission` and the `rbac` role (#34) |
 | `verify-member.yml` | `member` add/converge/remove, and that the right membership row is taken (#92) |
+| `verify-user-groups.yml` | `user` `groups` add/converge, and that `role` is rejected instead of discarded (#120) |
 | `verify-catalog.yml` | `catalog` create/converge/scope/delete, plus the apostrophe and `{brace}` name guards (#32) |
 | `verify-api-key.yml` | `api_key` / `api_key_info`, including that a revoked secret really is dead (#30) |
 | `verify-key-rotation.yml` | the `api_key_rotation` role: verify-before-revoke (#30) |

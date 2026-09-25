@@ -745,6 +745,12 @@ class TestNoKnownBadFieldNamesComeBack:
         'user': {
             'full_name': 'the API field is displayname',
             'user_password': 'the API field is password',
+            # #120: there is no role column, and group membership is not a
+            # field on the user. Mapping either name through to users.create
+            # or save() is how the option gets accepted and discarded.
+            'role': 'issue #120 -- no such column; access is a permission',
+            'groups': 'issue #120 -- membership is a row on the group, '
+                      'written with add_user',
         },
         'vm': {
             'machine_subtype': 'issue #87 -- no such column, and nothing holds '
@@ -821,6 +827,16 @@ class TestNoKnownBadFieldNamesComeBack:
         assert 'subnet_mask' not in _argument_spec_options(network)
         assert 'subnet_mask' not in network.UPDATE_FIELD_MAP
         assert 'subnet_mask' not in network.CREATE_PARAM_MAP
+
+    def test_user_role_and_groups_are_not_sent_as_user_columns(self):
+        """#120. role is not a column. groups is a membership row on the
+        group, written with add_user, not a field on the user. Either name
+        in UPDATE_FIELD_MAP would be sent to create/save and discarded by
+        the API with HTTP 200."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import user
+        mapped = set(user.UPDATE_FIELD_MAP) | set(user.UPDATE_FIELD_MAP.values())
+        assert 'role' not in mapped
+        assert 'groups' not in mapped
 
 
 class TestTheLiveLadderCannotDriftFromTheCode:

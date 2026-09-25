@@ -67,67 +67,119 @@ options:
     type: bool
   role:
     description:
-      - Role assigned to the user.
+      - Rejected. VergeOS users have no role column.
+      - Access is a permission on an identity. Grant it with
+        M(vergeio.vergeos.permission), or put the user in a group that
+        already holds it (O(groups), M(vergeio.vergeos.group), or
+        M(vergeio.vergeos.member)).
+      - Before 2.2.0 this option was accepted and then discarded, so
+        C(role=admin) created an ordinary user and reported success.
     type: str
     choices: [ admin, user, readonly ]
   groups:
     description:
-      - List of groups the user belongs to.
+      - Names of groups this user should belong to.
+      - Additive, and only applied when O(state=present). Each named group
+        must already exist. Groups not named here are left alone, and an
+        empty list adds nothing and removes nothing.
+      - Membership is a row on the group, matched by reference
+        (C(/v4/users/N) or C(users/N)) and written with the SDK's
+        C(add_user). There is no groups column on the user to set.
+      - To remove a membership, use M(vergeio.vergeos.member) with
+        C(state=absent), or M(vergeio.vergeos.group) with
+        C(exact_members=true).
+      - Ignored when O(state=absent), because the user is being removed.
     type: list
     elements: str
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
+notes:
+  - O(role) always fails the task, including when O(state=absent). Passing
+    it used to look like it worked.
 author:
   - VergeIO (@vergeio)
 '''
 
 EXAMPLES = r'''
+# There is no role on a VergeOS user. Administration is a permission,
+# granted here to a group the new user is placed in. Without the
+# permission task this creates an ordinary user who happens to be in
+# an empty group.
+
+- name: Create the administrators group
+  vergeio.vergeos.group:
+    name: administrators
+    description: System administrators
+
 - name: Create a new admin user
   vergeio.vergeos.user:
-    name: "john.doe"
-    user_password: "secure_password"
-    email: "john.doe@example.com"
-    full_name: "John Doe"
-    role: admin
+    name: john.doe
+    user_password: secure_password
+    email: john.doe@example.com
+    full_name: John Doe
+    groups:
+      - administrators
     state: present
 
-- name: Create a readonly user
+- name: Grant the administrators group full control of the system
+  vergeio.vergeos.permission:
+    group: administrators
+    table: "/"
+    full_control: true
+
+- name: Create a read-only user
   vergeio.vergeos.user:
-    name: "viewer"
-    user_password: "viewer_password"
-    role: readonly
+    name: viewer
+    user_password: viewer_password
     state: present
+
+- name: Grant that user read-only sight of the whole system
+  vergeio.vergeos.permission:
+    user: viewer
+    table: "/"
+    rights:
+      - list
+      - read
 
 - name: Update user email
   vergeio.vergeos.user:
-    name: "john.doe"
-    email: "john.new@example.com"
+    name: john.doe
+    email: john.new@example.com
     state: present
 
 - name: Disable a user
   vergeio.vergeos.user:
-    name: "john.doe"
+    name: john.doe
     enabled: false
     state: present
 
 - name: Delete a user
   vergeio.vergeos.user:
-    name: "old.user"
+    name: old.user
     state: absent
 '''
 
 RETURN = r'''
 user:
-  description: Information about the user
+  description: The user row after the module ran.
   returned: when state is present
   type: dict
   sample:
-    username: "john.doe"
-    email: "john.doe@example.com"
-    full_name: "John Doe"
+    $key: 4
+    name: john.doe
+    email: john.doe@example.com
+    displayname: John Doe
     enabled: true
-    role: "admin"
-    id: "12345"
+groups:
+  description:
+    - Group names this run ensured the user belongs to.
+    - This is the requested set, not every group the user belongs to.
+      Membership outside that set is left in place.
+  returned: when O(groups) is set and O(state) is V(present)
+  type: list
+  elements: str
+  sample:
+    - administrators
 '''
 
 from ansible.module_utils.basic import AnsibleModule
@@ -137,6 +189,11 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     sdk_error_handler,
     vergeos_argument_spec,
     HAS_PYVERGEOS,
+)
+from ansible_collections.vergeio.vergeos.plugins.module_utils.rbac import (
+    find_membership,
+    is_member_identity_defect,
+    member_identity_advice,
 )
 
 if HAS_PYVERGEOS:
@@ -250,6 +307,94 @@ def delete_user(module, client, user):
     return True
 
 
+# Kept so a task that still says `role: admin` fails with a pointer, rather
+# than with Ansible's generic "unsupported parameter". The choices stay in
+# the argument spec so `role: superuser` is still an invalid choice; any
+# accepted value hits this.
+ROLE_REFUSAL = (
+    "role is not a field on a VergeOS user, and passing it does not grant "
+    "access. Access is a permission on an identity. Grant it with "
+    "vergeio.vergeos.permission (full_control on table '/' is system-wide "
+    "administration; rights [list, read] on '/' is read-only), or put the "
+    "user in a group that already holds that grant (vergeio.vergeos.group, "
+    "vergeio.vergeos.member, or the groups option on this module). Before "
+    "2.2.0 this option was accepted and discarded, so role=admin created "
+    "an ordinary user."
+)
+
+
+def reject_role(module):
+    """Fail when O(role) is set. There is nowhere to store it."""
+    if module.params.get('role') is not None:
+        module.fail_json(msg=ROLE_REFUSAL)
+
+
+def unique_names(names):
+    """Group names in order, without duplicates."""
+    seen = []
+    for name in names or []:
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def resolve_groups(module, client, names):
+    """``[(name, key), ...]`` for each group, or a named failure.
+
+    Resolved before the user is written, so a typo does not leave a new
+    account behind.
+    """
+    found = []
+    for name in names:
+        try:
+            group = resolve_one(module, client.groups, name, 'group')
+        except NotFoundError:
+            module.fail_json(msg="Group '%s' not found" % name)
+        found.append((name, dict(group)['$key']))
+    return found
+
+
+def ensure_group_memberships(module, client, user_key, groups):
+    """Add ``user_key`` to each group that does not already contain them.
+
+    ``groups`` is ``[(name, key), ...]`` from ``resolve_groups``.
+    Returns the names that were missing. Additive: nothing is removed.
+
+    Same write as the member module. ``add_user(key)`` posts
+    ``member: /v4/users/<key>``. A hand-built ``create(member=<username>)``
+    is the wrong shape, and comparing the stored reference to the username
+    never matches (issue #92).
+    """
+    if user_key is None:
+        # Check mode on a user that does not exist yet. They cannot already
+        # be a member, and there is no key to add.
+        if module.check_mode:
+            return [name for name, _key in groups]
+        module.fail_json(
+            msg="the user was created but the API returned no key, so "
+                "group membership could not be applied")
+
+    missing = []
+    for name, group_key in groups:
+        members = client.groups.members(group_key)
+        if find_membership(members.list(), user_key) is None:
+            missing.append((name, members))
+
+    if module.check_mode:
+        return [name for name, _members in missing]
+
+    added = []
+    for name, members in missing:
+        try:
+            members.add_user(int(user_key))
+        except Exception as exc:                            # noqa: BLE001
+            if is_member_identity_defect(exc):
+                module.fail_json(msg=member_identity_advice(name))
+            raise
+        added.append(name)
+    return added
+
+
 def main():
     argument_spec = vergeos_argument_spec()
     argument_spec.update(
@@ -277,28 +422,49 @@ def main():
         supports_check_mode=True
     )
 
+    # Before any API call. A delete that also says role=admin must not
+    # succeed while teaching the operator that role is a real option.
+    reject_role(module)
+
     target_username = module.params['name']
 
     client = get_vergeos_client(module)
     state = module.params['state']
+    groups_param = module.params.get('groups')
 
     try:
         user = get_user(module, client, target_username)
 
         if state == 'absent':
+            # groups is not applied here. state=absent removes the user,
+            # and membership goes with the account. Same as group: the
+            # users list is irrelevant once the group itself is being deleted.
             if user:
                 delete_user(module, client, user)
                 module.exit_json(changed=True, msg=f"User '{target_username}' deleted")
             else:
                 module.exit_json(changed=False, msg=f"User '{target_username}' does not exist")
 
-        elif state == 'present':
-            if user:
-                changed, updated_user = update_user(module, client, user)
-                module.exit_json(changed=changed, user=updated_user)
-            else:
-                changed, new_user = create_user(module, client)
-                module.exit_json(changed=changed, user=new_user)
+        wanted_groups = None
+        if groups_param is not None:
+            wanted_groups = resolve_groups(
+                module, client, unique_names(groups_param))
+
+        if user:
+            changed, result_user = update_user(module, client, user)
+            user_key = dict(user).get('$key')
+        else:
+            changed, result_user = create_user(module, client)
+            user_key = None if module.check_mode else dict(result_user).get('$key')
+
+        result = {'changed': changed, 'user': result_user}
+        if wanted_groups is not None:
+            added = ensure_group_memberships(
+                module, client, user_key, wanted_groups)
+            if added:
+                result['changed'] = True
+            result['groups'] = [name for name, _key in wanted_groups]
+        module.exit_json(**result)
 
     except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
         sdk_error_handler(module, e)
