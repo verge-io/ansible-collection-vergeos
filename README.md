@@ -69,6 +69,14 @@ Configure and Run Playbook
 ansible-playbook examples/snapshot_workflow.yml
 ```
 
+### 4. Unattended install and nested lab
+
+A silent VergeOS install (new system, controller join, scale-out), a nested
+lab that builds that install as VMs, discovery of the new system's DHCP
+address, and a post-install tag baseline. See
+[docs/UNATTENDED-INSTALL.md](docs/UNATTENDED-INSTALL.md) and
+[`examples/unattended_install/`](examples/unattended_install/).
+
 ## Modules
 
 Every module in `plugins/modules/`. A read-only module only gathers facts.

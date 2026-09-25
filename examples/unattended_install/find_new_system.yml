@@ -1,0 +1,103 @@
+---
+# Discover a freshly installed (DHCP) VergeOS system on a subnet by its API
+# signature, then verify the seeded admin credentials.
+#
+#   ansible-playbook examples/unattended_install/find_new_system.yml \
+#     -e discover_subnet=192.168.1 \
+#     -e exclude_ips='["<host-cloud-ui>"]'
+#
+# exclude_ips is every VergeOS UI already on the subnet. The host cloud's
+# own UI answers the same signature. The first match in address order wins.
+#
+# Auth for the new system comes from the seed:
+#   export VLAB_ADMIN_USERNAME=admin VLAB_ADMIN_PASSWORD='...'
+#
+# The play probes with a 4 second cap (a nested node answers slowly; a 1
+# second timeout reports it absent). It retries discover_tries times and
+# waits discover_wait seconds between failed scans, then fails. It does
+# not retry forever. Each attempt still walks the subnet, so the wall
+# clock is the scans plus those waits.
+
+- name: Find and verify a newly installed VergeOS system
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    discover_subnet: "192.168.1"
+    exclude_ips: []
+    discover_tries: 20
+    discover_wait: 60
+    new_admin_user: "{{ lookup('env', 'VLAB_ADMIN_USERNAME') | default('admin', true) }}"
+    new_admin_password: "{{ lookup('env', 'VLAB_ADMIN_PASSWORD') }}"
+
+  tasks:
+    - name: Require an exclude list and a seeded password
+      ansible.builtin.assert:
+        that:
+          - exclude_ips is sequence
+          - exclude_ips is not string
+          - discover_subnet is match("^[0-9]+\\.[0-9]+\\.[0-9]+$")
+          - new_admin_password | length > 0
+        fail_msg: >-
+          Set VLAB_ADMIN_PASSWORD, pass exclude_ips as a list
+          (exclude_ips='["<host-cloud-ui>"]'), and keep discover_subnet
+          as the first three octets.
+      no_log: true
+
+    - name: Scan the subnet until a VergeOS API answers
+      block:
+        - name: Probe each address for the VergeOS login challenge
+          ansible.builtin.shell: |
+            set -eu
+            for i in $(seq 1 254); do
+              ip="{{ discover_subnet }}.$i"
+              case " {{ exclude_ips | join(' ') }} " in
+                *" $ip "*) continue ;;
+              esac
+              body=$(curl -sk --max-time 4 "https://$ip/api/v4/version" 2>/dev/null || true)
+              case "$body" in
+                *"Login required"*)
+                  printf '%s\n' "$ip"
+                  exit 0
+                  ;;
+              esac
+            done
+            exit 1
+          register: scan
+          retries: "{{ discover_tries | int }}"
+          delay: "{{ discover_wait | int }}"
+          until: scan.rc == 0
+          changed_when: false
+      rescue:
+        - name: Fail because nothing answered within the discovery budget
+          ansible.builtin.fail:
+            msg: >-
+              No host on {{ discover_subnet }}.0/24 returned the VergeOS
+              login challenge within {{ discover_tries }} attempts,
+              {{ discover_wait }} seconds apart{% if exclude_ips %}, excluding {{ exclude_ips | join(', ') }}{% endif %}.
+              Confirm the installer finished, curl is installed on the
+              controller, and every other VergeOS UI on this subnet is
+              listed in exclude_ips.
+
+    - name: Record the address
+      ansible.builtin.set_fact:
+        new_system_ip: "{{ scan.stdout_lines[-1] }}"
+
+    - name: Verify the seeded credentials work
+      ansible.builtin.uri:
+        url: "https://{{ new_system_ip }}/api/v4/clusters?fields=name"
+        url_username: "{{ new_admin_user }}"
+        url_password: "{{ new_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200]
+      register: login
+      no_log: true
+
+    - name: Report the new system
+      ansible.builtin.debug:
+        msg: >-
+          New VergeOS system at {{ new_system_ip }}. Login succeeded.
+          Clusters: {{ login.json | map(attribute='name') | join(', ') }}.
+          Next: VERGEOS_HOST={{ new_system_ip }}
+          ansible-playbook examples/unattended_install/post_install.yml
