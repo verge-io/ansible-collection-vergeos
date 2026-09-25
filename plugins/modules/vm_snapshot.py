@@ -52,8 +52,8 @@ options:
       - Operation to perform.
       - C(create) creates a new snapshot.
       - C(restore) reverts the VM in place to the snapshot state.
-        The VM must be powered off. This is destructive: changes since the
-        snapshot are lost.
+      - The VM must be powered off for restore. This is destructive; changes
+        since the snapshot are lost.
       - C(list) lists snapshots (returns all snapshots or filtered by VM).
       - C(delete) deletes a snapshot.
     type: str
