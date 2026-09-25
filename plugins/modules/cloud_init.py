@@ -18,7 +18,7 @@ description:
   - Handles /user-data, /meta-data, and /network-config files.
   - Cloud-init files are automatically removed when the VM is deleted.
   - Reports C(changed) only when the datasource or a file is written.
-    An identical re-apply, including in check mode, reports C(changed=false).
+    Applying the same configuration again, including in check mode, reports C(changed=false).
 options:
   vm_name:
     description:

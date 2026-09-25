@@ -19,7 +19,7 @@ description:
   - The unattend.xml file is automatically applied during Windows OOBE (Out of Box Experience).
   - Automatically enables cloudinit_datasource on the VM to activate the file delivery mechanism.
   - Reports C(changed) only when the datasource or /unattend.xml is written.
-    An identical re-apply, including in check mode, reports C(changed=false).
+    Applying the same configuration again, including in check mode, reports C(changed=false).
 options:
   vm_name:
     description:
