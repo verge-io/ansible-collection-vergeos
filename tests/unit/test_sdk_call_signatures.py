@@ -229,3 +229,64 @@ def test_the_guard_can_actually_fail():
     assert 'username' not in signature.parameters, (
         'pyvergeos has grown a username parameter; #92 needs revisiting')
     assert 'name' in signature.parameters
+
+
+def _physical_drive_node_filters(node_key=2):
+    """Filters the installed PhysicalDriveManager emits for node_key.
+
+    No mock. Released pyvergeos (1.2.7 through 1.6.1) appends
+    ``node eq <key>`` inside list(). pyVergeOS#143, unreleased, walks
+    nodes -> machine_drives and filters ``parent_drive eq`` instead.
+    """
+    from pyvergeos.resources.physical_drives import PhysicalDriveManager
+
+    calls = []
+
+    class Client:
+        def _request(self, method, endpoint, params=None):
+            params = dict(params or {})
+            calls.append(params)
+            endpoint = str(endpoint)
+            if endpoint.startswith('nodes/'):
+                return {'$key': node_key, 'name': 'node2', 'machine': 20}
+            if endpoint == 'machine_drives':
+                return [{'$key': 77}]
+            return []
+
+    PhysicalDriveManager(Client(), node_key=node_key).list(fields=['$key'])
+    return [params.get('filter', '') for params in calls if params.get('filter')]
+
+
+def test_physical_drive_node_scope_matches_the_installed_query():
+    """#145. A MagicMock manager accepts node_key and returns whatever the
+    test planted, so unit tests of the module passed while the installed
+    SDK's query returned no rows.
+
+    The collection may call PhysicalDriveManager(node_key=...) only when
+    this install's list() scopes by parent_drive. When the query is still
+    ``node eq``, the module must refuse that path.
+    """
+    from ansible_collections.vergeio.vergeos.plugins.modules import (
+        physical_drive_info as mod,
+    )
+    from pyvergeos.resources.physical_drives import PhysicalDriveManager
+
+    filters = _physical_drive_node_filters()
+    emits_node_eq = any('node eq ' in f for f in filters)
+    emits_parent = any('parent_drive eq ' in f for f in filters)
+    assert emits_node_eq or emits_parent, (
+        'PhysicalDriveManager(node_key=).list() sent no recognisable '
+        'filter: %s' % filters)
+    assert not (emits_node_eq and emits_parent), filters
+
+    uses_sdk = mod.sdk_node_scope_uses_parent_drive(PhysicalDriveManager)
+    assert uses_sdk is emits_parent, (
+        'physical_drive_info node: scope decision (%s) does not match the '
+        'filter the installed SDK builds (%s)' % (uses_sdk, filters))
+    assert uses_sdk is not emits_node_eq
+
+    if emits_node_eq:
+        source = inspect.getsource(PhysicalDriveManager.list)
+        assert 'node eq ' in source
+        assert not inspect.isfunction(
+            getattr(PhysicalDriveManager, '_parent_drive_filter_for_node', None))

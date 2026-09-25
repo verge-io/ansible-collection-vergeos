@@ -15,9 +15,10 @@
 # lookups to list(name=...) is a behavior change, not part of this floor.
 pyvergeos>=1.2.8
 #
-# physical_drive_info node: scoping needs the PhysicalDriveManager(
-# node_key=...) fix from pyVergeOS#143 / PR #144. That landed on the
-# SDK's `dev` branch; until it is cut into a release newer than the
-# 1.6.1 that still lacked it, lab and CI that exercise `node:` must
-# install that tip (editable checkout of origin/dev) rather than PyPI
-# 1.6.1. Unscoped scans work on 1.2.7+ either way.
+# physical_drive_info node: uses PhysicalDriveManager(node_key=...) only
+# when the installed SDK has the pyVergeOS#143 parent_drive walk
+# (_parent_drive_filter_for_node). Released builds from 1.2.7 through
+# 1.6.1 still filter "node eq <key>" against a column machine_drive_phys
+# does not have, and that list is always empty. On those SDKs the module
+# matches node_name client-side. Do not raise this floor to pick up #143;
+# it is unreleased.
