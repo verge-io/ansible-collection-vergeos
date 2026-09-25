@@ -79,9 +79,17 @@ EXAMPLES = r'''
   register: importing
   until:
     - importing.drives | length > 0
-    - importing.importing | length == 0
+    - importing.importing | length == 0 or importing.failed_drives | length > 0
   retries: 180
   delay: 10
+
+- name: A failed import is not a slow download
+  ansible.builtin.assert:
+    that: importing.failed_drives | length == 0
+    fail_msg: >-
+      {{ importing.failed_drives | map(attribute='name') | list }} failed.
+      The platform reports
+      {{ importing.failed_drives | map(attribute='status_info') | list }}.
 
 - name: Prove the guest is writing to disk
   vergeio.vergeos.vm_drive_info:
@@ -146,9 +154,25 @@ importing:
     - The subset of RV(drives) the platform has not finished building.
     - A drive can carry C(media=import) before its status becomes
       C(importing), so both signals are folded in here.
+    - A drive in a terminal failure state is excluded. It is finished, and
+      it failed; see RV(failed_drives).
   returned: always
   type: list
   elements: dict
+failed_drives:
+  description:
+    - Drives the platform has given up on.
+    - C(status=errors) is the terminal state of a failed import, measured
+      on 26.1.8. The row keeps C(media=import) and is never retried, so
+      waiting on it cannot succeed. RV(drives[].status_info) carries the
+      platform's reason.
+    - Named C(failed_drives) rather than C(failed). Ansible treats a truthy
+      C(failed) result as a module failure, and C(failed_when) overwrites
+      that key, which would hide the list from a wait that needs it.
+  returned: always
+  type: list
+  elements: dict
+  version_added: "2.2.0"
 machine:
   description: Key of the VM's machine.
   returned: always
@@ -180,6 +204,22 @@ if HAS_PYVERGEOS:
 
 STAT_KEYS = ('read_bytes', 'write_bytes', 'reads', 'writes')
 
+# Terminal drive statuses. Confirmed on VergeOS 26.1.8: a cloud-image import
+# the platform cannot download is marked 'errors' within about two seconds,
+# keeps media=import, and is never retried. The row read every 30s for twenty
+# minutes did not change. No other terminal VM-drive status was confirmed, so
+# none is listed. 'offline' in particular is not a failure.
+TERMINAL_DRIVE_STATUSES = frozenset(('errors',))
+
+
+def failed_drives(drives):
+    """Drives the platform has given up on.
+
+    These are finished. Leaving them in `importing` makes a caller wait out a
+    timeout that cannot help, then advise raising it.
+    """
+    return [d for d in drives if d.get('status') in TERMINAL_DRIVE_STATUSES]
+
 
 def unfinished(drives):
     """Drives the platform has not finished building.
@@ -188,9 +228,15 @@ def unfinished(drives):
     moment it is actively pulling. A drive can be the first without yet being
     the second, and that window is exactly what makes "wait for the absence of
     importing" exit before the download has started.
+
+    A terminal failure is neither. status=errors keeps media=import, so folding
+    media in without looking at status counts a drive the platform has already
+    abandoned as still in progress.
     """
     out = []
     for drive in drives:
+        if drive.get('status') in TERMINAL_DRIVE_STATUSES:
+            continue
         if drive.get('media') == 'import' or drive.get('status') == 'importing':
             out.append(drive)
     return out
@@ -228,6 +274,7 @@ def main():
             changed=False,
             drives=drives,
             importing=unfinished(drives),
+            failed_drives=failed_drives(drives),
             machine=str(dict(vm).get('machine') or ''),
         )
 

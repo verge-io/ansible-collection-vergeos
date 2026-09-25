@@ -19,8 +19,8 @@ downloading.
    created rather than something that happened to share the name.
 3. Waits for the drive imports to finish. This happens in two phases with
    separate time budgets.
-4. Asserts the VM has drives, that none are still importing, and that every
-   NIC is attached to something.
+4. Asserts the VM has drives, that none are still importing, that none have
+   failed, and that every NIC is attached to something.
 5. Optionally powers the VM on and waits until it really is running.
 6. Optionally proves the guest **booted**, by watching for guest disk writes.
 
@@ -147,6 +147,14 @@ measurements.
 `failed_when: false` and an assertion after it. That is deliberate, so a
 stuck import gets reported as the drive's name and the platform's own
 download percentage rather than as a bare attempt count.
+
+**A drive in `errors` is not a slow import.** The platform marks a failed
+cloud-image download `status: errors` within a couple of seconds and does
+not retry. `media` stays `import`, which used to keep the wait running
+until `vm_from_recipe_wait_timeout` and then suggest raising it. The wait
+now exits on the next poll, and the assertion quotes the platform's
+`status_info` without that advice. Raising the timeout only applies to a
+drive that is still actually importing.
 
 ## Not implemented
 
