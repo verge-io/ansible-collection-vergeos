@@ -256,10 +256,10 @@ def create_snapshot(client, module):
     # Resolve expires. Docs say omit => never. expiration=0 is also never.
     # A past epoch used to be silently rewritten to +1h; refuse it instead.
     #
-    # pyVergeOS create(retention=0) computes expires=0 but then omits the
-    # field from the body (pyVergeOS#146), so the platform applies its own
-    # +72h default. Always POST expires ourselves so "never" is actually
-    # never, on every supported SDK.
+    # pyVergeOS#146/#148 fixed create() to always send expires (including 0)
+    # on tip 1.7.1+. The collection floor is still >=1.2.7, where retention=0
+    # omits the field and the platform applies +72h. POST expires ourselves
+    # so "never" is actually never on every supported SDK.
     current_time = int(time.time())
     if expiration is None or expiration == 0:
         expires = 0
@@ -316,7 +316,7 @@ def create_snapshot(client, module):
     if description:
         body['description'] = description
 
-    # Direct POST: keeps expires:0 in the body (SDK create drops it, #146).
+    # Direct POST: keeps expires:0 in the body on pre-#148 SDKs.
     result = client._request('POST', 'machine_snapshots', json_data=body)
     result_dict = dict(result) if result and hasattr(result, '__iter__') else {}
 
@@ -367,11 +367,11 @@ def restore_snapshot(client, module):
     """Revert a VM in place to a snapshot (destructive).
 
     Docs and examples describe an in-place restore. The object method
-    ``snapshot.restore()`` is a *clone to a new VM* and, on current SDK
-    releases, posts the snap_machine (machine key) as a VM key -- that is
-    pyVergeOS#147 and is why this path always reported a false
-    "Snapshot not found". The manager method with ``replace_original=True``
-    is the in-place revert and works on the collection's SDK floor.
+    ``snapshot.restore()`` is a *clone to a new VM* (and before
+    pyVergeOS#148 posted the snap_machine as a VM key -- #147). The
+    manager method with ``replace_original=True`` is the in-place revert
+    the docs describe; it is the correct SDK path on every supported
+    release, including tip after #148.
     """
     vm_name = module.params.get('vm_name')
     vm_id = module.params.get('vm_id')
