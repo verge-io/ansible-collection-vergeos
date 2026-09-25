@@ -9,6 +9,7 @@ local qcow2
   -> minimal OVA (no NICs)
   -> media-catalog upload   (file, idempotent by size)
   -> vm_import              (waits; the VM lands stopped)
+  -> delete that import record (the VM stays)
   -> spec enforcement       (vm)
   -> golden snapshot        (vm_snapshot)
 ```

@@ -6,6 +6,8 @@
 #     -> minimal OVA (no NICs; consumers attach their own)
 #     -> media-catalog upload via `file` (idempotent by size)
 #     -> `vm_import` (waits; the VM lands stopped)
+#     -> delete that import record (the VM stays; the row otherwise
+#        survives the VM and a repeated name cannot be cleaned up)
 #     -> spec enforcement via `vm`
 #     -> golden snapshot via `vm_snapshot`
 #

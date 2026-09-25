@@ -62,6 +62,10 @@ mean the lab is clean. An orphaned `vm_recipe_instance`, whose recipe had
 already been deleted, matched no cleanup selector and survived several runs
 precisely because nothing read that table.
 
+`vm_imports` is one of those tables. VergeOS keeps an import record after the
+VM is deleted, and import names are not unique. The image-pipeline ladder
+removes its record; the sweep fails if a `zz-*` import row is still there.
+
 ## What is here
 
 | Ladder | Covers |

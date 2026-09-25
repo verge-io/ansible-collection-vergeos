@@ -14,6 +14,10 @@
 # and the leftover assertion did not read the instance table. It was found by
 # noticing the system had 33 recipes where it used to have 32.
 #
+# vm_imports is the same shape (#162). VergeOS keeps the row after the VM is
+# gone and does not require the name to be unique. The image-pipeline ladder
+# left one zz-golden row per run, and nothing in this sweep read the table.
+#
 # Run this between ladders, or after a session. It creates nothing.
 - name: Assert the lab carries no scratch objects
   hosts: localhost
@@ -34,7 +38,7 @@
       status_code: [200]
 
   tasks:
-    - name: Read every table a recipe ladder can leave something in
+    - name: Read every table a ladder can leave something in
       ansible.builtin.uri:
         url: "{{ api_base }}/{{ item }}?fields=name%2C%24key"
       register: clean_scan
@@ -44,6 +48,7 @@
         - catalogs
         - vm_recipe_instances
         - vnets
+        - vm_imports
       loop_control:
         label: "{{ item }}"
 
@@ -75,6 +80,6 @@
           Recipe instances and catalogs do not show up in vm_info, so a VM
           list looking empty does not mean the lab is.
         success_msg: >-
-          no zz- objects in vms, vm_recipes, catalogs, vm_recipe_instances
-          or vnets
+          no zz- objects in vms, vm_recipes, catalogs, vm_recipe_instances,
+          vnets, or vm_imports
         quiet: true

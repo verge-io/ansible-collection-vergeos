@@ -38,6 +38,13 @@
             insecure: true
             name: "{{ media }}"
             state: absent
+        # Import rows survive the VM. A name imported twice cannot be
+        # removed until every finished record of that name is removed.
+        - name: "0b2. Remove any previous import records"
+          vergeio.vergeos.vm_import:
+            insecure: true
+            name: "{{ tmpl }}"
+            state: absent
 
     - name: "0c. Create the synthetic source image"
       ansible.builtin.command:
@@ -212,6 +219,12 @@
             name: "{{ media }}"
             state: absent
 
+        - name: "6b2. Remove the import record"
+          vergeio.vergeos.vm_import:
+            insecure: true
+            name: "{{ tmpl }}"
+            state: absent
+
         - name: "6c. Remove any dry-run template"
           vergeio.vergeos.vm:
             insecure: true
@@ -254,4 +267,4 @@
           declared specs -> golden snapshot taken -> template carries no
           NICs -> a re-run is a zero-change no-op with no duplicate, and
           says so both ways round -> check mode builds nothing and does not
-          claim it did -> zero leftovers
+          claim it did -> zero leftovers, including the import record
