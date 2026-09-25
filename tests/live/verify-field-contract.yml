@@ -397,14 +397,16 @@
         quiet: true
       loop: "{{ vm_api_fields }}"
 
-    - name: "PROPERTY 1b -- the three names from #87 are NOT sent"
+    - name: "PROPERTY 1b -- the three names from #87 are not columns"
       ansible.builtin.assert:
         that:
           - "'machine_subtype' not in vm_row"
           - "'bios_type' not in vm_row"
+          - "'network' not in vm_row"
         fail_msg: >-
-          A VM now has a machine_subtype or bios_type column, so #87's
-          resolution needs revisiting: {{ vm_row.keys() | list | sort }}
+          A VM now has a machine_subtype, bios_type, or network column, so
+          #87's resolution needs revisiting:
+          {{ vm_row.keys() | list | sort }}
 
     - name: "PROPERTY 2 -- every value round-trips to what was asked for"
       ansible.builtin.assert:

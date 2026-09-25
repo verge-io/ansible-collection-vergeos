@@ -66,7 +66,7 @@ precisely because nothing read that table.
 
 | Ladder | Covers |
 |---|---|
-| `verify-field-contract.yml` | the compare-and-map contract for `network`, `nic`, `drive`, `user` (#75) |
+| `verify-field-contract.yml` | the compare-and-map contract for `network`, `nic`, `drive`, `user`, and `vm` (#75, #87) |
 | `verify-health-report.yml` | the `health_report` role — capacity, snapshot age and NAS verdicts (#45) |
 | `verify-billing-export.yml` | the `billing_export` role — and that its numbers agree with `tenant_info` (#46, #27) |
 | `verify-k3s-node.yml` | the `k3s_node` role — clone, render, cloud-init, boot, adopt (#50) |
@@ -179,8 +179,15 @@ a *stack trace*.
 1. Name every object `zz-<ladder>-<thing>`.
 2. Clean up at the **start** as well as the end; a previous run may have died.
 3. Assert `changed=false` on a re-apply. That single property would have
-   caught #8, #10, #18 and #59 — every recurrence of the compare-and-map
+   caught #8, #10, #18, #59 and #87 — every recurrence of the compare-and-map
    defect class.
-4. Make the failure message say what was measured, not just that an assert
+4. A module with a create/update path declares `UPDATE_FIELD_MAP` (parameter
+   name to API column) and is listed in `MAPPED_MODULES` in
+   `tests/unit/plugins/modules/test_field_contracts.py`. A declared map that
+   is not in that list fails CI. Add the same column list to
+   `verify-field-contract.yml`. The unit test keeps the ladder's list equal
+   to the map, and the ladder checks that every sent field exists, every
+   value round-trips, and a second apply reports `changed=false`.
+5. Make the failure message say what was measured, not just that an assert
    failed.
-5. Finish with `assert_lab_clean.yml`, or inline the same sweep.
+6. Finish with `assert_lab_clean.yml`, or inline the same sweep.

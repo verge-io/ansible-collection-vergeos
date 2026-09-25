@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`vm`: `machine_subtype`, `bios_type`, and `network` are not VM fields** (#87, #75). The API accepts unknown field names with HTTP 200 and discards them, so the module reported success, the setting never applied, and every later run reported `changed`. `machine_subtype` is removed, because `machine_type` already stores the expanded form. `network` is removed; a VM reaches a network through the `nic` module. `bios_type` stays, as the readable spelling of the boolean `uefi`. The field-contract harness covers `vm`: every sent column exists, `bios_type` round-trips through `uefi`, the three option names are not columns, and a second apply reports `changed=false`.
+
 - **`tag_category`: omitting `taggable_*` or `single_tag_selection` on update turned those flags off** (#121). Every flag defaulted to `false` in the argument spec, so a task that only changed a description sent `false` for every flag it left out. After that, tagging a new VM failed with "API error: Operation not permitted". The flags still default to `false` when a category is created. Omit them on update to leave the current values unchanged.
 
 - **`vm`: RAM that is not a multiple of 256 never converged, and a second run lowered it** (#123). `VMManager.create` rounds RAM up to a multiple of 256 MB. The update path sent the raw value through `save()`, and the platform floors that, so `ram: 2000` stored 2048 on create and 1792 on the next identical run, then reported changed forever. The module now rounds up the same way before it compares and before it writes, so create and update agree and a converged VM stays put.

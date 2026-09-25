@@ -15,6 +15,7 @@ version_added: "1.0.0"
 description:
   - Create, update, power on/off, and delete virtual machines in VergeOS.
   - This module allows you to manage the complete lifecycle of VMs.
+  - A VM reaches a network through its NICs. Use M(vergeio.vergeos.nic).
 options:
   name:
     description:
