@@ -13,9 +13,7 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 import time
-from unittest.mock import MagicMock, patch, call
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from pyvergeos.exceptions import NotFoundError
 
