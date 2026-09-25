@@ -1,18 +1,29 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""Unit tests for vm_import idempotence (#129).
+"""Unit tests for vm_import.
 
-A second ``state: present`` used to POST another import and fail with
-"This name is already in use". Check mode said it would create a VM
-that already existed. The module now resolves the name first and
-converges, the same way ``vm_snapshot`` does.
+Idempotence (#129): a second ``state: present`` used to POST another
+import and fail with "This name is already in use". Check mode said it
+would create a VM that already existed. The module now resolves the name
+first and converges, the same way ``vm_snapshot`` does.
+
+Argument requirements (#154): ``state: absent`` deletes the import record
+by name and never reads an OVA identifier. Requiring one of
+``ova_file_id``, ``ova_file_name``, or ``file_id`` on every state rejected
+a delete that only had ``name``. Those identifiers are required only when
+``state`` is ``present``.
 """
 
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+import json
+
+import pytest
 from unittest.mock import MagicMock, patch
+
+from ansible.module_utils import basic
 
 
 def make_row(data):
@@ -155,4 +166,109 @@ class TestVmImportIdempotence:
         assert result['msg'] == "Would create VM import (check mode)"
         assert result['payload']['name'] == 'qa-probe-import'
         assert result['payload']['file'] == '41'
+        client._request.assert_not_called()
+
+
+def run_real(capsys, client, task, failed=False):
+    """Run vm_import.main() through a real AnsibleModule.
+
+    The #154 bug is in argument-spec validation, which a mocked
+    AnsibleModule never executes. These tests have to fail the way a
+    playbook task fails.
+    """
+    import importlib
+    mod = importlib.import_module(
+        'ansible_collections.vergeio.vergeos.plugins.modules.vm_import')
+
+    args = {
+        'host': 'vergeos.example.com',
+        'username': 'admin',
+        'password': 'secret',
+        'name': 'qa-probe-import',
+    }
+    args.update(task)
+    # ansible-core 2.19+ refuses to decode module args unless a serialization
+    # profile is set. 2.15 has no _ANSIBLE_PROFILE.
+    saved_args = basic._ANSIBLE_ARGS
+    saved_profile = getattr(basic, '_ANSIBLE_PROFILE', None)
+    basic._ANSIBLE_ARGS = json.dumps(
+        {'ANSIBLE_MODULE_ARGS': args}).encode('utf-8')
+    if hasattr(basic, '_ANSIBLE_PROFILE'):
+        basic._ANSIBLE_PROFILE = 'legacy'
+    try:
+        with patch.object(mod, 'get_vergeos_client', return_value=client):
+            with pytest.raises(SystemExit) as caught:
+                mod.main()
+    finally:
+        basic._ANSIBLE_ARGS = saved_args
+        if hasattr(basic, '_ANSIBLE_PROFILE'):
+            basic._ANSIBLE_PROFILE = saved_profile
+
+    captured = capsys.readouterr()
+    text = (captured.out + captured.err).strip()
+    expected = 1 if failed else 0
+    assert caught.value.code == expected, text
+    result = json.loads(text.splitlines()[-1])
+    if failed:
+        assert result.get('failed') is True
+    return result
+
+
+class TestVmImportOvaRequiredOnlyWhenPresent:
+    """Issue #154. state=absent must not require an unused OVA identifier."""
+
+    def test_absent_with_only_name_deletes_import(self, capsys):
+        client = MagicMock()
+        row = make_row({'$key': 'imp-9', 'name': 'qa-probe-import'})
+        client.vm_imports.list.return_value = [row]
+
+        result = run_real(capsys, client, {'state': 'absent'})
+
+        assert result['changed'] is True
+        assert result['msg'] == 'Import deleted'
+        assert result['import_key'] == 'imp-9'
+        row.delete.assert_called_once_with()
+        client.files.list.assert_not_called()
+        client._request.assert_not_called()
+
+    def test_absent_with_only_name_is_unchanged_when_missing(self, capsys):
+        client = MagicMock()
+        client.vm_imports.list.return_value = []
+
+        result = run_real(capsys, client, {'state': 'absent'})
+
+        assert result['changed'] is False
+        assert result['msg'] == 'Import not found'
+
+    def test_present_without_ova_identifier_fails(self, capsys):
+        client = MagicMock()
+
+        result = run_real(capsys, client, {'state': 'present'}, failed=True)
+
+        msg = result['msg']
+        assert 'present' in msg
+        for name in ('ova_file_id', 'ova_file_name', 'file_id'):
+            assert name in msg
+        client.vms.list.assert_not_called()
+        client.vm_imports.list.assert_not_called()
+
+    @pytest.mark.parametrize('identifier', [
+        {'ova_file_id': '41'},
+        {'ova_file_name': 'rhel8.ova'},
+        {'file_id': '42'},
+    ])
+    def test_present_accepts_each_identifier_alone(self, capsys, identifier):
+        """Any one OVA identifier satisfies state=present. All three are not required."""
+        client = MagicMock()
+        client.vms.list.return_value = [
+            make_row({'$key': 57, 'name': 'qa-probe-import'}),
+        ]
+        task = {'state': 'present'}
+        task.update(identifier)
+
+        result = run_real(capsys, client, task)
+
+        assert result['changed'] is False
+        assert result['vm_id'] == '57'
+        assert result['msg'] == "VM 'qa-probe-import' already exists"
         client._request.assert_not_called()

@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`vm_import`: `state=absent` required an OVA identifier the delete path never uses** (#154). `required_one_of` applied to both states, so removing an import by name failed unless `ova_file_id`, `ova_file_name`, or `file_id` was also set. Those parameters are required only when `state=present`.
+
 - **`tag_category`: deleting a category with tags deleted those tags and their assignments and reported success** (#153). The docs said a category that contains tags cannot be deleted. On VergeOS the platform cascades: the category, every tag in it, and every assignment of those tags are removed. `state=absent` now refuses unless `force=true`. With `force`, the result names each tag and how many assignments it had, including in check mode. An empty category still deletes without `force`. Check mode for `tag` and `tag_category` says "Would delete" rather than "deleted".
 
 - **`physical_drive_info` `node:` returned zero drives on every released pyvergeos** (#145). Since the scoped `PhysicalDriveManager(node_key=...)` call, a per-node scan was `changed=false` with no failure and no warning, including through `drive_health`. Released SDKs from 1.2.7 through 1.6.1 still filter `node eq <key>` on `machine_drive_phys`, which has no `node` column. The parent_drive walk (pyVergeOS#143) is unreleased. The module uses that scoped manager only when the installed SDK has it, and otherwise matches `node_name` client-side. A node that exists but has no drives warns instead of looking healthy. The floor stays `pyvergeos>=1.2.7`.
