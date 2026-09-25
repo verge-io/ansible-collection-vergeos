@@ -38,7 +38,14 @@ sites:
 
 # Optional: Group hosts by these dimensions
 # Choices: site, tags, status, tenant, os_family, cluster, node
+# `cluster` groups by cluster name (cluster_example_lab), not a numeric id.
 # Note: 'node' groups only include running VMs (stopped VMs have no node)
+#
+# A site that cannot be queried is skipped with a warning. Set this so any
+# site failure is fatal instead of a smaller inventory that still exits 0.
+# Every site failing is always an error. To make ansible-inventory itself
+# exit non-zero, set ANSIBLE_INVENTORY_UNPARSED_FAILED=true.
+# strict_sites: false
 group_by:
   - site
   - status
