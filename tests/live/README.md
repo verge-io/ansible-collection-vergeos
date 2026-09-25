@@ -87,6 +87,7 @@ precisely because nothing read that table.
 | `verify-protect.yml` | the `protect` role: tag a VM, get it enrolled (#39) |
 | `verify-vnet-rule.yml` | `vnet_rule` / `vnet_apply` — firewall rules and the explicit apply (#44, #19) |
 | `verify-vm-power.yml` | `vm` power waits — a budget that cannot be met fails instead of reporting success after sixty seconds (#114) |
+| `verify-vm-snapshot.yml` | `vm_snapshot` — never-expire and in-place restore, the two defects that made a golden snapshot vanish overnight and made restore always fail (#119, #128) |
 | `verify-network-power.yml` | `network` powering a vnet on and off — a rule staged on a stopped router, started, and read back live (#97) |
 | `verify-network-policy.yml` | the `network_policy` role, enforcing a rule set with one apply (#44) |
 | `verify-rbac.yml` | `group` / `group_info` / `permission` and the `rbac` role (#34) |

@@ -1,0 +1,298 @@
+---
+# Live ladder for vm_snapshot expiry (#119) and in-place restore (#128).
+#
+#   ansible-playbook verify-vm-snapshot.yml
+#
+# Create used to leave expires unset / treat expiration=0 as the SDK's 24h
+# default, so a "golden" snapshot documented as never-expiring vanished the
+# next day. Restore called snapshot.restore() (clone / wrong key) and always
+# failed with a false "Snapshot not found".
+#
+# This ladder:
+#   - creates a never-expiring snapshot and reads expires back as 0
+#   - creates expiration:0 the same way
+#   - creates a finite expiration and checks the stored epoch
+#   - refuses a past epoch
+#   - forwards description
+#   - snapshots, mutates, restores in place, asserts the mutation is gone
+#   - refuses restore while the VM is running
+#   - tears down every zz-* it created
+- name: VM snapshot live ladder
+  hosts: localhost
+  gather_facts: true
+  vars:
+    probe_vm: zz-snap-vm
+    never_name: zz-snap-never
+    zero_name: zz-snap-zero
+    finite_name: zz-snap-finite
+    restore_name: zz-snap-restore
+    finite_expires: "{{ (ansible_date_time.epoch | int) + 7200 }}"
+  tasks:
+    - name: "0. Nothing of these names is lying around"
+      vergeio.vergeos.vm_info:
+        insecure: true
+      register: before
+      changed_when: false
+      failed_when: >-
+        before.vms | selectattr('name', 'equalto', probe_vm)
+        | list | length > 0
+
+    - name: The ladder
+      block:
+        - name: "1. Create the probe VM, stopped"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: present
+            cpu_cores: 1
+            ram: 1024
+            description: snap-base
+          register: created
+
+        # ── #119 expiry ────────────────────────────────────────────────
+
+        - name: "2. Create with no expiration (docs: never)"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            snapshot_name: "{{ never_name }}"
+            description: qa never-expire
+            operation: create
+          register: never_create
+
+        - name: "2b. Read it back from the API"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            operation: list
+          register: listed
+          changed_when: false
+
+        - name: "2c. expires is 0 (never), description stuck"
+          ansible.builtin.assert:
+            that:
+              - never_create is changed
+              - never_create.expires | int == 0
+              - never_create.snapshot_id | length > 0
+              - >
+                  (listed.snapshots
+                   | selectattr('name', 'equalto', never_name)
+                   | list | first).expires | int == 0
+              - >
+                  (listed.snapshots
+                   | selectattr('name', 'equalto', never_name)
+                   | list | first).description == 'qa never-expire'
+
+        - name: "3. Create with expiration: 0 (also never)"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            snapshot_name: "{{ zero_name }}"
+            expiration: 0
+            operation: create
+          register: zero_create
+
+        - name: "3b. List again"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            operation: list
+          register: listed2
+          changed_when: false
+
+        - name: "3c. expires is 0 again"
+          ansible.builtin.assert:
+            that:
+              - zero_create.expires | int == 0
+              - >
+                  (listed2.snapshots
+                   | selectattr('name', 'equalto', zero_name)
+                   | list | first).expires | int == 0
+
+        - name: "4. Create with a future absolute epoch"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            snapshot_name: "{{ finite_name }}"
+            expiration: "{{ finite_expires | int }}"
+            operation: create
+          register: finite_create
+
+        - name: "4b. List finite"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            operation: list
+          register: listed3
+          changed_when: false
+
+        - name: "4c. Stored expires matches the epoch we sent"
+          ansible.builtin.assert:
+            that:
+              - finite_create.expires | int == (finite_expires | int)
+              - >
+                  (listed3.snapshots
+                   | selectattr('name', 'equalto', finite_name)
+                   | list | first).expires | int
+                  == (finite_expires | int)
+
+        - name: "5. Past epoch is refused"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            snapshot_name: zz-snap-past
+            expiration: 1
+            operation: create
+          register: past
+          failed_when: past is succeeded
+
+        - name: "5b. Message names the rule"
+          ansible.builtin.assert:
+            that:
+              - "'future Unix epoch' in past.msg"
+
+        # ── #128 restore ───────────────────────────────────────────────
+
+        - name: "6. Snapshot the base description"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            snapshot_name: "{{ restore_name }}"
+            description: restore probe
+            operation: create
+          register: restore_snap
+
+        - name: "7. Mutate the VM away from the snapshot"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: present
+            description: mutated-after-snap
+
+        - name: "7b. Confirm the mutation landed"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ probe_vm }}"
+          register: mutated
+          changed_when: false
+          failed_when: >-
+            (mutated.vms | first).description != 'mutated-after-snap'
+
+        - name: "8. Restore while running must fail (start first)"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: running
+          register: started
+
+        - name: "8b. In-place restore refused on a running VM"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            snapshot_id: "{{ restore_snap.snapshot_id }}"
+            operation: restore
+          register: restore_running
+          failed_when: restore_running is succeeded
+
+        - name: "8c. Message says powered off"
+          ansible.builtin.assert:
+            that:
+              - "'powered off' in restore_running.msg"
+
+        - name: "9. Power off for the real restore"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: stopped
+
+        - name: "9b. Check mode would restore"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            snapshot_id: "{{ restore_snap.snapshot_id }}"
+            operation: restore
+          check_mode: true
+          register: restore_check
+
+        - name: "9c. Check mode reports changed, no restore yet"
+          ansible.builtin.assert:
+            that:
+              - restore_check is changed
+              - "'Would restore' in restore_check.msg"
+
+        - name: "10. Restore in place"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            snapshot_id: "{{ restore_snap.snapshot_id }}"
+            operation: restore
+          register: restored
+
+        - name: "10b. Description is back to the snapshot state"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ probe_vm }}"
+          register: after_restore
+          changed_when: false
+          failed_when: >-
+            (after_restore.vms | first).description != 'snap-base'
+
+        - name: "10c. Restore reported changed"
+          ansible.builtin.assert:
+            that:
+              - restored is changed
+              - restored.operation == 'restore'
+
+      always:
+        - name: "T. List leftover snapshots on the probe"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            operation: list
+          register: leftover_snaps
+          changed_when: false
+          failed_when: false
+
+        - name: "T. Delete each zz-snap-* we still see"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            snapshot_id: "{{ item['$key'] }}"
+            operation: delete
+          loop: "{{ leftover_snaps.snapshots | default([]) }}"
+          when:
+            - leftover_snaps.snapshots is defined
+            - item.name is defined
+            - item.name is match('^zz-snap-')
+          failed_when: false
+
+        - name: "T. Stop the probe VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: stopped
+          failed_when: false
+
+        - name: "T. Delete the probe VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: absent
+          failed_when: false
+
+    - name: "Z. Zero leftovers of our probe VM"
+      vergeio.vergeos.vm_info:
+        insecure: true
+      register: after
+      changed_when: false
+      failed_when: >-
+        after.vms | selectattr('name', 'equalto', probe_vm)
+        | list | length > 0
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          vm_snapshot ladder PASSED: omitted expiration and expiration:0 both
+          store expires=0 (never) -> a future epoch is stored as sent -> a past
+          epoch is refused -> description is forwarded -> restore of a running
+          VM is refused -> check mode would restore without doing it ->
+          in-place restore reverts the mutation -> zero leftovers
