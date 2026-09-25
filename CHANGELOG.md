@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`vm_snapshot`: restore and delete could act on a different VM when `snapshot_id` belonged to it** (#161). `vm.snapshots.get(key)` returns whatever snapshot owns the key, so naming VM A and passing B's snapshot reverted B (or, on delete, removed B's snapshot) and reported A's id. Before check mode and before the write, the snapshot's `machine` is compared to the named VM's `machine`. A mismatch is refused and the message names both VMs. Delete that passes only `snapshot_id` is unchanged.
+- **`vm_snapshot`: restore and delete could act on a different VM when `snapshot_id` belonged to it** (#161). Naming VM A and passing B's snapshot reverted B (or, on delete, removed B's snapshot) and reported A's id. Before check mode and before the write, the snapshot's `machine` is compared to the named VM's `machine`. A mismatch is refused and the message names both VMs. pyVergeOS #174 makes VM-scoped `get(key)` raise not-found for another machine's key, the same exception a missing key raises. That not-found is read again without the VM scope. A row that exists on another machine is still refused and the message names both VMs. A key that does not exist still says not found. Delete that passes only `snapshot_id` is unchanged.
 
 - **`vm_import`: `state=absent` required an OVA identifier the delete path never uses** (#154). `required_one_of` applied to both states, so removing an import by name failed unless `ova_file_id`, `ova_file_name`, or `file_id` was also set. Those parameters are required only when `state=present`.
 

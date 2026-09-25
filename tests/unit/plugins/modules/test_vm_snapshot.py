@@ -7,9 +7,12 @@ Create used to omit expires / treat expiration=0 as "use the SDK 24h
 default", so snapshots documented as never-expiring vanished the next day.
 Restore called snapshot.restore() (clone path / wrong key, pyVergeOS#147)
 and turned every NotFound into a false "Snapshot not found".
-get(key) is not scoped to the VM, so a snapshot id from another machine
-used to revert that machine. Restore and delete now compare machines
-first.
+A snapshot id from another machine used to revert that machine.
+Restore and delete compare machines first. pyVergeOS #174 makes
+VM-scoped get(key) raise NotFoundError for another machine's key, the
+same exception a missing key raises. A NotFound from that get is read
+again without the VM scope: a foreign row is refused and the message
+names both VMs; a key that does not exist still says not found.
 """
 
 from __future__ import (absolute_import, division, print_function)
@@ -251,17 +254,26 @@ def test_restore_refuses_running_vm_even_in_check_mode():
 
 
 def test_restore_reports_missing_snapshot_from_get_only():
+    """A key that does not exist stays "not found".
+
+    Scoped get raises NotFoundError for a missing key. The unscoped read
+    must 404 too. A successful unscoped read of some other payload must
+    not be invented by this test: that would be a foreign row.
+    """
     module = make_module(base_params(
         operation='restore', snapshot_id='10', vm_name='web',
     ))
-    client, vm = make_client(vm=make_vm(running=False))
-    vm.snapshots.get.side_effect = NotFoundError('Snapshot 10 not found')
+    named = make_vm(running=False)
+    client, vm = _client_missing_snapshot(named, '10')
 
     run_main(module, client)
 
     module.fail_json.assert_called_once()
     assert module.fail_json.call_args.kwargs['msg'] == "Snapshot '10' not found"
     vm.snapshots.restore.assert_not_called()
+    methods = [call[0][0] for call in client._request.call_args_list]
+    assert methods == ['GET']
+    assert client._request.call_args[0][1] == 'machine_snapshots/10'
 
 
 def test_restore_does_not_relabel_restore_failures_as_missing_snapshot():
@@ -515,6 +527,169 @@ def test_delete_check_mode_own_snapshot_does_not_delete():
     kwargs = module.exit_json.call_args.kwargs
     assert kwargs['changed'] is True
     assert 'Would delete' in kwargs['msg']
+
+
+def _route_foreign_snapshot(method, path, params=None, **kwargs):
+    """Unscoped snapshot row, then the VM that owns its machine."""
+    if method == 'GET' and path == 'machine_snapshots/2':
+        assert 'machine' in (params or {}).get('fields', '')
+        return {'$key': 2, 'name': 'b-snap', 'machine': 60}
+    if method == 'GET' and path == 'vms':
+        return _owning_vm_lookup(42, 'snapB', 60)
+    raise AssertionError('unexpected request %s %s' % (method, path))
+
+
+def _client_scoped_not_found(named, message):
+    """Scoped get raises NotFoundError; unscoped GET returns B's snapshot."""
+    named.snapshots.get.side_effect = NotFoundError(message)
+    client, vm = make_client(vm=named)
+    client._request.side_effect = _route_foreign_snapshot
+    return client, vm
+
+
+def _client_missing_snapshot(named, snapshot_id):
+    """Scoped get and the unscoped read both 404."""
+    named.snapshots.get.side_effect = NotFoundError(
+        'Snapshot %s not found' % snapshot_id
+    )
+    client, vm = make_client(vm=named)
+
+    def route(method, path, params=None, **kwargs):
+        if method == 'GET' and path == 'machine_snapshots/%s' % snapshot_id:
+            raise NotFoundError('Snapshot %s not found' % snapshot_id)
+        raise AssertionError('unexpected request %s %s' % (method, path))
+
+    client._request.side_effect = route
+    return client, vm
+
+
+def test_restore_refuses_foreign_when_scoped_get_says_not_found():
+    """pyVergeOS #174: foreign key raises NotFoundError, not a row.
+
+    The SDK text is the same shape as a missing key. The unscoped row
+    still belongs to the other VM, so the refusal names both.
+    """
+    named = make_vm(key=41, machine=58, name='snapA', running=False)
+    module = make_module(base_params(
+        operation='restore', snapshot_id='2', vm_name='snapA',
+    ))
+    client, vm = _client_scoped_not_found(named, 'Snapshot 2 not found')
+
+    run_main(module, client)
+
+    module.exit_json.assert_not_called()
+    vm.snapshots.restore.assert_not_called()
+    methods = [call[0][0] for call in client._request.call_args_list]
+    assert methods == ['GET', 'GET']
+    assert 'DELETE' not in methods
+    msg = module.fail_json.call_args.kwargs['msg']
+    assert msg == (
+        "Snapshot '2' belongs to VM 'snapB' (vm_id=42, machine=60), "
+        "not VM 'snapA' (vm_id=41, machine=58)"
+    )
+
+
+def test_restore_refuses_foreign_when_scoped_get_says_wrong_machine():
+    """The SDK's 'does not belong' text is not the user-facing message."""
+    named = make_vm(key=41, machine=58, name='snapA', running=False)
+    module = make_module(base_params(
+        operation='restore', snapshot_id='2', vm_name='snapA',
+    ))
+    client, vm = _client_scoped_not_found(
+        named, 'Snapshot 2 does not belong to machine 58',
+    )
+
+    run_main(module, client)
+
+    vm.snapshots.restore.assert_not_called()
+    msg = module.fail_json.call_args.kwargs['msg']
+    assert "VM 'snapA'" in msg
+    assert "VM 'snapB'" in msg
+    assert 'does not belong to machine 58' not in msg
+
+
+def test_restore_refuses_foreign_scoped_not_found_in_check_mode():
+    named = make_vm(key=41, machine=58, name='snapA', running=False)
+    module = make_module(base_params(
+        operation='restore', snapshot_id='2', vm_name='snapA',
+    ), check_mode=True)
+    client, vm = _client_scoped_not_found(named, 'Snapshot 2 not found')
+
+    run_main(module, client)
+
+    module.exit_json.assert_not_called()
+    vm.snapshots.restore.assert_not_called()
+    msg = module.fail_json.call_args.kwargs['msg']
+    assert "VM 'snapA'" in msg
+    assert "VM 'snapB'" in msg
+    assert 'Would restore' not in msg
+
+
+def test_restore_missing_key_stays_not_found_after_unscoped_404():
+    named = make_vm(key=41, machine=58, name='snapA', running=False)
+    module = make_module(base_params(
+        operation='restore', snapshot_id='99', vm_name='snapA',
+    ))
+    client, vm = _client_missing_snapshot(named, '99')
+
+    run_main(module, client)
+
+    vm.snapshots.restore.assert_not_called()
+    assert module.fail_json.call_args.kwargs['msg'] == "Snapshot '99' not found"
+    assert client._request.call_args[0] == ('GET', 'machine_snapshots/99')
+
+
+def test_delete_refuses_foreign_when_scoped_get_says_not_found():
+    named = make_vm(key=41, machine=58, name='snapA', running=False)
+    module = make_module(base_params(
+        operation='delete', snapshot_id='2', vm_name='snapA',
+    ))
+    client, vm = _client_scoped_not_found(named, 'Snapshot 2 not found')
+
+    run_main(module, client)
+
+    module.exit_json.assert_not_called()
+    methods = [call[0][0] for call in client._request.call_args_list]
+    assert methods == ['GET', 'GET']
+    assert 'DELETE' not in methods
+    msg = module.fail_json.call_args.kwargs['msg']
+    assert "VM 'snapA'" in msg
+    assert "VM 'snapB'" in msg
+    assert 'not found' not in msg.lower()
+
+
+def test_delete_refuses_foreign_scoped_not_found_in_check_mode():
+    named = make_vm(key=41, machine=58, name='snapA', running=False)
+    module = make_module(base_params(
+        operation='delete', snapshot_id='2', vm_name='snapA',
+    ), check_mode=True)
+    client, vm = _client_scoped_not_found(named, 'Snapshot 2 not found')
+
+    run_main(module, client)
+
+    module.exit_json.assert_not_called()
+    methods = [call[0][0] for call in client._request.call_args_list]
+    assert 'DELETE' not in methods
+    msg = module.fail_json.call_args.kwargs['msg']
+    assert "VM 'snapA'" in msg
+    assert "VM 'snapB'" in msg
+    assert 'Would delete' not in msg
+
+
+def test_delete_missing_key_when_vm_named_says_not_found():
+    named = make_vm(key=41, machine=58, name='snapA', running=False)
+    module = make_module(base_params(
+        operation='delete', snapshot_id='99', vm_name='snapA',
+    ))
+    client, vm = _client_missing_snapshot(named, '99')
+
+    run_main(module, client)
+
+    module.exit_json.assert_not_called()
+    methods = [call[0][0] for call in client._request.call_args_list]
+    assert methods == ['GET']
+    assert 'DELETE' not in methods
+    assert module.fail_json.call_args.kwargs['msg'] == "Snapshot '99' not found"
 
 
 def test_delete_without_vm_still_deletes_by_id():

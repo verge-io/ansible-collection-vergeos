@@ -40,6 +40,8 @@ options:
         snapshot's C(machine) to be the named VM's C(machine). A key from
         another VM is refused in check mode and on a real run. That other
         VM is not modified. The refusal names both VMs.
+      - An id that does not exist is reported as not found. That includes
+        a named VM: a missing key is not reported as belonging to another VM.
     type: str
   description:
     description:
@@ -63,7 +65,8 @@ options:
       - C(list) lists snapshots (returns all snapshots or filtered by VM).
       - C(delete) deletes a snapshot.
       - Delete with I(vm_name) or I(vm_id) refuses a snapshot that belongs
-        to a different VM. Delete with only I(snapshot_id) is unchanged.
+        to a different VM, and the message names both VMs. A missing key
+        is reported as not found. Delete with only I(snapshot_id) is unchanged.
     type: str
     choices: [ create, restore, list, delete ]
     default: create
@@ -454,14 +457,52 @@ def _vm_by_machine(client, machine_key):
     return None
 
 
+def _unscoped_snapshot(client, snapshot_key):
+    """Return the machine_snapshots row, or None when the key does not exist.
+
+    ``vm.snapshots.get(key)`` raises NotFoundError for a missing key and,
+    since pyVergeOS #174, for a key whose ``machine`` is not this VM.
+    Those two are the same exception. This GET is not VM-scoped, so a
+    foreign row comes back and a missing key does not.
+    """
+    try:
+        row = client._request(
+            'GET',
+            'machine_snapshots/%s' % snapshot_key,
+            params={'fields': '$key,name,machine'},
+        )
+    except NotFoundError:
+        return None
+    if not isinstance(row, dict) or not row:
+        return None
+    return row
+
+
+def _require_snapshot_of_vm(module, client, vm, snapshot_key, snapshot_id):
+    """Confirm ``snapshot_key`` belongs to ``vm`` before check mode or a write.
+
+    Before pyVergeOS #174, ``vm.snapshots.get(key)`` returned another
+    machine's row. After #174 it raises NotFoundError for that row, which
+    is also what a missing key raises. A NotFound from the scoped get is
+    therefore read again without the VM scope. A row on another machine
+    is refused and the message names both VMs. A key that does not exist
+    is reported as not found.
+    """
+    try:
+        snapshot = vm.snapshots.get(key=snapshot_key)
+    except NotFoundError:
+        snapshot = _unscoped_snapshot(client, snapshot_key)
+        if snapshot is None:
+            module.fail_json(msg="Snapshot '%s' not found" % snapshot_id)
+            return
+    _refuse_foreign_snapshot(module, client, vm, snapshot, snapshot_id)
+
+
 def _refuse_foreign_snapshot(module, client, vm, snapshot, snapshot_id):
     """Refuse when the snapshot's machine is not the named VM's machine.
 
-    ``vm.snapshots.get(key)`` is not scoped to the VM: it returns whatever
-    row owns the key, including another machine. Restore and delete must
-    compare the two machines themselves and stop before any write. A match
-    returns; anything else fails and names both VMs when the owner can be
-    resolved.
+    A match returns. Anything else fails before a write and names both
+    VMs when the owner can be resolved.
     """
     vm_data = dict(vm)
     vm_machine = _machine_key(vm_data.get('machine'))
@@ -529,15 +570,9 @@ def restore_snapshot(client, module):
 
     resolved_vm_id = str(dict(vm).get('$key'))
 
-    # get(key) is not scoped to this VM. Read the row, then refuse when
-    # its machine is not the named VM's machine, before check mode and
-    # before the restore posts.
-    try:
-        snapshot = vm.snapshots.get(key=snapshot_key)
-    except NotFoundError:
-        module.fail_json(msg="Snapshot '%s' not found" % snapshot_id)
-
-    _refuse_foreign_snapshot(module, client, vm, snapshot, snapshot_id)
+    # Before check mode and before the restore posts. A foreign key is
+    # refused by name; a key that does not exist says not found.
+    _require_snapshot_of_vm(module, client, vm, snapshot_key, snapshot_id)
 
     if vm_is_running(vm):
         module.fail_json(
@@ -604,12 +639,11 @@ def delete_snapshot(client, module):
                 msg="Either vm_name or vm_id must be provided for delete"
             )
 
-        try:
-            snapshot = vm.snapshots.get(key=snapshot_key)
-        except NotFoundError:
-            module.fail_json(msg="Snapshot '%s' not found" % snapshot_id)
-
-        _refuse_foreign_snapshot(module, client, vm, snapshot, snapshot_id)
+        # Before check mode and before the DELETE. A foreign key is
+        # refused by name; a key that does not exist says not found.
+        _require_snapshot_of_vm(
+            module, client, vm, snapshot_key, snapshot_id,
+        )
 
     if module.check_mode:
         module.exit_json(
