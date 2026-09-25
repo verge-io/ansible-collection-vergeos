@@ -107,15 +107,23 @@ def run(capsys, client, task):
         'state': 'present',
     }
     args.update(task)
-    saved = basic._ANSIBLE_ARGS
+    # ansible-core 2.19+ refuses to decode module args unless a serialization
+    # profile is set ("No serialization profile was specified"). 2.15 has no
+    # _ANSIBLE_PROFILE; leaving it unset there keeps the pre-2.19 path.
+    saved_args = basic._ANSIBLE_ARGS
+    saved_profile = getattr(basic, '_ANSIBLE_PROFILE', None)
     basic._ANSIBLE_ARGS = json.dumps(
         {'ANSIBLE_MODULE_ARGS': args}).encode('utf-8')
+    if hasattr(basic, '_ANSIBLE_PROFILE'):
+        basic._ANSIBLE_PROFILE = 'legacy'
     try:
         with patch.object(mod, 'get_vergeos_client', return_value=client):
             with pytest.raises(SystemExit) as caught:
                 mod.main()
     finally:
-        basic._ANSIBLE_ARGS = saved
+        basic._ANSIBLE_ARGS = saved_args
+        if hasattr(basic, '_ANSIBLE_PROFILE'):
+            basic._ANSIBLE_PROFILE = saved_profile
 
     captured = capsys.readouterr()
     text = (captured.out + captured.err).strip()
