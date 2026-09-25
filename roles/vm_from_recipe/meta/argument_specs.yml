@@ -108,7 +108,8 @@ argument_specs:
         default: 10
       vm_from_recipe_verify_drives:
         description:
-          - Assert the VM has at least one drive and none still importing.
+          - Assert the VM has at least one drive, none still importing, and none
+            the platform has marked failed.
         type: bool
         default: true
       vm_from_recipe_verify_nics:

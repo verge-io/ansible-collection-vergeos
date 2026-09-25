@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`vm_from_recipe`: a failed image import burned the whole wait, then advised raising it** (#131). The platform marks a drive `status: errors` within about two seconds and does not retry, but `media` stays `import`. `vm_drive_info` counted every `media=import` drive as unfinished, so the role waited out `vm_from_recipe_wait_timeout` and then suggested raising it. Terminal failure status `errors` is now reported on `failed_drives` and left out of `importing`. The wait exits on the next poll, and the assertion quotes the platform's `status_info` without the timeout advice.
+
 - **Inventory `group_by: cluster` created no groups, and `vergeos_cluster` was always null** (#130). The plugin read `cluster`. `VMManager.list()` returns `cluster_name` and `cluster_key` and has no `cluster` field. Groups are now named from the cluster name (`cluster_example_lab`) and `vergeos_cluster` is that name. `vergeos_cluster_key` carries the id.
 
 - **`cloud_init` and `windows_unattend`: applying the same configuration again reported `changed` on every run** (#125). Neither module compared what was stored with what was asked for. `cloud_init` PUT the datasource and rewrote every file; `windows_unattend` PUT `cloudinit_datasource: nocloud` and rewrote `/unattend.xml`, including in check mode. A GET of the file row does not return contents (`fields=all`, `fields=contents` and `fields=most` all omit them). The comparison uses `cloudinit_files.get_content()`, which returns the stored contents, and the `render` value on the list row (`no` and `No` are the same setting). The datasource is written only when a write happens, and in check mode only when a write would happen.

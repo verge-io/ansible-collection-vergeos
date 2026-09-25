@@ -30,6 +30,29 @@
     quiet: true
   when: vm_from_recipe_verify_drives | bool
 
+# Before the "still importing" assert, and deliberately so. A failed drive is
+# excluded from `importing`. If another drive is still downloading, that assert
+# would fire first and advise raising the timeout -- the wrong advice for a
+# drive the platform has already given up on. This one quotes status_info and
+# does not mention the timeout.
+- name: No drive may have failed
+  ansible.builtin.assert:
+    that: vm_from_recipe_built_drives.failed_drives | default([]) | length == 0
+    fail_msg: >-
+      VM '{{ vm_from_recipe_name }}' (key {{ vm_from_recipe_deploy.vm_key }})
+      has drive(s) the platform has given up on:
+      {{ vm_from_recipe_built_drives.failed_drives | map(attribute='name') | list }}
+      ({{ vm_from_recipe_built_drives.failed_drives | map(attribute='status') | list }}).
+      The platform reports: {{ vm_from_recipe_drive_errors | join(' / ') }}.
+    quiet: true
+  vars:
+    vm_from_recipe_drive_errors: >-
+      {{ vm_from_recipe_built_drives.failed_drives | default([])
+         | map(attribute='status_info') | select('string')
+         | reject('equalto', '') | list
+         | default(['no detail reported'], true) }}
+  when: vm_from_recipe_verify_drives | bool
+
 - name: No drive may still be importing
   ansible.builtin.assert:
     that: vm_from_recipe_built_drives.importing | default([]) | length == 0

@@ -54,6 +54,8 @@ vm_from_recipe_wait: true
 # VM that cannot boot yet.
 vm_from_recipe_wait_for_drives: true
 # Budget for the import itself. An import legitimately takes minutes.
+# A drive the platform has marked status=errors does not use this budget.
+# vm_drive_info reports it on failed_drives and the wait exits on the next poll.
 vm_from_recipe_wait_timeout: 1800
 # Separate, much shorter budget for a drive ROW to appear at all. A recipe
 # whose drive step failed produces a VM with no drives, ever -- and sharing one
@@ -64,7 +66,8 @@ vm_from_recipe_drive_grace: 120
 vm_from_recipe_poll_interval: 10
 
 # ── Post-conditions ──────────────────────────────────────────────────────────
-# Assert the VM has at least one drive and none still importing.
+# Assert the VM has at least one drive, none still importing, and none the
+# platform has marked failed (status=errors).
 vm_from_recipe_verify_drives: true
 # Assert every NIC is attached to a network.
 vm_from_recipe_verify_nics: true

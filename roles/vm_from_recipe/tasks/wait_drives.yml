@@ -40,6 +40,14 @@
 # The module folds both signals together -- media=import is the drive the
 # platform has not finished building, status=importing is the moment it is
 # actively pulling, and a drive can be the first without yet being the second.
+#
+# A drive the platform has given up on is not still importing. On 26.1.8 a
+# failed cloud-image download is status 'errors' within about two seconds,
+# media stays 'import', and the row never changes. Counting that as unfinished
+# made this wait burn the whole budget and then advise raising it.
+# vm_drive_info leaves those drives out of `importing` and lists them on
+# `failed_drives`, and this until exits as soon as one appears. The verdict is
+# still verify_vm.yml, which quotes the platform's status_info.
 - name: Wait for drive imports to finish
   vergeio.vergeos.vm_drive_info:
     host: "{{ vm_from_recipe_host }}"
@@ -58,7 +66,12 @@
   delay: "{{ vm_from_recipe_poll_interval | int }}"
   until:
     - vm_from_recipe_drives.drives | default([]) | length > 0
-    - vm_from_recipe_drives.importing | default([]) | length == 0
+    # Exit when the import is done, OR when a drive has already failed. The
+    # second clause is what keeps a sibling that is still downloading from
+    # holding a failed drive in this loop until the budget runs out.
+    - >-
+      (vm_from_recipe_drives.importing | default([]) | length == 0)
+      or (vm_from_recipe_drives.failed_drives | default([]) | length > 0)
   when: vm_from_recipe_first_drives.drives | default([]) | length > 0
 
 - name: Report drive readiness
@@ -67,4 +80,6 @@
       drives: {{ vm_from_recipe_drives.drives | default([])
                  | map(attribute='name') | list }};
       still importing: {{ vm_from_recipe_drives.importing | default([])
-                          | map(attribute='name') | list }}
+                          | map(attribute='name') | list }};
+      failed: {{ vm_from_recipe_drives.failed_drives | default([])
+                 | map(attribute='name') | list }}

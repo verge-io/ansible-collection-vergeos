@@ -127,6 +127,7 @@ def test_media_import_counts_as_unfinished():
     vm = FakeVM({'machine': 18}, drives=[drive(1, 'OS', media='import')])
     result = exited(run(FakeClient(vm)))
     assert [d['name'] for d in result['importing']] == ['OS']
+    assert result['failed_drives'] == []
 
 
 def test_status_importing_counts_as_unfinished():
@@ -146,7 +147,9 @@ def test_a_drive_is_not_double_counted_as_unfinished():
 
 def test_a_finished_drive_is_not_unfinished():
     vm = FakeVM({'machine': 18}, drives=[drive(1, 'OS')])
-    assert exited(run(FakeClient(vm)))['importing'] == []
+    result = exited(run(FakeClient(vm)))
+    assert result['importing'] == []
+    assert result['failed_drives'] == []
 
 
 def test_a_vm_with_no_drives_reports_an_empty_list():
@@ -155,6 +158,51 @@ def test_a_vm_with_no_drives_reports_an_empty_list():
     result = exited(run(FakeClient(vm)))
     assert result['drives'] == []
     assert result['importing'] == []
+    assert result['failed_drives'] == []
+
+
+# ── failed imports ───────────────────────────────────────────────────────────
+#
+# Issue #131. A cloud-image import the platform cannot download is marked
+# status=errors within about two seconds and never retried, but media stays
+# import. Counting that as unfinished made vm_from_recipe burn the whole
+# wait_timeout and then advise raising it.
+
+def test_an_errored_import_is_not_still_importing():
+    """media=import, status=errors must not sit in importing."""
+    row = drive(1, 'OS', media='import', status='errors',
+                status_info='Unable to download https://example.invalid/os.qcow2')
+    assert vm_drive_info.unfinished([row]) == []
+    assert vm_drive_info.failed_drives([row]) == [row]
+
+
+def test_an_errored_import_is_returned_on_failed_drives():
+    row = drive(1, 'OS', media='import', status='errors',
+                status_info='Unable to download https://example.invalid/os.qcow2')
+    vm = FakeVM({'machine': 18}, drives=[row])
+    result = exited(run(FakeClient(vm)))
+    assert result['importing'] == []
+    assert [d['name'] for d in result['failed_drives']] == ['OS']
+    assert result['failed_drives'][0]['status'] == 'errors'
+    assert result['failed_drives'][0]['status_info'].startswith('Unable to download')
+
+
+def test_a_failed_drive_does_not_hide_one_still_importing():
+    """The wait must be able to see both: exit on the failure, keep waiting
+    only when something is actually still importing and nothing has failed.
+    """
+    still = drive(1, 'OS', media='import', status='importing',
+                  status_info='Downloading (12%)')
+    dead = drive(2, 'DATA', media='import', status='errors',
+                 status_info='Unable to download https://example.invalid/data.qcow2')
+    assert [d['name'] for d in vm_drive_info.unfinished([still, dead])] == ['OS']
+    assert [d['name'] for d in vm_drive_info.failed_drives([still, dead])] == ['DATA']
+
+
+def test_status_importing_is_not_a_failure():
+    row = drive(1, 'OS', media='import', status='importing')
+    assert vm_drive_info.failed_drives([row]) == []
+    assert [d['name'] for d in vm_drive_info.unfinished([row])] == ['OS']
 
 
 # ── stats ────────────────────────────────────────────────────────────────────
