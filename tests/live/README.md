@@ -37,7 +37,10 @@ a reason. Naming an inventory host makes Ansible discover a system Python that
 has no `pyvergeos`, and every module then fails with *"The pyvergeos SDK is
 required for this module"*. Playbooks run against **implicit** localhost are
 unaffected, which is why it looks intermittent. The value must be quoted —
-unquoted Jinja makes the whole INI file unparsable (#29).
+unquoted Jinja makes the whole INI file unparsable (#29). `ansible-inventory`
+still exits 0 in that case and falls back to implicit localhost. What you
+see is an empty host list and a warning.
+`tests/unit/test_live_ladders.py` parses the file.
 
 **A teardown that prints `ok` has not necessarily deleted anything.** A bare
 `state: absent` with `failed_when: false` on a running VM reports success and
@@ -149,7 +152,9 @@ Two things guard it now, and they cover different halves:
 
 - `tests/unit/test_role_check_mode.py` runs in CI, with no cluster. It insists
   that any variable parsed with `from_json` is produced by a task carrying
-  `check_mode: false`. That is #28's exact shape.
+  `check_mode: false` (or that the parse itself tolerates an empty stdout,
+  for a command that writes). It reads role task files and every playbook
+  under `tests/live/`. That is #28's exact shape.
 - The `examples parse` CI job loads every example as a playbook. That catches a
   broken example, not a broken role.
 
