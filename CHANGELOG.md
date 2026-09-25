@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`tag_category`: omitting `taggable_*` or `single_tag_selection` on update turned those flags off** (#121). Every flag defaulted to `false` in the argument spec, so a task that only changed a description sent `false` for every flag it left out. After that, tagging a new VM failed with "API error: Operation not permitted". The flags still default to `false` when a category is created. Omit them on update to leave the current values unchanged.
+
 - **`vm`: RAM that is not a multiple of 256 never converged, and a second run lowered it** (#123). `VMManager.create` rounds RAM up to a multiple of 256 MB. The update path sent the raw value through `save()`, and the platform floors that, so `ram: 2000` stored 2048 on create and 1792 on the next identical run, then reported changed forever. The module now rounds up the same way before it compares and before it writes, so create and update agree and a converged VM stays put.
 
 - **`nic`: removing a NIC only removes a NIC on that network** (#118). `get_nic()` returned the VM's first NIC whenever none was attached to the requested network, so `state: absent` deleted a NIC on a different network, and declaring NICs on two networks re-pointed the same one on every run and never converged. A NIC is now matched only by the network it is on. `state: absent` with no match changes nothing and deletes nothing. `state: present` adds a NIC. Moving an existing NIC, which an OVA import needs for the default NIC it arrives with, is opt-in via `nic_index`.

@@ -39,68 +39,68 @@ options:
     description:
       - If true, only one tag from this category can be applied to a resource.
       - Useful for mutually exclusive tags like environments (dev/staging/prod).
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_vms:
     description:
       - Allow tags in this category to be applied to virtual machines.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_networks:
     description:
       - Allow tags in this category to be applied to networks (vnets).
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_volumes:
     description:
       - Allow tags in this category to be applied to volumes.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_network_rules:
     description:
       - Allow tags in this category to be applied to network rules.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_vmware_containers:
     description:
       - Allow tags in this category to be applied to VMware containers.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_users:
     description:
       - Allow tags in this category to be applied to users.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_tenant_nodes:
     description:
       - Allow tags in this category to be applied to tenant nodes.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_sites:
     description:
       - Allow tags in this category to be applied to sites.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_nodes:
     description:
       - Allow tags in this category to be applied to nodes.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_groups:
     description:
       - Allow tags in this category to be applied to groups.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_clusters:
     description:
       - Allow tags in this category to be applied to clusters.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
   taggable_tenants:
     description:
       - Allow tags in this category to be applied to tenants.
+      - Defaults to C(false) when creating. Omit to leave unchanged on update.
     type: bool
-    default: false
 extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 author:
@@ -181,6 +181,38 @@ if HAS_PYVERGEOS:
     )
 
 
+# Omitted on update, false on create. These must not carry an argument-spec
+# default: Ansible would pass False for every flag a task leaves out, and a
+# description-only edit would turn tagging off (#121).
+CATEGORY_FLAGS = (
+    'single_tag_selection',
+    'taggable_vms',
+    'taggable_networks',
+    'taggable_volumes',
+    'taggable_network_rules',
+    'taggable_vmware_containers',
+    'taggable_users',
+    'taggable_tenant_nodes',
+    'taggable_sites',
+    'taggable_nodes',
+    'taggable_groups',
+    'taggable_clusters',
+    'taggable_tenants',
+)
+
+
+def _false_when_omitted(params, name):
+    """Create-time default for a flag.
+
+    An omitted option is present and None. ``dict.get(name, False)`` does
+    not substitute in that case, because the key exists.
+    """
+    value = params.get(name)
+    if value is None:
+        return False
+    return value
+
+
 def get_category(module, client, name):
     """Get tag category by name using SDK"""
     try:
@@ -214,42 +246,20 @@ def category_to_dict(category):
 def create_category(module, client):
     """Create a new tag category using SDK"""
     params = module.params
+    flags = {name: _false_when_omitted(params, name) for name in CATEGORY_FLAGS}
 
     if module.check_mode:
-        return True, {
+        preview = {
             'name': params['name'],
             'description': params.get('description'),
-            'single_tag_selection': params.get('single_tag_selection', False),
-            'taggable_vms': params.get('taggable_vms', False),
-            'taggable_networks': params.get('taggable_networks', False),
-            'taggable_volumes': params.get('taggable_volumes', False),
-            'taggable_network_rules': params.get('taggable_network_rules', False),
-            'taggable_vmware_containers': params.get('taggable_vmware_containers', False),
-            'taggable_users': params.get('taggable_users', False),
-            'taggable_tenant_nodes': params.get('taggable_tenant_nodes', False),
-            'taggable_sites': params.get('taggable_sites', False),
-            'taggable_nodes': params.get('taggable_nodes', False),
-            'taggable_groups': params.get('taggable_groups', False),
-            'taggable_clusters': params.get('taggable_clusters', False),
-            'taggable_tenants': params.get('taggable_tenants', False),
         }
+        preview.update(flags)
+        return True, preview
 
     category = client.tag_categories.create(
         name=params['name'],
         description=params.get('description'),
-        single_tag_selection=params.get('single_tag_selection', False),
-        taggable_vms=params.get('taggable_vms', False),
-        taggable_networks=params.get('taggable_networks', False),
-        taggable_volumes=params.get('taggable_volumes', False),
-        taggable_network_rules=params.get('taggable_network_rules', False),
-        taggable_vmware_containers=params.get('taggable_vmware_containers', False),
-        taggable_users=params.get('taggable_users', False),
-        taggable_tenant_nodes=params.get('taggable_tenant_nodes', False),
-        taggable_sites=params.get('taggable_sites', False),
-        taggable_nodes=params.get('taggable_nodes', False),
-        taggable_groups=params.get('taggable_groups', False),
-        taggable_clusters=params.get('taggable_clusters', False),
-        taggable_tenants=params.get('taggable_tenants', False),
+        **flags,
     )
     return True, category_to_dict(category)
 
@@ -268,21 +278,7 @@ def update_category(module, client, category):
             update_kwargs['description'] = params['description']
             changed = True
 
-    if params.get('single_tag_selection') is not None:
-        if current['single_tag_selection'] != params['single_tag_selection']:
-            update_kwargs['single_tag_selection'] = params['single_tag_selection']
-            changed = True
-
-    # Check taggable fields
-    taggable_fields = [
-        'taggable_vms', 'taggable_networks', 'taggable_volumes',
-        'taggable_network_rules', 'taggable_vmware_containers',
-        'taggable_users', 'taggable_tenant_nodes', 'taggable_sites',
-        'taggable_nodes', 'taggable_groups', 'taggable_clusters',
-        'taggable_tenants'
-    ]
-
-    for field in taggable_fields:
+    for field in CATEGORY_FLAGS:
         if params.get(field) is not None:
             if current[field] != params[field]:
                 update_kwargs[field] = params[field]
@@ -314,19 +310,19 @@ def main():
         name=dict(type='str', required=True),
         state=dict(type='str', default='present', choices=['present', 'absent']),
         description=dict(type='str'),
-        single_tag_selection=dict(type='bool', default=False),
-        taggable_vms=dict(type='bool', default=False),
-        taggable_networks=dict(type='bool', default=False),
-        taggable_volumes=dict(type='bool', default=False),
-        taggable_network_rules=dict(type='bool', default=False),
-        taggable_vmware_containers=dict(type='bool', default=False),
-        taggable_users=dict(type='bool', default=False),
-        taggable_tenant_nodes=dict(type='bool', default=False),
-        taggable_sites=dict(type='bool', default=False),
-        taggable_nodes=dict(type='bool', default=False),
-        taggable_groups=dict(type='bool', default=False),
-        taggable_clusters=dict(type='bool', default=False),
-        taggable_tenants=dict(type='bool', default=False),
+        single_tag_selection=dict(type='bool'),
+        taggable_vms=dict(type='bool'),
+        taggable_networks=dict(type='bool'),
+        taggable_volumes=dict(type='bool'),
+        taggable_network_rules=dict(type='bool'),
+        taggable_vmware_containers=dict(type='bool'),
+        taggable_users=dict(type='bool'),
+        taggable_tenant_nodes=dict(type='bool'),
+        taggable_sites=dict(type='bool'),
+        taggable_nodes=dict(type='bool'),
+        taggable_groups=dict(type='bool'),
+        taggable_clusters=dict(type='bool'),
+        taggable_tenants=dict(type='bool'),
     )
 
     module = AnsibleModule(
