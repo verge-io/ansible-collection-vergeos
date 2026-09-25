@@ -48,8 +48,12 @@ disprove -- which is why it is named here rather than left as an omission.
 
 Why this is a test and not a lint rule: nothing in CI runs a playbook at all,
 in check mode or otherwise -- the ladders need a live cluster. This check
-needs neither. It reads the task files, finds every variable that is parsed as
-JSON, and insists the task that produced it is allowed to run.
+needs neither. It reads the role task files and every playbook under
+tests/live/, finds every variable that is parsed as JSON, and insists the
+task that produced it is allowed to run. The live files are the same shape
+-- read-nfs-shares.yml, read-cloudinit.yml, and the tier probe in
+verify-tier-policy.yml all parse command stdout -- and a guard that only
+opened roles/ would report them covered while they rotted.
 """
 
 from __future__ import (absolute_import, division, print_function)
@@ -69,8 +73,20 @@ def _root():
 
 
 def _task_files():
-    return sorted(glob.glob(os.path.join(_root(), 'roles', '*', 'tasks',
-                                         '*.yml')))
+    """Role tasks, plus the live harness playbooks that shell out the same way.
+
+    tests/live/*.yml are plays (``hosts:`` / ``tasks:``), not bare task lists.
+    ``_flatten`` walks both. Skipping the plays is how this guard would miss
+    the harness half of #28.
+    """
+    patterns = (
+        os.path.join(_root(), 'roles', '*', 'tasks', '*.yml'),
+        os.path.join(_root(), 'tests', 'live', '*.yml'),
+    )
+    found = []
+    for pattern in patterns:
+        found.extend(glob.glob(pattern))
+    return sorted(found)
 
 
 _IDS = [os.path.relpath(p, _root()) for p in _task_files()]
@@ -95,14 +111,33 @@ _PARSE_DEFENDED = re.compile(
     r'\.\s*stdout\b[^}]*\|\s*default\([^)]*\)[^}]*\|\s*from_json')
 
 
-def _flatten(tasks):
-    """Every task in a file, including the ones inside block/rescue/always."""
-    for task in tasks or []:
-        if not isinstance(task, dict):
-            continue
-        yield task
-        for key in ('block', 'rescue', 'always'):
-            yield from _flatten(task.get(key))
+# A play is not a task. These are the sections a play hides its tasks in.
+# Role task files and included task lists (read-nfs-shares.yml) have none of
+# them, so they fall through and are yielded as tasks.
+_PLAY_SECTIONS = ('tasks', 'pre_tasks', 'post_tasks', 'handlers')
+
+
+def _flatten(node):
+    """Every task in a file, including plays and block/rescue/always.
+
+    A list of plays must be descended into. Yielding the play dict itself
+    finds no ``register:`` and the guard then skips the variable as "defined
+    in another file" -- a silent pass, which is the failure mode this walk
+    exists to not have.
+    """
+    if isinstance(node, list):
+        for item in node:
+            yield from _flatten(item)
+        return
+    if not isinstance(node, dict):
+        return
+    if 'hosts' in node or any(key in node for key in _PLAY_SECTIONS):
+        for key in _PLAY_SECTIONS:
+            yield from _flatten(node.get(key))
+        return
+    yield node
+    for key in ('block', 'rescue', 'always'):
+        yield from _flatten(node.get(key))
 
 
 def _load(path):
@@ -156,13 +191,22 @@ def test_every_parsed_command_runs_in_check_mode(path):
         % (os.path.relpath(path, _root()), ', '.join(offenders)))
 
 
+def _write_temp(body):
+    import tempfile
+    handle = tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False)
+    try:
+        handle.write(body)
+    finally:
+        handle.close()
+    return handle.name
+
+
 def test_the_guard_can_actually_fail():
     """A guard that cannot fail is decoration.
 
     #28's exact shape, assembled here rather than left to a role to
     reintroduce.
     """
-    import tempfile
     body = (
         "- name: Run the scan\n"
         "  ansible.builtin.command:\n"
@@ -174,9 +218,36 @@ def test_the_guard_can_actually_fail():
         "  ansible.builtin.set_fact:\n"
         "    probe: \"{{ probe_raw.stdout | from_json }}\"\n"
     )
-    with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False) as fh:
-        fh.write(body)
-        path = fh.name
+    path = _write_temp(body)
+    try:
+        with pytest.raises(AssertionError) as caught:
+            test_every_parsed_command_runs_in_check_mode(path)
+        assert 'probe_raw' in str(caught.value)
+    finally:
+        os.unlink(path)
+
+
+def test_a_playbook_hides_the_same_shape():
+    """tests/live files are plays. A walker that only iterates the top list
+    yields the play, finds no register, and skips the variable.
+
+    That is a pass. This is the file shape the live harness actually has.
+    """
+    body = (
+        "- name: Ladder\n"
+        "  hosts: localhost\n"
+        "  tasks:\n"
+        "    - name: Run the scan\n"
+        "      ansible.builtin.command:\n"
+        "        cmd: /bin/true\n"
+        "      register: probe_raw\n"
+        "      changed_when: false\n"
+        "\n"
+        "    - name: Parse it\n"
+        "      ansible.builtin.set_fact:\n"
+        "        probe: \"{{ probe_raw.stdout | from_json }}\"\n"
+    )
+    path = _write_temp(body)
     try:
         with pytest.raises(AssertionError) as caught:
             test_every_parsed_command_runs_in_check_mode(path)
