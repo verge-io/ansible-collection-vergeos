@@ -1,0 +1,381 @@
+---
+# Deploy a nested VergeOS lab on an existing cluster.
+#
+# Creates two core-fabric networks, up to three node VMs (external NIC plus
+# two core NICs, tier 0 and tier 1 disks, installer ISO in a CD-ROM), and
+# the cloud-init install seed for each node that exists. Powers on the
+# nodes listed in vlab_power_on_nodes (node 1 by default).
+#
+# Auth and secrets come from the environment:
+#   export VERGEOS_HOST=<host-cloud> VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   export VLAB_ADMIN_PASSWORD='...'           # nested system admin (required)
+#   export VLAB_ADMIN_USERNAME=admin           # optional
+#   export VLAB_ADMIN_EMAIL=you@example.com    # optional
+#
+#   ansible-playbook examples/unattended_install/deploy_nested_lab.yml
+#
+# Calls that stay on the API, because the collection has no parameter for them:
+#   - network has no ipaddress_type, and a core fabric has none
+#   - drive has no media_source, so the installer ISO is inserted directly
+#   - vm has no nested_virtualization, disable_hypervisor, or guest_agent
+#     (UEFI is bios_type, and that goes through the vm module)
+#
+# --check is refused. Those API calls would still mutate the host cloud.
+
+- name: Deploy nested VergeOS lab
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vlab_name: vlab
+    vlab_domain: lab.local
+    vlab_timezone: America/Detroit
+    vlab_admin_username: "{{ lookup('env', 'VLAB_ADMIN_USERNAME') | default('admin', true) }}"
+    vlab_admin_password: "{{ lookup('env', 'VLAB_ADMIN_PASSWORD') }}"
+    vlab_admin_email: "{{ lookup('env', 'VLAB_ADMIN_EMAIL') | default('admin@' + vlab_domain, true) }}"
+
+    vlab_installer_iso: verge-io-install-26.1.8.iso
+    vlab_external_network: External
+
+    # Empty means the platform default (q35 on 26.x). A pc/i440fx type has
+    # no AHCI controller, so the installer CD must ride IDE or the VM has
+    # no boot device and no error.
+    vlab_machine_type: ""
+    vlab_cdrom_interface: >-
+      {{ 'ide'
+         if (vlab_machine_type.startswith('pc') and 'q35' not in vlab_machine_type)
+         else 'ahci' }}
+    vlab_seed_debug: false
+    vlab_trace_url: ""
+
+    vlab_cpu_cores: 8
+    vlab_ram_mb: 16384
+    vlab_tier0_disks: 2
+    vlab_tier0_size_gb: 50
+    vlab_tier1_disks: 2
+    vlab_tier1_size_gb: 150
+    # Preferred tier on the HOST vSAN. The guest seed still labels the
+    # disks tier 0 and tier 1 inside the nested system.
+    vlab_host_tier: 1
+
+    vlab_node_count: 3
+    vlab_power_on_nodes: [1]
+
+    # virtio-scsi presents /dev/sdX. The seed's YC_DRIVE_LIST must match
+    # creation order: tier 0 disks first, then tier 1.
+    vlab_drive_list: >-
+      {{ range(0, vlab_tier0_disks + vlab_tier1_disks)
+         | map('extract', 'abcdefghijklmnopqrstuvwxyz')
+         | map('regex_replace', '^(.*)$', '/dev/sd\1')
+         | join(' ') }}
+    vlab_tier_list: >-
+      {{ (['0'] * vlab_tier0_disks + ['1'] * vlab_tier1_disks) | join(' ') }}
+
+    vlab_api_host: >-
+      {{ lookup('env', 'VERGEOS_HOST')
+         | regex_replace('^https?://', '')
+         | regex_replace('/.*$', '') }}
+    api_base: "https://{{ vlab_api_host }}/api/v4"
+    api_user: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+    api_pass: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+    api_validate_certs: "{{ not (lookup('env', 'VERGEOS_INSECURE') | default('false', true) | bool) }}"
+
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ api_user }}"
+      url_password: "{{ api_pass }}"
+      force_basic_auth: true
+      validate_certs: "{{ api_validate_certs }}"
+      headers:
+        Content-Type: application/json
+
+  tasks:
+    - name: Refuse check mode
+      ansible.builtin.fail:
+        msg: >-
+          This playbook creates core fabrics, nested-virt flags, and the
+          installer CD through the API. Those calls are not check-mode safe.
+          Run it without --check.
+      when: ansible_check_mode | bool
+
+    - name: Require host-cloud credentials in the environment
+      ansible.builtin.assert:
+        that:
+          - vlab_api_host | length > 0
+          - api_user | length > 0
+          - api_pass | length > 0
+        fail_msg: >-
+          Set VERGEOS_HOST, VERGEOS_USERNAME, and VERGEOS_PASSWORD for the
+          host cloud before deploying the nested lab.
+      no_log: true
+
+    - name: Require the nested admin password from the environment
+      ansible.builtin.assert:
+        that:
+          - vlab_admin_password | length >= 8
+          - vlab_admin_password is not search("['\"+]")
+        fail_msg: >-
+          Set VLAB_ADMIN_PASSWORD (at least 8 characters; the VergeOS
+          installer rejects ' " +) before running.
+        quiet: true
+      no_log: true
+
+    - name: Require a node count this playbook can seed
+      ansible.builtin.assert:
+        that:
+          - vlab_node_count | int >= 1
+          - vlab_node_count | int <= 3
+        fail_msg: >-
+          vlab_node_count must be 1, 2, or 3. This playbook ships seeds
+          for those nodes only.
+
+    - name: Require vlab_power_on_nodes to be a list
+      ansible.builtin.assert:
+        that:
+          - vlab_power_on_nodes is sequence
+          - vlab_power_on_nodes is not string
+        fail_msg: >-
+          vlab_power_on_nodes must be a list. Pass it as JSON, for example
+          -e '{"vlab_power_on_nodes":[2]}'.
+
+    - name: Require each powered node to be one this playbook creates
+      ansible.builtin.assert:
+        that:
+          - item | int >= 1
+          - item | int <= (vlab_node_count | int)
+        fail_msg: >-
+          vlab_power_on_nodes contains {{ item }}, which is outside 1
+          through {{ vlab_node_count }}.
+      loop: "{{ vlab_power_on_nodes }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Require a trace URL when the installer seed debug trace is on
+      ansible.builtin.assert:
+        that:
+          - vlab_trace_url | length > 0
+        fail_msg: >-
+          Set vlab_trace_url to the listener that should receive the
+          installer trace.
+      when: vlab_seed_debug | bool
+
+    # ------------------------------------------------------------ fabrics
+    - name: Read core fabric networks
+      vergeio.vergeos.network_info:
+        name: "{{ vlab_name }}-core-fabric-{{ item }}"
+      loop: [1, 2]
+      loop_control:
+        label: "{{ vlab_name }}-core-fabric-{{ item }}"
+      register: fabric_lookup
+
+    - name: Create core fabric networks (internal, MTU 9142, no router IP)
+      ansible.builtin.uri:
+        url: "{{ api_base }}/vnets"
+        method: POST
+        body_format: json
+        body:
+          name: "{{ vlab_name }}-core-fabric-{{ item.item }}"
+          type: internal
+          enabled: true
+          dhcp_enabled: false
+          on_power_loss: power_on
+          mtu: 9142
+          ipaddress_type: none
+        status_code: [200, 201]
+      loop: "{{ fabric_lookup.results }}"
+      loop_control:
+        label: "{{ vlab_name }}-core-fabric-{{ item.item }}"
+      when: item.networks | length == 0
+      changed_when: true
+
+    - name: Start core fabric networks
+      vergeio.vergeos.network:
+        name: "{{ vlab_name }}-core-fabric-{{ item }}"
+        state: running
+      loop: [1, 2]
+      loop_control:
+        label: "{{ vlab_name }}-core-fabric-{{ item }}"
+
+    # ------------------------------------------------------------ ISO key
+    - name: Look up the installer ISO in the media catalog
+      vergeio.vergeos.file_info:
+        name: "{{ vlab_installer_iso }}"
+      register: iso_lookup
+
+    - name: Require exactly one installer ISO
+      ansible.builtin.assert:
+        that:
+          - iso_lookup.files | length == 1
+        fail_msg: >-
+          Expected one media-catalog file named {{ vlab_installer_iso }},
+          found {{ iso_lookup.files | length }}. Upload the VergeOS
+          installer ISO before deploying the nested lab.
+
+    - name: Record the installer ISO key
+      ansible.builtin.set_fact:
+        installer_iso_key: "{{ iso_lookup.files[0]['$key'] }}"
+
+    # ------------------------------------------------------------ VMs
+    - name: Create node VMs
+      vergeio.vergeos.vm:
+        name: "{{ vlab_name }}-node-{{ item }}"
+        description: "Nested VergeOS {{ vlab_name }} node {{ item }}"
+        os_family: linux
+        cpu_cores: "{{ vlab_cpu_cores }}"
+        ram: "{{ vlab_ram_mb }}"
+        bios_type: uefi
+        machine_type: "{{ vlab_machine_type | default(omit, true) }}"
+        state: present
+      loop: "{{ range(1, (vlab_node_count | int) + 1) | list }}"
+
+    - name: Read node VM records
+      vergeio.vergeos.vm_info:
+        name: "{{ vlab_name }}-node-{{ item }}"
+      loop: "{{ range(1, (vlab_node_count | int) + 1) | list }}"
+      loop_control:
+        label: "{{ vlab_name }}-node-{{ item }}"
+      register: node_vm_info
+
+    - name: Require each node VM to exist
+      ansible.builtin.assert:
+        that:
+          - item.vms | length == 1
+          - item.vms[0].machine is defined
+        fail_msg: "{{ vlab_name }}-node-{{ item.item }} has no VM record."
+      loop: "{{ node_vm_info.results }}"
+      loop_control:
+        label: "{{ vlab_name }}-node-{{ item.item }}"
+
+    - name: Collect node VM records
+      ansible.builtin.set_fact:
+        node_vms: "{{ node_vm_info.results | map(attribute='vms') | map('first') | list }}"
+
+    - name: Set nested-virtualization flags the vm module does not expose
+      ansible.builtin.uri:
+        url: "{{ api_base }}/vms/{{ item['$key'] }}"
+        method: PUT
+        body_format: json
+        body:
+          nested_virtualization: true
+          disable_hypervisor: true
+          guest_agent: true
+        status_code: [200]
+      loop: "{{ node_vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: >-
+        not (item.nested_virtualization | default(false) | bool)
+        or not (item.disable_hypervisor | default(false) | bool)
+        or not (item.guest_agent | default(false) | bool)
+      changed_when: true
+
+    - name: Create tier 0 disks
+      vergeio.vergeos.drive:
+        vm_name: "{{ vlab_name }}-node-{{ item.0 }}"
+        name: "tier_0_disk_{{ item.1 }}"
+        media_type: disk
+        drive_type: virtio
+        size: "{{ vlab_tier0_size_gb }}"
+        tier: "{{ vlab_host_tier }}"
+        state: present
+      loop: "{{ range(1, (vlab_node_count | int) + 1) | product(range(0, vlab_tier0_disks)) | list }}"
+      loop_control:
+        label: "node-{{ item.0 }} tier_0_disk_{{ item.1 }}"
+
+    - name: Create tier 1 disks
+      vergeio.vergeos.drive:
+        vm_name: "{{ vlab_name }}-node-{{ item.0 }}"
+        name: "tier_1_disk_{{ item.1 }}"
+        media_type: disk
+        drive_type: virtio
+        size: "{{ vlab_tier1_size_gb }}"
+        tier: "{{ vlab_host_tier }}"
+        state: present
+      loop: "{{ range(1, (vlab_node_count | int) + 1) | product(range(0, vlab_tier1_disks)) | list }}"
+      loop_control:
+        label: "node-{{ item.0 }} tier_1_disk_{{ item.1 }}"
+
+    - name: Read CD-ROM drives on each node
+      vergeio.vergeos.vm_drive_info:
+        vm: "{{ item.name }}"
+        media: cdrom
+      loop: "{{ node_vms }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: cdrom_info
+
+    - name: Attach the installer ISO as a CD-ROM
+      ansible.builtin.uri:
+        url: "{{ api_base }}/machine_drives"
+        method: POST
+        body_format: json
+        body:
+          machine: "{{ item.item.machine | int }}"
+          name: installer-cdrom
+          description: VergeOS installer ISO
+          media: cdrom
+          media_source: "{{ installer_iso_key | int }}"
+          interface: "{{ vlab_cdrom_interface }}"
+        status_code: [200, 201]
+      loop: "{{ cdrom_info.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: >-
+        item.drives | selectattr('name', 'equalto', 'installer-cdrom') | list | length == 0
+      changed_when: true
+
+    # NIC order is the seed's PCI order: External, then Core 1, then Core 2.
+    - name: Attach the external NIC
+      vergeio.vergeos.nic:
+        vm_name: "{{ vlab_name }}-node-{{ item }}"
+        network: "{{ vlab_external_network }}"
+        nic_type: virtio
+        state: present
+      loop: "{{ range(1, (vlab_node_count | int) + 1) | list }}"
+
+    - name: Attach core fabric NICs
+      vergeio.vergeos.nic:
+        vm_name: "{{ vlab_name }}-node-{{ item.0 }}"
+        network: "{{ vlab_name }}-core-fabric-{{ item.1 }}"
+        nic_type: virtio
+        state: present
+      loop: "{{ range(1, (vlab_node_count | int) + 1) | product([1, 2]) | list }}"
+      loop_control:
+        label: "node-{{ item.0 }} fabric-{{ item.1 }}"
+
+    # ------------------------------------------------------------ seed
+    - name: Attach the install seed to node 1
+      vergeio.vergeos.cloud_init:
+        vm_name: "{{ vlab_name }}-node-1"
+        datasource: nocloud
+        user_data: "{{ lookup('template', 'user-data-node1.sh.j2') }}"
+        state: present
+      no_log: true
+
+    - name: Attach the join seed to node 2
+      vergeio.vergeos.cloud_init:
+        vm_name: "{{ vlab_name }}-node-2"
+        datasource: nocloud
+        user_data: "{{ lookup('template', 'user-data-node2.sh.j2') }}"
+        state: present
+      no_log: true
+      when: vlab_node_count | int >= 2
+
+    - name: Attach the scale-out seed to node 3
+      vergeio.vergeos.cloud_init:
+        vm_name: "{{ vlab_name }}-node-3"
+        datasource: nocloud
+        user_data: "{{ lookup('template', 'user-data-node3.sh.j2') }}"
+        state: present
+      no_log: true
+      when: vlab_node_count | int >= 3
+
+    # ------------------------------------------------------------ power
+    - name: Power on selected nodes
+      vergeio.vergeos.vm:
+        name: "{{ vlab_name }}-node-{{ item }}"
+        state: running
+      loop: "{{ vlab_power_on_nodes }}"
+      loop_control:
+        label: "{{ vlab_name }}-node-{{ item }}"
