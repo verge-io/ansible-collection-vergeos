@@ -137,6 +137,26 @@ one newer version is evidence, not a guarantee, and #100 is still the reason
 not to swap client side name matching for `list(name=...)`. It is here so the
 next person knows the bet has been checked at least once above the floor.
 
+## Node-scoped physical drives (pyVergeOS#143)
+
+`physical_drive_info` with `node:` used to call
+`PhysicalDriveManager(client, node_key=...)`. On every released pyvergeos
+from the 1.2.7 floor through 1.6.1, that manager builds
+`filter="node eq <key>"`. `machine_drive_phys` has no `node` column, so the
+list is empty, `changed=false`, and nothing warns. `drive_health` passes
+`drive_health_node` straight through, so a per-node scan then reads as
+healthy.
+
+The parent_drive walk that fixes it (`nodes.machine` → `machine_drives` →
+`parent_drive eq ...`, method `_parent_drive_filter_for_node`) is on
+pyVergeOS `dev` only (issue #143 / PR #144). No release tag contains it.
+
+The module calls the scoped manager only when that method is a real
+function on the installed class. Otherwise it lists the fleet and matches
+`node_name` client-side, which works on 1.2.7. A resolved node with no
+drives warns (`no drives matched node ...`) instead of returning a silent
+empty report. The floor stays `pyvergeos>=1.2.7`.
+
 ## Consequences
 
 - **Do not raise the floor past `1.2.7` yet.** The fixes are unreleased.
