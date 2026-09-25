@@ -31,7 +31,9 @@ options:
         C(Virtual Machine must be stopped to delete) - so set O(state=stopped)
         first. This module deliberately does not stop it for you, because an
         C(absent) that powered off a running workload to remove it would be a
-        far worse default than a refusal.
+        far worse default than a refusal. Check mode makes that same refusal
+        instead of reporting the VM deleted. A VM that is already stopped is
+        reported as C(would delete) in check mode.
       - C(running) ensures the VM exists and is powered on, creating it first
         if it is absent.
       - >-
@@ -505,8 +507,32 @@ def update_vm(module, client, vm):
     return True, dict(vm)
 
 
+def vm_is_running(vm):
+    """True when the fetched row says this VM is powered on.
+
+    Same reading ``power_on_vm()`` already uses. ``get_vm()`` asks for both
+    spellings through ``POWER_FIELDS``. A row that carries neither is not
+    treated as running: "no opinion" is not "on".
+    """
+    row = dict(vm)
+    return row.get('status') == 'running' or bool(row.get('running'))
+
+
 def delete_vm(module, client, vm):
-    """Delete a VM using SDK"""
+    """Delete a VM using SDK.
+
+    The platform refuses to delete a running VM ("Virtual Machine must be
+    stopped to delete") and this module will not power it off to get around
+    that. Check mode used to return success before looking at the row, so a
+    dry run reported the VM deleted and the real run failed (#127). Both
+    modes now refuse up front, with the same message.
+    """
+    if vm_is_running(vm):
+        module.fail_json(
+            msg="Virtual Machine must be stopped to delete. "
+                "Set state=stopped on VM '%s' first."
+                % module.params['name'])
+
     if module.check_mode:
         return True
 
@@ -626,7 +652,11 @@ def main():
         if state == 'absent':
             if vm:
                 delete_vm(module, client, vm)
-                module.exit_json(changed=True, msg=f"VM '{name}' deleted")
+                if module.check_mode:
+                    module.exit_json(
+                        changed=True, msg=f"Would delete VM '{name}'")
+                else:
+                    module.exit_json(changed=True, msg=f"VM '{name}' deleted")
             else:
                 module.exit_json(changed=False, msg=f"VM '{name}' does not exist")
 

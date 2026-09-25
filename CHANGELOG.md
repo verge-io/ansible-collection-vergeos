@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`vm`: `state: absent` in check mode claimed a running VM was deleted** (#127). The platform refuses with "Virtual Machine must be stopped to delete", and the module will not power the VM off to get around that. Check mode returned before reading the row, so a dry run reported `changed=true` and "deleted" and the real run failed. Both modes now fail with that refusal and point at `state=stopped`. A stopped VM in check mode reports "would delete".
+
+- **`vm_import`: a second `state: present` failed with "This name is already in use"** (#129). The module posted a new import on every run, and check mode said it would create a VM that already existed. It now resolves `name` first and, when that VM exists, returns `changed=false` with its id, in check mode too. Same converge-instead-of-collide shape as `vm_snapshot`.
+
 - **`member`: every call failed, and the membership check could never succeed** (#92). The module called `users.get(username=)`, a parameter no pyvergeos release has. Membership rows identify the member by reference (`/v4/users/N` from the members table, `users/N` from a group's nested projection), and the module compared that reference to the bare username, so a present task would have re-added forever and an absent task would have removed nothing. The create posted the username as `member` instead of calling `add_user` / `remove_user`. Lookup now goes through `resolve_one`, the reference is parsed for both shapes, and writes use the SDK helpers.
 
 - **`user`: `role` and `groups` were accepted and discarded** (#120). There is no role column on a VergeOS user, so `role: admin` created an ordinary user and reported success — including the task named "Create a new admin user". Passing `role` now fails and names `permission` and `group`. `groups` adds the user to each named group through the same membership path as `member` (reference match, `add_user`) and is additive: groups not listed are left alone. The admin and read-only examples grant that access with `permission`.

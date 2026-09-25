@@ -187,6 +187,58 @@
               success whichever way it ended.
             quiet: true
 
+        # ── absent on a running VM is a refusal, in check mode too ───────
+        #
+        # #127: `state: absent --check` reported changed=true and "deleted".
+        # The real run then failed "Virtual Machine must be stopped to
+        # delete". A dry run of a teardown has to predict that refusal.
+        # The module will not power the VM off to get around it.
+
+        - name: "4e. Check mode refuses to delete a running VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: absent
+          check_mode: true
+          register: absent_running
+          failed_when: absent_running is succeeded
+
+        - name: "4f. With the refusal the real run gives"
+          ansible.builtin.assert:
+            that:
+              - "'must be stopped to delete' in absent_running.msg"
+              - "'state=stopped' in absent_running.msg"
+              - "'deleted' not in absent_running.msg"
+            fail_msg: >-
+              check mode on a running VM reported
+              {{ absent_running.msg | default(absent_running) }}.
+              Before #127 it said the VM was deleted.
+            quiet: true
+
+        - name: "4g. The real run refuses with the same message"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: absent
+          register: absent_real
+          failed_when: absent_real is succeeded
+
+        - name: "4h. Check mode and the real run agree"
+          ansible.builtin.assert:
+            that: absent_real.msg == absent_running.msg
+            fail_msg: >-
+              check mode said {{ absent_running.msg | default(absent_running) }},
+              the real run said {{ absent_real.msg | default(absent_real) }}
+            quiet: true
+
+        - name: "4i. And the VM is still running"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ probe_vm }}"
+          register: still_running
+          changed_when: false
+          failed_when: not (still_running.vms | first).running
+
         # ── stopping ──────────────────────────────────────────────────────
 
         - name: "5. Stop it with a budget it cannot meet"
@@ -224,6 +276,33 @@
             state: stopped
           register: stopped_again
           failed_when: stopped_again.changed
+
+        - name: "5f. Check mode on a stopped VM would delete it"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ probe_vm }}"
+            state: absent
+          check_mode: true
+          register: would_delete
+
+        - name: "5g. Worded as a prediction, not as something already done"
+          ansible.builtin.assert:
+            that:
+              - would_delete.changed
+              - "'Would delete' in would_delete.msg"
+              - "'deleted' not in would_delete.msg"
+            fail_msg: >-
+              check mode reported
+              {{ would_delete.msg | default(would_delete) }}
+            quiet: true
+
+        - name: "5h. And the VM is still there"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ probe_vm }}"
+          register: still_present
+          changed_when: false
+          failed_when: (still_present.vms | first).name != probe_vm
 
         # ── check mode ────────────────────────────────────────────────────
 
@@ -284,7 +363,9 @@
           names the status it was still reading, rather than reporting success
           after sixty seconds -> the request was still made, so the failure is
           about the outcome and not the call -> asking properly starts it, the
-          platform agrees, and a second ask is not a change -> a zero budget
-          is fine once it is already there -> stopping fails and succeeds the
-          same way -> check mode reports a start without making one -> zero
-          leftovers
+          platform agrees, and a second ask is not a change -> deleting it
+          while it is running is refused in check mode and for real, with the
+          same message -> once it is stopped, check mode says it would delete
+          and deletes nothing -> a zero budget is fine once it is already
+          stopped -> stopping fails and succeeds the same way -> check mode
+          reports a start without making one -> zero leftovers

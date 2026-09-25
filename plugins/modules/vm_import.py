@@ -83,7 +83,11 @@ options:
   state:
     description:
       - The desired state of the import.
-      - C(present) starts the import and waits for completion.
+      - C(present) starts the import and waits for completion. If a VM
+        named O(name) already exists, the task succeeds with
+        C(changed=false) and does not post another import. The platform
+        rejects a duplicate name, so a second run used to fail instead of
+        converging.
       - C(absent) removes the import record (VM will remain if import completed).
     type: str
     choices: [ present, absent ]
@@ -146,8 +150,10 @@ import_key:
   type: str
   sample: "584a61c1f3e28aed114a3a30531a7703fb7959e0"
 vm_id:
-  description: The ID of the created/imported VM
-  returned: when state is present and import completes
+  description:
+    - The ID of the created/imported VM, or of the VM that already had
+      O(name) when the import was skipped.
+  returned: when state is present and a VM id is known
   type: str
   sample: "46"
 vm_name:
@@ -261,6 +267,23 @@ def get_file_by_name(module, client, file_name):
 
 def create_vm_import(client, module):
     """Create a new VM import and wait for completion using SDK."""
+    name = module.params['name']
+
+    # Converge instead of colliding. The platform rejects a second import
+    # of the same VM name with "This name is already in use", so re-running
+    # a play used to fail outright, and check mode said it would create a
+    # VM that already existed (#129). Same shape as vm_snapshot.
+    try:
+        existing = resolve_one(module, client.vms, name, 'VM')
+    except NotFoundError:
+        existing = None
+    if existing is not None:
+        module.exit_json(
+            changed=False,
+            vm_id=str(dict(existing).get('$key')),
+            msg="VM '%s' already exists" % name,
+        )
+
     # Determine file_id from ova_file_id, ova_file_name, or deprecated file_id
     ova_file_id = module.params.get('ova_file_id')
     ova_file_name = module.params.get('ova_file_name')
@@ -279,8 +302,6 @@ def create_vm_import(client, module):
         module.warn("Parameter 'file_id' is deprecated, use 'ova_file_id' instead")
     else:
         module.fail_json(msg="Either 'ova_file_id' or 'ova_file_name' must be specified")
-
-    name = module.params['name']
 
     # Build import payload - use raw API format matching the VergeOS REST API.
     # The 'importing' field tells the API to start importing immediately.
