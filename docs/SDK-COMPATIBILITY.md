@@ -153,9 +153,9 @@ pyVergeOS `dev` only (issue #143 / PR #144). No release tag contains it.
 
 The module calls the scoped manager only when that method is a real
 function on the installed class. Otherwise it lists the fleet and matches
-`node_name` client-side, which works on 1.2.7. A resolved node with no
+`node_name` client-side, which also works on 1.2.7. A resolved node with no
 drives warns (`no drives matched node ...`) instead of returning a silent
-empty report. The floor stays `pyvergeos>=1.2.7`.
+empty report. The collection floor is `pyvergeos>=1.2.8`.
 
 ## Consequences
 
