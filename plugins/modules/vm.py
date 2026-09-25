@@ -80,6 +80,12 @@ options:
   ram:
     description:
       - Amount of RAM in MB to assign to the VM.
+      - >-
+        Rounded up to the next multiple of 256 MB before the VM is created
+        or updated, the same way the SDK rounds on create. The platform
+        stores RAM in 256 MB increments and floors a value that is not one,
+        so comparing or writing the raw number made an unchanged playbook
+        lower the VM's RAM and report a change on every run.
     type: int
   machine_type:
     description:
@@ -315,6 +321,39 @@ def bios_to_uefi(value):
     return value == 'uefi'
 
 
+# VergeOS stores VM RAM in 256 MB increments. VMManager.create rounds UP
+# before the API call:
+#
+#     normalized_ram = ((ram + 255) // 256) * 256
+#
+# save() does not. A raw update is floored by the platform, so the value
+# create stored and the value the next run compared were never the same
+# number. ram: 2000 created a VM at 2048 MB; the identical playbook then
+# wrote 1792 and reported changed on every run after that (#123).
+RAM_INCREMENT_MB = 256
+
+
+def normalize_ram(ram):
+    """Round RAM up to a multiple of 256 MB, matching VMManager.create."""
+    ram = int(ram)
+    step = RAM_INCREMENT_MB
+    return ((ram + step - 1) // step) * step
+
+
+def ram_matches(stored, requested):
+    """True when the VM already has the RAM this request rounds up to.
+
+    The stored value is whatever the platform kept, which is an integer
+    number of MB. Coerce it before comparing so a numeric string still
+    counts as converged.
+    """
+    wanted = normalize_ram(requested)
+    try:
+        return int(stored) == wanted
+    except (TypeError, ValueError):
+        return False
+
+
 # A machine-type alias is stored expanded: 'q35' becomes 'pc-q35-10.0'.
 # Comparing the alias against the stored value literally never matched, so a
 # converged VM reported 'changed' on every run and re-sent the field.
@@ -396,8 +435,11 @@ def build_vm_data(module):
         value = module.params.get(param)
         if value is None:
             continue
-        vm_data[api_field] = bios_to_uefi(value) if param == 'bios_type' \
-            else value
+        if param == 'bios_type':
+            value = bios_to_uefi(value)
+        elif param == 'ram':
+            value = normalize_ram(value)
+        vm_data[api_field] = value
 
     return vm_data
 
@@ -436,6 +478,10 @@ def update_vm(module, client, vm):
             desired = bios_to_uefi(desired)
             if bool(current) == desired:
                 continue
+        elif param == 'ram':
+            if ram_matches(current, desired):
+                continue
+            desired = normalize_ram(desired)
         elif current == desired:
             continue
         update_data[api_field] = desired
