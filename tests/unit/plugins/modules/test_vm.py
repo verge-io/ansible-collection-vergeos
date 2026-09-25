@@ -873,8 +873,10 @@ class TestIssue87NonColumnFields:
         from ansible_collections.vergeio.vergeos.plugins.modules import vm
         stored = make_resource(
             {'$key': 1, 'name': 'zz-vm', 'uefi': True, 'description': 'd'})
-        module = self._module(name='zz-vm', bios_type='uefi',
-                               machine_subtype='q35', network='Core')
+        module = self._module(
+            name='zz-vm', bios_type='uefi',
+            machine_subtype='q35', network='Core',
+        )
 
         changed, _row = vm.update_vm(module, MagicMock(), stored)
 
@@ -896,8 +898,10 @@ class TestIssue87NonColumnFields:
         from ansible_collections.vergeio.vergeos.plugins.modules import vm
         stored = make_resource({'$key': 1, 'name': 'zz-vm', 'uefi': False})
         stored.save.return_value = stored
-        module = self._module(name='zz-vm', bios_type='uefi',
-                               machine_subtype='q35', network='Core')
+        module = self._module(
+            name='zz-vm', bios_type='uefi',
+            machine_subtype='q35', network='Core',
+        )
 
         changed, _row = vm.update_vm(module, MagicMock(), stored)
 
