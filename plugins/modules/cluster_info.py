@@ -37,6 +37,9 @@ extends_documentation_fragment:
   - vergeio.vergeos.vergeos
 notes:
   - Read-only. Supports C(check_mode) and never reports changed.
+  - Platform version, cloud name, storage tiers, and a census of networks,
+    VM recipes, and NAS services are M(vergeio.vergeos.site_info). This
+    module answers cluster capacity and whether a node can be drained.
   - Capacity arithmetic uses each node's C(vm_ram), which is what the platform
     makes available to VMs, not its physical C(ram). On a measured 26.1.8 node
     those are 68352 MB and 94208 MB respectively - using the physical figure

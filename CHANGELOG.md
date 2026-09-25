@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`site_info`**, a read-only preflight for the live system (#20). It reports platform and OS version, cloud name, storage tier numbers from the `storage_tiers` table (a tier with no drives still appears), clusters and nodes with the capacity fields used for sizing, and counts and names of networks, VM recipes, and NAS services. `ram_headroom_mb` is the same figure `cluster_info` already returns. Drain checks stay on `cluster_info`.
+
 - **Recipe deployment.** `vm_recipe_deploy`, `vm_recipe_info`, `vm_drive_info` and `vm_nic_info`, plus the `vm_from_recipe` role. A recipe deploy is asynchronous, in that the platform returns a VM key long before the VM can boot, so the role waits for drives to finish importing and asserts post-conditions on the VM itself rather than on a deploy log. Answers are validated against the recipe's own published questions before anything is sent, so a bad answer is a refusal rather than a half-built VM.
 - **`meta/runtime.yml` action group `recipe`**, so connection details can be set once with `module_defaults`. Without an action group the idiomatic `group/vergeio.vergeos.recipe` syntax fails outright rather than being ignored.
 - **`docs/SDK-COMPATIBILITY.md`**, recording the collection verified against released `pyvergeos==1.2.7` and `origin/dev` (22 commits ahead): 15 live ladders, identical task counts, `failed=0` on both.
