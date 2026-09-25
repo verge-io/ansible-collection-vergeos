@@ -741,6 +741,7 @@ class TestNoKnownBadFieldNamesComeBack:
         'drive': {
             'tier': 'issue #8 -- the API field is preferred_tier',
             'read_only': 'the API field is readonly, without the underscore',
+            'size': 'issue #124 -- the column is disksize, and it holds bytes',
         },
         'user': {
             'full_name': 'the API field is displayname',

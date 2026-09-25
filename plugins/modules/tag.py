@@ -27,6 +27,10 @@ options:
     description:
       - The name of the tag category this tag belongs to.
       - Required when creating a new tag or when applying tags to VMs.
+      - Optional when deleting a tag (I(state=absent) with no VM). The name
+        is looked up across categories. One match is deleted, no match is
+        left unchanged, and more than one match fails rather than guessing
+        which tag to delete.
     type: str
   state:
     description:
@@ -103,6 +107,11 @@ EXAMPLES = r'''
     category: "App"
     state: absent
 
+- name: Delete a tag by name when it exists in only one category
+  vergeio.vergeos.tag:
+    name: "OldTag"
+    state: absent
+
 - name: Tag all VMs with 'db' in name (used with inventory)
   vergeio.vergeos.tag:
     host: "{{ vergeos_site_url }}"
@@ -156,10 +165,20 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_tag(module, client, name, category_name):
-    """Get tag by name and category using SDK"""
+def get_tag(module, client, name, category_name=None):
+    """Get a tag by name.
+
+    With a category, the lookup is limited to that category. Without one,
+    the name is matched across every category (#122). resolve_one raises
+    NotFoundError when nothing matches and refuses to guess when more than
+    one tag has the name. Claiming the tag is absent without listing is how
+    state=absent used to delete nothing.
+    """
+    kwargs = {}
+    if category_name:
+        kwargs['category_name'] = category_name
     try:
-        return resolve_one(module, client.tags, name, 'tag', category_name=category_name)
+        return resolve_one(module, client.tags, name, 'tag', **kwargs)
     except NotFoundError:
         return None
 
@@ -326,10 +345,10 @@ def main():
             if not category:
                 module.fail_json(msg=f"Tag category '{category_name}' not found")
 
-        # Get existing tag
-        tag = None
-        if category:
-            tag = get_tag(module, client, tag_name, category_name)
+        # Always look the tag up. state=absent with no category still has
+        # to list tags and match by name; skipping that reported "does not
+        # exist" for a tag that was there (#122).
+        tag = get_tag(module, client, tag_name, category_name)
 
         # Handle VM tagging operations
         if vm_name or vm_id:

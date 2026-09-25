@@ -176,7 +176,7 @@
     # user.UPDATE_FIELD_MAP.values(). 'password' is deliberately absent: it is
     # write-only, the API never returns it, and that is why update_password
     # exists (#73). Asserting its presence would be asserting a bug.
-    drive_api_fields: [interface, preferred_tier, readonly]
+    drive_api_fields: [interface, preferred_tier, readonly, disksize]
     user_api_fields: [email, enabled, displayname]
     auth: &probe_auth
       host: "{{ lookup('env', 'VERGEOS_HOST') }}"
