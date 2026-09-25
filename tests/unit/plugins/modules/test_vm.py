@@ -701,3 +701,121 @@ class TestSnapshotProfileEnrolment:
         self._run(client, self._params(snapshot_profile='nightly'))
 
         assert client.vms.create.call_args.kwargs['snapshot_profile'] == 7
+
+
+class TestRamRounding:
+    """RAM that is not a multiple of 256 must converge. See issue #123.
+
+    VMManager.create rounds UP to a multiple of 256 MB. The update path used
+    to send the raw number, and the platform floors that. ram: 1000 therefore
+    created a VM at 1024 and the next identical run stored 768, then reported
+    changed forever. Create and update both have to use the rounded-up value.
+    """
+
+    def _params(self, **overrides):
+        params = {
+            'host': 'vergeos.example.com', 'username': 'admin',
+            'password': 'secret', 'insecure': False,
+            'name': 'zz-vm', 'state': 'present', 'description': None,
+            'enabled': None, 'os_family': None, 'cpu_cores': None,
+            'ram': 1000, 'machine_type': None, 'bios_type': None,
+            'boot_order': None, 'snapshot_profile': None,
+            'power_timeout': 60,
+        }
+        params.update(overrides)
+        return params
+
+    def _run(self, client, params, check_mode=False):
+        module = MagicMock()
+        module.params = params
+        module.check_mode = check_mode
+        base = 'ansible_collections.vergeio.vergeos.plugins.modules.vm'
+        with patch('%s.get_vergeos_client' % base, return_value=client), \
+             patch('%s.HAS_PYVERGEOS' % base, True), \
+             patch('%s.AnsibleModule' % base, return_value=module):
+            from ansible_collections.vergeio.vergeos.plugins.modules import vm
+            try:
+                vm.main()
+            except SystemExit:
+                pass
+        return module
+
+    def _fn(self):
+        from ansible_collections.vergeio.vergeos.plugins.modules.vm import (
+            normalize_ram,
+        )
+        return normalize_ram
+
+    @pytest.mark.parametrize('requested,stored', [
+        (1000, 1024),
+        (1300, 1536),
+        (2000, 2048),
+        (1, 256),
+        (256, 256),
+        (257, 512),
+        (8192, 8192),
+    ])
+    def test_rounds_up_to_a_multiple_of_256(self, requested, stored):
+        assert self._fn()(requested) == stored
+
+    def test_ram_1000_converges_on_the_second_run_and_stores_1024(
+            self, make_resource):
+        """Create stores 1024. The identical playbook then changes nothing."""
+        client = MagicMock()
+        created = {}
+
+        def create(**kwargs):
+            created.update(kwargs)
+            created['$key'] = 1
+            return make_resource(dict(created))
+
+        client.vms.create.side_effect = create
+        client.vms.list.return_value = []
+
+        first = self._run(client, self._params(ram=1000))
+        assert client.vms.create.call_args.kwargs['ram'] == 1024
+        assert created['ram'] == 1024
+        assert first.exit_json.call_args.kwargs['changed'] is True
+
+        stored = make_resource({
+            '$key': 1, 'name': 'zz-vm', 'ram': created['ram'],
+        })
+        client.vms.list.return_value = [stored]
+        second = self._run(client, self._params(ram=1000))
+
+        stored.save.assert_not_called()
+        assert second.exit_json.call_args.kwargs['changed'] is False
+
+    def test_an_update_writes_the_rounded_up_value(self, make_resource):
+        """A VM left at the platform's floored value is repaired to 1024."""
+        stored = make_resource({'$key': 1, 'name': 'zz-vm', 'ram': 768})
+        stored.save.return_value = stored
+        client = MagicMock()
+        client.vms.list.return_value = [stored]
+
+        module = self._run(client, self._params(ram=1000))
+
+        stored.save.assert_called_once_with(ram=1024)
+        assert module.exit_json.call_args.kwargs['changed'] is True
+
+    def test_a_numeric_string_already_at_1024_converges(self, make_resource):
+        stored = make_resource({'$key': 1, 'name': 'zz-vm', 'ram': '1024'})
+        client = MagicMock()
+        client.vms.list.return_value = [stored]
+
+        module = self._run(client, self._params(ram=1000))
+
+        stored.save.assert_not_called()
+        assert module.exit_json.call_args.kwargs['changed'] is False
+
+    def test_another_change_does_not_resend_converged_ram(self, make_resource):
+        stored = make_resource({
+            '$key': 1, 'name': 'zz-vm', 'ram': 1024, 'description': '',
+        })
+        stored.save.return_value = stored
+        client = MagicMock()
+        client.vms.list.return_value = [stored]
+
+        self._run(client, self._params(ram=1000, description='web'))
+
+        stored.save.assert_called_once_with(description='web')
