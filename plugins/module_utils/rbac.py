@@ -3,7 +3,7 @@
 # GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Shared helpers for the group, member and permission modules.
+"""Shared helpers for the group, member, permission and user modules.
 
 VergeOS attaches permissions to an IDENTITY, not to a user or a group
 directly. Both users and groups carry an identity key, and a permission row
@@ -120,6 +120,33 @@ def split_member_ref(row):
     if len(parts) < 2:
         return '', parts[0] if parts else ''
     return parts[-2], parts[-1]
+
+
+def find_membership(members, user_key):
+    """The membership row linking ``user_key`` to the group, or None.
+
+    The row identifies its member by REFERENCE, not by name. Measured on a
+    real row from VergeOS 26.1.8:
+
+        {'$key': 4, 'parent_group': 2, 'member': '/v4/users/4',
+         'member_display': 'zz-b13-user', 'creator': 'operator'}
+
+    Comparing that reference against the bare username is always false
+    (``'/v4/users/4' == 'zz-b13-user'``), which is issue #92: ``present``
+    re-added forever and ``absent`` removed nothing.
+
+    Both shapes the platform sends are real, in the same table, at the same
+    time: ``/v4/users/N`` from the members table (and from ``add_user``) and
+    ``users/N`` from the nested projection on a group. ``split_member_ref``
+    handles both. A nested group with the same key (``groups/N``) is not a
+    user and must not match.
+    """
+    wanted = str(user_key)
+    for row in members:
+        table, key = split_member_ref(dict(row))
+        if table == 'users' and key == wanted:
+            return row
+    return None
 
 
 def member_names(members, users_by_key=None, groups_by_key=None):

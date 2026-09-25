@@ -8,6 +8,7 @@ import pytest
 
 from ansible_collections.vergeio.vergeos.plugins.module_utils.rbac import (
     RIGHTS,
+    find_membership,
     find_permission,
     grant_kwargs,
     GROUP_IDENTITY_SETTLE_SECONDS,
@@ -205,6 +206,21 @@ def test_split_member_ref_handles_the_prefixed_form():
 def test_split_member_ref_survives_a_reference_it_cannot_split():
     assert split_member_ref({'member': 'nonsense'}) == ('', 'nonsense')
     assert split_member_ref({'member': '/'}) == ('', '')
+
+
+def test_find_membership_matches_both_reference_forms_and_not_a_group():
+    """#92. '/v4/users/4' and 'users/4' are the same user. 'groups/4' is not,
+    even though the key matches."""
+    rows = [
+        {'member': '/v4/users/4', 'member_display': 'alice'},
+        {'member': 'users/9'},
+        {'member': '/v4/groups/4', 'member_display': 'not-alice'},
+    ]
+    assert find_membership(rows, 4)['member_display'] == 'alice'
+    assert find_membership(rows, '9')['member'] == 'users/9'
+    assert find_membership([{'member': '/v4/groups/4'}], 4) is None
+    assert find_membership([{'member': 'users/4'}], 4)['member'] == 'users/4'
+    assert find_membership(rows, 3) is None
 
 
 def test_member_names_resolves_a_prefixed_reference_by_key():

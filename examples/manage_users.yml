@@ -4,6 +4,11 @@
 # The 'user' module uses 'name' for the target username and 'user_password'
 # for the user's password. Auth credentials (username/password) are separate.
 # The 'member' module uses 'name' for the target member username.
+#
+# There is no role column on a VergeOS user. The task named "Create a new
+# admin user" puts the account in the administrators group; the permission
+# task after it is what actually grants administration. A user task with
+# Passing role=admin used to report success and create an ordinary user.
 - name: Manage VergeIO users and members
   hosts: localhost
   gather_facts: false
@@ -15,32 +20,64 @@
     vergeos_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(true) }}"
 
   tasks:
+    - name: Create the administrators group
+      vergeio.vergeos.group:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        name: administrators
+        description: System administrators
+        state: present
+
     - name: Create a new admin user
       vergeio.vergeos.user:
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
         insecure: "{{ vergeos_insecure }}"
-        name: "john.doe"
-        user_password: "secure_password"
-        email: "john.doe@example.com"
-        full_name: "John Doe"
-        role: admin
+        name: john.doe
+        user_password: secure_password
+        email: john.doe@example.com
+        full_name: John Doe
+        groups:
+          - administrators
         enabled: true
         state: present
 
-    - name: Create a readonly user
+    - name: Grant the administrators group full control of the system
+      vergeio.vergeos.permission:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        group: administrators
+        table: "/"
+        full_control: true
+
+    - name: Create a read-only user
       vergeio.vergeos.user:
         host: "{{ vergeos_host }}"
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
         insecure: "{{ vergeos_insecure }}"
-        name: "viewer"
-        user_password: "viewer_password"
-        email: "viewer@example.com"
-        full_name: "Read Only User"
-        role: readonly
+        name: viewer
+        user_password: viewer_password
+        email: viewer@example.com
+        full_name: Read Only User
         state: present
+
+    - name: Grant that user read-only sight of the whole system
+      vergeio.vergeos.permission:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+        user: viewer
+        table: "/"
+        rights:
+          - list
+          - read
 
     # The membership tasks below need this to exist first. Without it the
     # playbook died at "Group 'engineering' not found" on any system that had
@@ -51,8 +88,8 @@
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
         insecure: "{{ vergeos_insecure }}"
-        name: "engineering"
-        description: "Engineering team"
+        name: engineering
+        description: Engineering team
         state: present
 
     - name: Add user to group
@@ -61,8 +98,8 @@
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
         insecure: "{{ vergeos_insecure }}"
-        group: "engineering"
-        name: "john.doe"
+        group: engineering
+        name: john.doe
         state: present
 
     - name: Add another user to group
@@ -71,6 +108,6 @@
         username: "{{ vergeos_username }}"
         password: "{{ vergeos_password }}"
         insecure: "{{ vergeos_insecure }}"
-        group: "engineering"
-        name: "viewer"
+        group: engineering
+        name: viewer
         state: present

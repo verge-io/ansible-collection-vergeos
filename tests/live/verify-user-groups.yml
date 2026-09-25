@@ -1,0 +1,367 @@
+---
+# Live-verify ladder for user.groups and the rejected role option (#120).
+#
+# role and groups were accepted and discarded. role=admin created an ordinary
+# user and reported success. This ladder is the proof that groups now writes
+# a real membership, that a second apply converges, and that role fails
+# without changing the account.
+#
+# Scratch only: two zz- groups and one zz- user, all removed at the end.
+# Reading the membership back over REST is deliberate. A read that went
+# through the same reference parser as the write could not prove the write.
+#
+# Deleting a group arms a platform defect for a few seconds. A group created
+# inside that window can never take a member. The opening pause is
+# unconditional for that reason. See module_utils/rbac.py.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook tests/live/verify-user-groups.yml
+
+- name: User groups live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    grp: zz-user-admins
+    other: zz-user-auditors
+    usr: zz-user-account
+    settle: 7
+    api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    api_auth: &api_auth
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+
+  tasks:
+    - name: Ladder body
+      block:
+        - name: "0a. Remove any scratch groups left by a previous run"
+          vergeio.vergeos.group:
+            name: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ grp }}"
+            - "{{ other }}"
+
+        - name: "0b. Remove any scratch user left by a previous run"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            state: absent
+
+        # Unconditional on purpose. Pausing only when the delete reported
+        # changed is a handler in disguise, and a pause that silently does
+        # not run produces a group that can never take members.
+        - name: "0c. Let the platform settle after any group delete"
+          ansible.builtin.pause:
+            seconds: "{{ settle }}"
+
+        - name: "1. Create the two scratch groups"
+          vergeio.vergeos.group:
+            name: "{{ item }}"
+            description: user-groups ladder scratch (zz- disposable)
+            state: present
+          loop:
+            - "{{ grp }}"
+            - "{{ other }}"
+          register: created_groups
+
+        - name: "2. Add the user to the first group"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            user_password: "Zz-Ladder-9931!"
+            email: zz-user-account@example.com
+            groups:
+              - "{{ grp }}"
+            state: present
+          register: add1
+
+        - name: "3. The same groups again — the second run must converge"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            groups:
+              - "{{ grp }}"
+            state: present
+          register: add2
+
+        - name: "4. And a third time"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            groups:
+              - "{{ grp }}"
+            state: present
+          register: add3
+
+        - name: "5. Read the user and the memberships back over plain REST"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/{{ item }}"
+            <<: *api_auth
+            return_content: true
+          loop:
+            - users?fields=all
+            - members?fields=all
+            - groups?fields=name
+          register: reads
+          changed_when: false
+
+        - name: "6. Note the keys"
+          ansible.builtin.set_fact:
+            usr_key: "{{ (reads.results[0].json | selectattr('name', 'equalto', usr) | first)['$key'] }}"
+            grp_key: "{{ (created_groups.results[0].group['$key']) }}"
+            other_key: "{{ (created_groups.results[1].group['$key']) }}"
+
+        - name: "7. One row, pointing at this user by reference, and the re-runs converged"
+          vars:
+            mine: "{{ reads.results[1].json | selectattr('parent_group', 'equalto', grp_key | int) | list }}"
+          ansible.builtin.assert:
+            that:
+              - add1 is changed
+              - add2 is not changed
+              - add3 is not changed
+              - add1.groups == [grp]
+              - mine | length == 1
+              - mine[0].member.split('/')[-2:] == ['users', usr_key | string]
+            fail_msg: >-
+              expected one membership and two converged re-runs.
+              add1={{ add1.changed }} add2={{ add2.changed }}
+              add3={{ add3.changed }} rows={{ mine }}
+
+        - name: "8. check mode on a converged membership reports nothing"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            groups:
+              - "{{ grp }}"
+            state: present
+          check_mode: true
+          register: preview
+
+        - name: "9. role=admin is rejected"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            role: admin
+            state: present
+          register: bad_role
+          ignore_errors: true   # noqa: ignore-errors -- the failure IS the assertion
+
+        - name: "10. role=readonly is rejected too"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            role: readonly
+            state: present
+          register: bad_readonly
+          ignore_errors: true   # noqa: ignore-errors -- the failure IS the assertion
+
+        - name: "11. The refusal names permission and group, and the account is unchanged"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/users?fields=all"
+            <<: *api_auth
+            return_content: true
+          register: users_after_role
+          changed_when: false
+
+        - name: "12. role did not grant anything and did not rewrite the user"
+          vars:
+            account: "{{ users_after_role.json | selectattr('name', 'equalto', usr) | first }}"
+          ansible.builtin.assert:
+            that:
+              - preview is not changed
+              - bad_role.failed | default(false)
+              - "'permission' in bad_role.msg"
+              - "'group' in bad_role.msg"
+              - bad_readonly.failed | default(false)
+              - account.email == 'zz-user-account@example.com'
+              - account.role is not defined
+            fail_msg: >-
+              preview={{ preview.changed }}
+              role={{ bad_role.msg | default(bad_role) }}
+              readonly={{ bad_readonly.msg | default(bad_readonly) }}
+              account={{ account }}
+
+        - name: "13. Adding a second group leaves the first in place"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            groups:
+              - "{{ grp }}"
+              - "{{ other }}"
+            state: present
+          register: add_other
+
+        - name: "14. Both groups converge"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            groups:
+              - "{{ grp }}"
+              - "{{ other }}"
+            state: present
+          register: both_again
+
+        - name: "15. Read memberships"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/members?fields=all"
+            <<: *api_auth
+            return_content: true
+          register: rows_both
+          changed_when: false
+
+        - name: "16. Two rows, one per group, both this user"
+          vars:
+            first: "{{ rows_both.json | selectattr('parent_group', 'equalto', grp_key | int) | list }}"
+            second: "{{ rows_both.json | selectattr('parent_group', 'equalto', other_key | int) | list }}"
+          ansible.builtin.assert:
+            that:
+              - add_other is changed
+              - both_again is not changed
+              - first | length == 1
+              - second | length == 1
+              - first[0].member.split('/')[-2:] == ['users', usr_key | string]
+              - second[0].member.split('/')[-2:] == ['users', usr_key | string]
+            fail_msg: >-
+              add_other={{ add_other.changed }} both={{ both_again.changed }}
+              first={{ first }} second={{ second }}
+
+        - name: "17. Omitting groups does not remove either membership"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            state: present
+          register: omitted
+
+        - name: "18. Remove the first membership"
+          vergeio.vergeos.member:
+            group: "{{ grp }}"
+            name: "{{ usr }}"
+            state: absent
+          register: rm1
+
+        - name: "19. Remove it again — converged"
+          vergeio.vergeos.member:
+            group: "{{ grp }}"
+            name: "{{ usr }}"
+            state: absent
+          register: rm2
+
+        - name: "20. Asking for both groups adds the missing one back"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            groups:
+              - "{{ grp }}"
+              - "{{ other }}"
+            state: present
+          register: readd
+
+        - name: "21. And that converges"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            groups:
+              - "{{ grp }}"
+              - "{{ other }}"
+            state: present
+          register: readd2
+
+        - name: "22. Drop both memberships"
+          vergeio.vergeos.member:
+            group: "{{ item }}"
+            name: "{{ usr }}"
+            state: absent
+          loop:
+            - "{{ grp }}"
+            - "{{ other }}"
+
+        - name: "23. A user task that does not mention groups leaves them gone"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            state: present
+          register: stayed
+
+        - name: "24. Read memberships after the omit"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/members?fields=all"
+            <<: *api_auth
+            return_content: true
+          register: rows_gone
+          changed_when: false
+
+        - name: "25. An unknown group is a named failure"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            groups:
+              - zz-no-such-group
+            state: present
+          register: bad_group
+          ignore_errors: true   # noqa: ignore-errors -- the failure IS the assertion
+
+        - name: "26. Additive, removal, and the unknown group"
+          vars:
+            left_first: "{{ rows_gone.json | selectattr('parent_group', 'equalto', grp_key | int) | list }}"
+            left_second: "{{ rows_gone.json | selectattr('parent_group', 'equalto', other_key | int) | list }}"
+          ansible.builtin.assert:
+            that:
+              - omitted is not changed
+              - rm1 is changed
+              - rm2 is not changed
+              - readd is changed
+              - readd2 is not changed
+              - stayed is not changed
+              - (left_first + left_second) | length == 0
+              - bad_group.failed | default(false)
+              - "'zz-no-such-group' in bad_group.msg"
+            fail_msg: >-
+              omitted={{ omitted.changed }} rm1={{ rm1.changed }}
+              rm2={{ rm2.changed }} readd={{ readd.changed }}
+              readd2={{ readd2.changed }} stayed={{ stayed.changed }}
+              left={{ left }} bad_group={{ bad_group.msg | default(bad_group) }}
+
+        - name: PASSED
+          ansible.builtin.debug:
+            msg: >-
+              user groups ladder PASSED: add → converge ×2 → reference read
+              back over REST → check mode → role=admin and role=readonly
+              refused without rewriting the user → second group added without
+              dropping the first → omit does not remove → remove → converge →
+              groups adds the missing one back → converge → omit leaves them
+              gone → unknown group refused by name
+
+      always:
+        - name: "Teardown: memberships"
+          vergeio.vergeos.member:
+            group: "{{ item }}"
+            name: "{{ usr }}"
+            state: absent
+          loop:
+            - "{{ grp }}"
+            - "{{ other }}"
+          failed_when: false
+
+        - name: "Teardown: user"
+          vergeio.vergeos.user:
+            name: "{{ usr }}"
+            state: absent
+          failed_when: false
+
+        - name: "Teardown: groups"
+          vergeio.vergeos.group:
+            name: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ grp }}"
+            - "{{ other }}"
+          failed_when: false
+
+        - name: "Teardown: prove zero leftovers"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/{{ item }}"
+            <<: *api_auth
+            return_content: true
+          loop:
+            - groups?fields=name
+            - users?fields=name
+          register: after
+          changed_when: false
+
+        - name: "Teardown: assert clean"
+          ansible.builtin.assert:
+            that:
+              - grp not in (after.results[0].json | map(attribute='name') | list)
+              - other not in (after.results[0].json | map(attribute='name') | list)
+              - usr not in (after.results[1].json | map(attribute='name') | list)
+            fail_msg: "scratch objects survived teardown: {{ after.results | map(attribute='json') | list }}"

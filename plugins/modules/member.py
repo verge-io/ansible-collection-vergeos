@@ -99,9 +99,9 @@ if HAS_PYVERGEOS:
 
 
 from ansible_collections.vergeio.vergeos.plugins.module_utils.rbac import (
+    find_membership,
     is_member_identity_defect,
     member_identity_advice,
-    split_member_ref,
 )
 
 
@@ -122,36 +122,6 @@ def resolve(module, client, manager, name, kind):
         return resolve_one(module, getattr(client, manager), name, kind)
     except NotFoundError:
         module.fail_json(msg="%s '%s' not found" % (kind.capitalize(), name))
-
-
-def find_membership(members, user_key):
-    """The membership row linking ``user_key`` to the group, or None.
-
-    The row identifies its member by REFERENCE, not by name. Measured on a
-    real row from VergeOS 26.1.8:
-
-        {'$key': 4, 'parent_group': 2, 'member': '/v4/users/4',
-         'member_display': 'zz-b13-user', 'creator': 'operator'}
-
-    The previous version compared that reference against the bare username:
-
-        '/v4/users/4' == 'zz-b13-user'   ->   False, always
-
-    so ``present`` believed the member was always absent and re-added, and
-    ``absent`` never found anyone and silently removed nothing. Same
-    compare-and-map class as #8, #10, #18, #59 and #87, on a reference field
-    rather than a renamed one.
-
-    ``split_member_ref`` handles both shapes the platform sends --
-    ``/v4/users/2`` from the members table and ``users/2`` from the nested
-    projection on a group. Matching only one of them reintroduces the bug.
-    """
-    wanted = str(user_key)
-    for row in members:
-        table, key = split_member_ref(dict(row))
-        if table == 'users' and key == wanted:
-            return row
-    return None
 
 
 def main():
