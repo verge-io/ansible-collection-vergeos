@@ -40,8 +40,8 @@ options:
         snapshot's C(machine) to be the named VM's C(machine). A key from
         another VM is refused in check mode and on a real run. That other
         VM is not modified. The refusal names both VMs.
-      - An id that does not exist is reported as not found. That includes
-        a named VM: a missing key is not reported as belonging to another VM.
+      - An id that does not exist is reported as not found, including when
+        a VM is named. A missing key is not described as another VM's snapshot.
     type: str
   description:
     description:
