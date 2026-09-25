@@ -218,6 +218,12 @@
               changed the record, not the router.
             quiet: true
 
+        # #168: need_restart clears when the platform accepts the restart,
+        # about a second before status leaves `running`. The module must not
+        # return on that clear. Step 7 sends poweroff with no pause after
+        # this; a premature return fails there with "vNet must be in running
+        # state to poweroff". Do not insert a wait between 5c and 7 — that
+        # pause is what made the flake look like a pass.
         - name: "5c. Restart it"
           vergeio.vergeos.network:
             insecure: true
@@ -225,13 +231,18 @@
             state: restarted
           register: restarted
 
-        - name: "5d. The debt is cleared and it is still up"
+        - name: "5d. The debt is cleared and the router is settled running"
           ansible.builtin.assert:
             that:
               - restarted.changed
               - restarted.running
               - not restarted.need_restart
-            fail_msg: "after restart: {{ restarted }}"
+              - restarted.network.status == 'running'
+            fail_msg: >-
+              after restart: {{ restarted }}. status must be the settled
+              value `running`. `starting` (or a need_restart clear while
+              status has not left running) means the module returned before
+              the router cycled (#168).
             quiet: true
 
         # ── check mode ─────────────────────────────────────────────────────
@@ -277,7 +288,10 @@
             that:
               - stopped.changed
               - not stopped.running
-            fail_msg: "stop reported {{ stopped }}"
+            fail_msg: >-
+              stop reported {{ stopped }}. A failure of "vNet must be in
+              running state to poweroff" here means the restart above
+              returned before status left `running` and came back (#168).
             quiet: true
 
         - name: "7c. Stopping it again is not a change"
