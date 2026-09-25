@@ -18,6 +18,8 @@ description:
   - Used for configuring hostname, network, and administrator password on first boot.
   - The unattend.xml file is automatically applied during Windows OOBE (Out of Box Experience).
   - Automatically enables cloudinit_datasource on the VM to activate the file delivery mechanism.
+  - Reports C(changed) only when the datasource or /unattend.xml is written.
+    Applying the same configuration again, including in check mode, reports C(changed=false).
 options:
   vm_name:
     description:
@@ -50,7 +52,7 @@ author:
   - VergeIO (@vergeio)
 notes:
   - The VM must be imported from a sysprepped Windows OVA.
-  - This module automatically sets cloudinit_datasource to 'nocloud' on the VM.
+  - This module sets cloudinit_datasource to 'nocloud' when the VM is not already using it.
   - The cloudinit_datasource enables the file delivery mechanism (virtual CD-ROM) for both Linux and Windows.
   - After the VM starts, Windows will apply the unattend.xml configuration.
   - The VM will typically reboot during the unattend process.
@@ -112,6 +114,8 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
+    cloudinit_datasource_differs,
+    cloudinit_file_needs_update,
     HAS_PYVERGEOS,
 )
 
@@ -209,12 +213,17 @@ def configure_unattend(client, module):
 
     # Get VM
     vm = get_vm(client, module, vm_name, vm_id_param)
-    vm_key = str(dict(vm).get('$key'))
+    vm_dict = dict(vm)
+    vm_key = str(vm_dict.get('$key'))
 
     # Get existing files
     existing_files = get_cloudinit_files(client, module, vm_key)
-    file_map = {dict(f)['name']: str(dict(f).get('$key')) for f in existing_files}
-    file_objs = {dict(f)['name']: f for f in existing_files}
+    file_rows = {}
+    file_objs = {}
+    for file_obj in existing_files:
+        row = dict(file_obj)
+        file_rows[row['name']] = row
+        file_objs[row['name']] = file_obj
 
     if state == 'absent':
         # Remove unattend.xml if it exists
@@ -238,20 +247,23 @@ def configure_unattend(client, module):
 
     changed = False
 
-    # Enable cloudinit datasource (required for cloudinit_files to work)
-    enable_cloudinit_datasource(client, module, vm_key)
-    changed = True
+    # cloudinit_datasource is required for the file to be delivered. PUT it
+    # only when the VM is not already on nocloud.
+    if cloudinit_datasource_differs(vm_dict.get('cloudinit_datasource'), 'nocloud'):
+        enable_cloudinit_datasource(client, module, vm_key)
+        changed = True
 
-    # Create or update /unattend.xml
-    if '/unattend.xml' not in file_map:
-        # Create the file with contents in one call
+    # Create or update /unattend.xml. GET of the file row does not include
+    # contents; get_content() does. Check mode reads and does not write.
+    row = file_rows.get('/unattend.xml')
+    if row is None:
         file_id = create_unattend_file(client, module, vm_key, unattend_xml)
         changed = True
     else:
-        # Update existing file
-        file_id = file_map['/unattend.xml']
-        update_unattend_file(client, module, file_id, unattend_xml)
-        changed = True
+        file_id = str(row.get('$key'))
+        if cloudinit_file_needs_update(client, file_id, unattend_xml, row.get('render')):
+            update_unattend_file(client, module, file_id, unattend_xml)
+            changed = True
 
     module.exit_json(
         changed=changed,

@@ -97,6 +97,7 @@ precisely because nothing read that table.
 | `verify-member.yml` | `member` add/converge/remove, and that the right membership row is taken (#92) |
 | `verify-user-groups.yml` | `user` `groups` add/converge, and that `role` is rejected instead of discarded (#120) |
 | `verify-catalog.yml` | `catalog` create/converge/scope/delete, plus the apostrophe and `{brace}` name guards (#32) |
+| `verify-cloudinit.yml` | `cloud_init` and `windows_unattend`: applying the same configuration again reports `changed=false`, and check mode reports a write only when one would happen (#125) |
 | `verify-api-key.yml` | `api_key` / `api_key_info`, including that a revoked secret really is dead (#30) |
 | `verify-key-rotation.yml` | the `api_key_rotation` role: verify-before-revoke (#30) |
 | `verify-recipe-deploy.yml` | `vm_recipe_deploy` end to end |
