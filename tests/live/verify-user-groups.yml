@@ -309,7 +309,7 @@
               omitted={{ omitted.changed }} rm1={{ rm1.changed }}
               rm2={{ rm2.changed }} readd={{ readd.changed }}
               readd2={{ readd2.changed }} stayed={{ stayed.changed }}
-              left={{ left }} bad_group={{ bad_group.msg | default(bad_group) }}
+              left_first={{ left_first | length }} left_second={{ left_second | length }} bad_group={{ bad_group.msg | default(bad_group) }}
 
         - name: PASSED
           ansible.builtin.debug:
