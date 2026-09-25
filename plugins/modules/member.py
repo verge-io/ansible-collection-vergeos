@@ -40,11 +40,11 @@ extends_documentation_fragment:
 notes:
   - Supports C(check_mode).
   - Group and user are matched by name in Python rather than with a
-    server-side OData filter, which is this collection's general rule. The
-    filter is not safe on the declared floor - pyvergeos 1.2.7 does not escape
-    a C({) in a filter literal, so a braced name can resolve to a different
-    row (pyVergeOS#100, fixed in 1.2.8). Client-side equality has no escaping
-    surface and behaves identically on every supported version.
+    server-side OData filter. pyvergeos before 1.2.8 did not escape a C({)
+    in a filter literal, so a braced name could resolve to a different row
+    (pyVergeOS#100). The floor is now >=1.2.8, which includes that fix.
+    Client-side equality stays, because it also refuses an ambiguous name
+    (#72) and has no escaping surface.
   - A group that was created within a few seconds of another group being
     deleted cannot accept members, and never recovers. That is a VergeOS
     defect, not a configuration error; this module recognises it and says so

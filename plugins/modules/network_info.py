@@ -98,13 +98,12 @@ def main():
     # omits fields an operator needs -- dnslist, port mirroring, rate limits.
     # An _info module should return the whole resource.
     #
-    # Keep this a list. On pyvergeos 1.2.7 -- the newest release, and what
-    # most users will have -- passing the string "all" made the SDK send a
-    # per-character field list and the API returned a single field, with no
-    # error (pyvergeos#101, confirmed on 26.1.8 for both get and list). That
-    # is fixed on pyvergeos dev, where both forms return the full record, but
-    # the list form is correct on every version the collection supports
-    # (requirements.txt allows >= 1.0.1).
+    # Keep this a list. On pyvergeos 1.2.7, passing the string "all" made
+    # the SDK send a per-character field list and the API returned a single
+    # field, with no error (pyvergeos#101, confirmed on 26.1.8 for both get
+    # and list). Later releases, including 1.6.1, accept the string. The
+    # list form is what this module sends, and it is correct across that
+    # range.
     # 'all' expands server-side to the vnet's own columns only, which never
     # includes a traversal -- so it drops 'running' and 'status', which
     # pyvergeos requests as aliased joins in its DEFAULT field list

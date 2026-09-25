@@ -186,19 +186,81 @@ EXAMPLES = r'''
 
 RETURN = r'''
 vm:
-  description: Information about the virtual machine
+  description:
+    - The VM row after the requested state was applied.
+    - Keys are the API's. The identifier is C($key). Power is C(status)
+      (a string such as C(running) or C(stopped)) and C(running) (a bool).
+      There is no C(power_state) key and no C(id) key.
+    - This is the projection C(VM_FIELDS) fetches, not every column on the
+      VM. C(vm_info) returns a wider row.
   returned: when state is present, running, or stopped
   type: dict
+  contains:
+    "$key":
+      description: VM identifier.
+      type: int
+      returned: always
+    name:
+      description: VM name.
+      type: str
+      returned: always
+    description:
+      description: VM description.
+      type: str
+      returned: always
+    enabled:
+      description: Whether the VM is enabled.
+      type: bool
+      returned: always
+    os_family:
+      description: OS family (C(linux), C(windows), or C(other)).
+      type: str
+      returned: always
+    cpu_cores:
+      description: Number of CPU cores.
+      type: int
+      returned: always
+    ram:
+      description: RAM in MB.
+      type: int
+      returned: always
+    machine_type:
+      description:
+        - QEMU machine type.
+        - An alias such as C(q35) is stored expanded (C(pc-q35-10.0)).
+      type: str
+      returned: always
+    uefi:
+      description: Whether the firmware is UEFI. This is the column C(bios_type) writes.
+      type: bool
+      returned: always
+    boot_order:
+      description:
+        - Boot order string.
+        - Absent from the SDK's default projection, so this module asks for it by name.
+      type: str
+      returned: always
+    status:
+      description: Power status string, for example C(running) or C(stopped).
+      type: str
+      returned: always
+    running:
+      description: Whether the VM is powered on.
+      type: bool
+      returned: always
   sample:
-    name: "web-server-01"
-    description: "Web server for production"
+    "$key": 1
+    name: web-server-01
+    description: Web server for production
     enabled: true
-    os_family: "linux"
+    os_family: linux
     cpu_cores: 4
     ram: 8192
-    machine_type: "q35"
-    power_state: "running"
-    id: "12345"
+    machine_type: pc-q35-10.0
+    uefi: false
+    boot_order: cdn
+    status: running
+    running: true
 changed:
   description: Whether the module made any changes
   returned: always

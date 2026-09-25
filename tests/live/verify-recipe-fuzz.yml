@@ -281,9 +281,9 @@
         answers: {ZZ_NOTE: "o'brien's note"}
         expect: pass
 
-      # Braces are the one reserved character the SDK's quote_value() does not
-      # escape (pyVergeOS#100). An answer value never reaches a filter, so this
-      # must pass; rung 6 is where a brace is put somewhere that does.
+      # An answer value never reaches a filter. quote_value() has escaped
+      # '{' since pyvergeos 1.2.8 (pyVergeOS#100); this must pass either way.
+      # Rung 6 is where a brace is put on a name.
       - name: note-with-braces
         # Single braces only: a doubled brace is Jinja, and Ansible renders
         # play vars before the module ever sees them.
@@ -725,11 +725,11 @@
         # ── 6. Names that have to survive a filter ───────────────────────────
         #
         # The VM-name convergence check is the one place a name the operator
-        # chose is used to FIND something. It matches client-side for exactly
-        # this reason, and these are the two characters that break the
-        # alternative: an apostrophe ends an OData string literal, and a brace
-        # is the one reserved character pyvergeos' quote_value() does not
-        # escape (pyVergeOS#100). A broken filter here does not error -- it
+        # chose is used to FIND something. It matches client-side. An
+        # apostrophe ends an OData string literal if it is doubled instead of
+        # backslash-escaped, and a brace was the character quote_value() did
+        # not escape until pyvergeos 1.2.8 (pyVergeOS#100). A broken filter
+        # here does not error -- it
         # matches everything or nothing, so the module would either refuse to
         # deploy a VM that does not exist, or deploy a second copy of one that
         # does.

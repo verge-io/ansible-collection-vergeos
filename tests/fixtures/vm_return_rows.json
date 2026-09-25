@@ -1,0 +1,34 @@
+{
+  "_note": "Key set for the rows vm_info and vm actually return. Not a hand-picked power_state/id example. default_projection aliases are VM_DEFAULT_FIELDS in pyvergeos 1.2.7 and 1.6.1 (identical). The keys $key, name, machine, node_name, ram, cpu_cores, running, ha_group, is_snapshot and status were recorded from a live 26.1.8 client.vms.list() row (tests/unit/roles/test_rebalance_advisor_planner.py). snapshot_profile and tags are the two columns vm_info adds because the default summary omits them. boot_order is a real VM column the vm module asks for by name; the default summary does not include it (tests/live/verify-field-contract.yml). Other values are illustrative. Do not add power_state or id.",
+  "default_projection": {
+    "$key": 1,
+    "name": "app-01",
+    "description": "",
+    "enabled": true,
+    "cpu_cores": 1,
+    "ram": 1024,
+    "os_family": "linux",
+    "guest_agent": false,
+    "uefi": false,
+    "secure_boot": false,
+    "machine_type": "pc-q35-10.0",
+    "created": 0,
+    "modified": 0,
+    "is_snapshot": false,
+    "machine": 48,
+    "node_key": 1,
+    "cluster_key": 1,
+    "ha_group": "",
+    "cloudinit_datasource": "none",
+    "running": true,
+    "status": "running",
+    "node_name": "node1",
+    "cluster_name": "cluster1"
+  },
+  "vm_info_extra": ["snapshot_profile", "tags"],
+  "vm_only": ["boot_order"],
+  "live_list_keys": [
+    "$key", "name", "machine", "node_name", "ram", "cpu_cores",
+    "running", "ha_group", "is_snapshot", "status"
+  ]
+}

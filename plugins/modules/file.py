@@ -159,8 +159,9 @@ def find_file(client, name):
     that helper is that VergeOS does not enforce unique names (#72/#85), and
     here it does -- a second upload under an existing name is refused with
     ``Validation error: unique constraint``. There is no ambiguity to refuse.
-    Client-side matching is still what avoids pyVergeOS#100's filter escaping
-    on a name that came from a local filename.
+    Client-side matching is what this path uses. pyVergeOS#100
+    (``quote_value()`` did not escape ``{``) is fixed in the 1.2.8 floor;
+    the lookup was not switched to a server-side filter.
     """
     for existing in client.files.list(fields=FILE_FIELDS):
         if dict(existing).get('name') == name:

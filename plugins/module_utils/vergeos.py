@@ -126,14 +126,16 @@ def resolve_one(module, manager, name, kind, **list_kwargs):
     here, because the collection offers name-based UX over those tables and
     then updates and deletes what it finds (issue #72).
 
-    Matching is done CLIENT-SIDE rather than with ``list(name=...)``. The
-    server-side filter is the obvious choice and is wrong for us: pyVergeOS#100
-    stripped ``{`` from a filter literal, so a braced name resolved to a
-    different object, and the fix shipped in pyvergeos **1.2.8** -- one patch
-    above this collection's floor of 1.2.7. Client-side equality has no
-    escaping surface at all and behaves identically on every supported
-    version. ``member.py`` already routed around ``get(name=)`` for the
-    related apostrophe reason; this generalises that.
+    Matching is done CLIENT-SIDE rather than with ``list(name=...)``.
+    ``get(name=)`` returns the first row and cannot report a second, and
+    this collection then updates and deletes what it finds (#72).
+    pyVergeOS#100 used to be a second reason: ``quote_value()`` stripped
+    ``{`` from a filter literal, so a braced name resolved to a different
+    object. That fix shipped in pyvergeos 1.2.8, which is now the floor
+    (published as 1.6.1). Client-side equality stays, because of the
+    ambiguous-name case, and it has no escaping surface.
+    ``member.py`` already routed around ``get(name=)`` for the related
+    apostrophe reason; this generalises that.
 
     Args:
         module: AnsibleModule, used to fail loudly on ambiguity.

@@ -34,9 +34,8 @@
   changed_when: false
   retries: "{{ (vm_from_recipe_power_on_grace | int // (vm_from_recipe_poll_interval | int)) | int }}"
   delay: "{{ vm_from_recipe_poll_interval | int }}"
-  # `running` is the real field. vm_info's documentation mentions a
-  # `power_state` field that the API does not return; reading that would test
-  # `undefined | bool`, which is false forever.
+  # Power is `running` (bool). `status` is the string (`running`,
+  # `stopped`, and the states in between). The row has no `power_state` key.
   until: (vm_from_recipe_running.vms | default([{}]) | first).running | default(false) | bool
 
 - name: A powered-on VM must reach running

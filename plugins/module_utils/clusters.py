@@ -116,16 +116,11 @@ def fetch_cluster_status(client):
 
     pyvergeos 1.5.0 models this table (``client.cluster_status``, and scoped
     ``cluster.cluster_status``; pyVergeOS#127). The read stays on
-    ``_request`` because this collection floors at pyvergeos>=1.2.7, where
-    the table is not modelled at all -- ``clusters.py`` exposes a status
-    *string* and stops, so the capacity figures are unreachable through the
-    SDK.
-
+    ``_request``. The published floor (1.6.1) has the manager, and
     ``ClusterStatus.can_lose_one_node()`` is not a drop-in for
-    ``drain_capacity`` once the floor moves. It divides ``online_ram`` evenly
-    across ``online_nodes``, so on uneven nodes a True is not an N-1
-    guarantee (pyvergeos 1.6.1, #135). The drain check uses each node's
-    ``vm_ram``.
+    ``drain_capacity``: it divides ``online_ram`` evenly across
+    ``online_nodes``, so on uneven nodes a True is not an N-1 guarantee
+    (pyvergeos 1.6.1, #135). The drain check uses each node's ``vm_ram``.
     """
     rows = client._request('GET', 'cluster_status', params={'fields': 'all'})
     if not isinstance(rows, list):

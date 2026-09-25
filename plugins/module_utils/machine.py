@@ -8,8 +8,9 @@
 A VM's drives and NICs come from public SDK managers scoped to the VM. Their
 per-drive IO counters do too, as of pyvergeos 1.5.0: ``machine_drive_stats``
 and the scoped ``drive.drive_stats`` accessor (pyVergeOS#128).
-drive_write_stats() still reads the table with ``client._request()`` because
-this collection floors at pyvergeos>=1.2.7, which has no such manager.
+drive_write_stats() still reads the table with ``client._request()``.
+The manager exists from pyvergeos 1.5.0; the floor (published as 1.6.1)
+includes it. This path was not switched onto the manager.
 """
 
 from __future__ import absolute_import, division, print_function

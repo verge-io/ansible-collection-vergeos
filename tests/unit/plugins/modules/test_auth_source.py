@@ -255,8 +255,8 @@ class TestFindSource:
         """Not about duplicates -- auth source names carry a unique
         constraint, so there is nothing to disambiguate. It is about
         pyVergeOS#100: get(name=) builds an OData filter out of a display name
-        that a human typed, and the brace-stripping fix landed in pyvergeos
-        1.2.8, one patch above this collection's floor.
+        that a human typed. The brace-stripping fix landed in pyvergeos
+        1.2.8, which is now the floor. The lookup stays client-side.
         """
         client = MagicMock()
         client.auth_sources.list.return_value = [make_source()]

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **pyvergeos floor is `>=1.2.8`**, and the compatibility notes match 1.6.1. `quote_value()` escapes `{` as of 1.2.8 (pyVergeOS#100); that release was not published, and 1.6.1 is the PyPI release that contains it. `vm` and `vm_info` RETURN samples document `$key`, `status` and `running`. The README lists every module.
+
 ### Added
 
 - **Recipe deployment.** `vm_recipe_deploy`, `vm_recipe_info`, `vm_drive_info` and `vm_nic_info`, plus the `vm_from_recipe` role. A recipe deploy is asynchronous, in that the platform returns a VM key long before the VM can boot, so the role waits for drives to finish importing and asserts post-conditions on the VM itself rather than on a deploy log. Answers are validated against the recipe's own published questions before anything is sent, so a bad answer is a refusal rather than a half-built VM.

@@ -182,8 +182,8 @@ def find_catalogs(client, name, repo_key=None):
        ValidationError "Invalid argument" -- so a catalog with an
        apostrophe in its name could not be looked up, created, converged
        or deleted.
-    2. Letting the SDK build it fixes the apostrophe but, on the floor
-       version, hits pyVergeOS#100: ``quote_value()`` did not escape
+    2. Letting the SDK build it fixes the apostrophe but, before 1.2.8,
+       hit pyVergeOS#100: ``quote_value()`` did not escape
        ``{``, so VergeOS read the brace as the start of a substitution
        token and the query matched a DIFFERENT catalog. Measured through
        this module: creating ``zz-jw-c{x}at`` alongside an existing
@@ -204,9 +204,9 @@ def find_catalogs(client, name, repo_key=None):
     "ambiguous by name alone" apart from "ambiguous within one repository"
     in its error message.
 
-    Restore a server-side filter only once the floor requires pyvergeos
-    >= 1.2.8, which carries the fix for pyVergeOS#100. The floor is 1.2.7
-    today -- one patch short.
+    pyVergeOS#100 is fixed in pyvergeos 1.2.8, which is this collection's
+    floor. The multi-match stays client-side anyway: a server-side
+    ``name eq`` filter cannot return the list this caller narrows.
     """
     matches = [c for c in client.catalogs.list()
                if dict(c).get('name') == name]
