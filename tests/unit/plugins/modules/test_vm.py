@@ -265,6 +265,7 @@ class TestVmStateAbsent:
         mock_module.exit_json.assert_called_once()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is True
+        assert call_kwargs['msg'] == "VM 'delete-me' deleted"
 
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
@@ -516,6 +517,8 @@ class TestVmCheckMode:
         mock_module.exit_json.assert_called_once()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is True  # Would change, but didn't
+        assert call_kwargs['msg'] == "Would delete VM 'delete-me'"
+        assert 'deleted' not in call_kwargs['msg']
 
 
 class TestMachineTypeMatching:
@@ -919,3 +922,102 @@ class TestIssue87NonColumnFields:
 
         assert changed is True
         assert stored.save.call_args.kwargs == {'uefi': False}
+
+
+class TestAbsentRefusesRunningVm:
+    """state=absent on a running VM must fail in check mode too (#127).
+
+    Check mode used to report changed=true and "deleted". The real run
+    then failed "Virtual Machine must be stopped to delete". A dry run
+    of a teardown has to predict that refusal. A stopped VM in check
+    mode is worded "would delete", never as though the delete happened.
+    """
+
+    REFUSAL = (
+        "Virtual Machine must be stopped to delete. "
+        "Set state=stopped on VM '%s' first."
+    )
+
+    def _run(self, client, name, check_mode):
+        module = MagicMock()
+        module.params = {
+            'host': 'vergeos.example.com',
+            'username': 'admin',
+            'password': 'secret',
+            'insecure': False,
+            'name': name,
+            'state': 'absent',
+        }
+        module.check_mode = check_mode
+        module.exit_json.side_effect = SystemExit
+        module.fail_json.side_effect = SystemExit
+        base = 'ansible_collections.vergeio.vergeos.plugins.modules.vm'
+        with patch('%s.get_vergeos_client' % base, return_value=client), \
+             patch('%s.HAS_PYVERGEOS' % base, True), \
+             patch('%s.AnsibleModule' % base, return_value=module):
+            from ansible_collections.vergeio.vergeos.plugins.modules import vm
+            try:
+                vm.main()
+            except SystemExit:
+                pass
+        return module
+
+    def _client(self, make_resource, **row):
+        client = MagicMock()
+        data = {'$key': 1, 'name': 'qa-probe-snap'}
+        data.update(row)
+        vm = make_resource(data)
+        client.vms.list.return_value = [vm]
+        client.vm_row = vm
+        return client
+
+    @pytest.mark.parametrize('check_mode', [False, True])
+    @pytest.mark.parametrize('row', [
+        {'status': 'running', 'running': True},
+        {'status': 'running'},
+        {'running': True},
+        {'running': 1, 'status': 'stopped'},
+    ])
+    def test_running_vm_is_refused_in_both_modes(self, make_resource,
+                                                 check_mode, row):
+        client = self._client(make_resource, **row)
+        module = self._run(client, 'qa-probe-snap', check_mode)
+
+        client.vm_row.delete.assert_not_called()
+        module.exit_json.assert_not_called()
+        module.fail_json.assert_called_once()
+        assert module.fail_json.call_args.kwargs['msg'] == (
+            self.REFUSAL % 'qa-probe-snap')
+
+    def test_check_and_real_mode_share_one_message(self, make_resource):
+        real = self._run(
+            self._client(make_resource, status='running', running=True),
+            'qa-probe-snap', False)
+        dry = self._run(
+            self._client(make_resource, status='running', running=True),
+            'qa-probe-snap', True)
+        assert real.fail_json.call_args.kwargs['msg'] == (
+            dry.fail_json.call_args.kwargs['msg'])
+
+    def test_stopped_vm_check_mode_would_delete(self, make_resource):
+        client = self._client(
+            make_resource, status='stopped', running=False)
+        module = self._run(client, 'qa-probe-snap', True)
+
+        client.vm_row.delete.assert_not_called()
+        module.fail_json.assert_not_called()
+        result = module.exit_json.call_args.kwargs
+        assert result['changed'] is True
+        assert result['msg'] == "Would delete VM 'qa-probe-snap'"
+        assert 'deleted' not in result['msg']
+
+    def test_stopped_vm_is_deleted_for_real(self, make_resource):
+        client = self._client(
+            make_resource, status='stopped', running=False)
+        module = self._run(client, 'qa-probe-snap', False)
+
+        client.vm_row.delete.assert_called_once()
+        module.fail_json.assert_not_called()
+        result = module.exit_json.call_args.kwargs
+        assert result['changed'] is True
+        assert result['msg'] == "VM 'qa-probe-snap' deleted"
