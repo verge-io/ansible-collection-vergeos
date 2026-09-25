@@ -23,6 +23,8 @@ options:
     description:
       - Return only the source with this name. An unknown name returns
         an empty list, not an error.
+      - If more than one source has this name, the module fails instead
+        of returning one of them.
     type: str
   include_settings:
     description:
@@ -80,6 +82,7 @@ auth_sources:
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     get_vergeos_client,
+    resolve_one,
     sdk_error_handler,
     vergeos_argument_spec,
     HAS_PYVERGEOS,
@@ -95,6 +98,30 @@ if HAS_PYVERGEOS:
     )
 
 SECRET_KEYS = ('client_secret',)
+
+
+def find_source(module, client, name, include_settings):
+    """The named source, or None.
+
+    ``resolve_one`` rather than ``auth_sources.get(name=...)``. The SDK
+    single-get is ``list(filter=..., limit=1)[0]``: it returns the first
+    row and cannot report a second (#72). ``auth_source`` already refuses
+    that guess. This module is the read of the same table, so a named
+    lookup follows the same client-side match. A display name is never
+    sent as an OData filter.
+
+    Settings are fetched by key afterwards. ``list()`` does not carry
+    them, and a name-filtered ``get(name=, include_settings=True)`` is
+    the call this replaces.
+    """
+    try:
+        found = resolve_one(module, client.auth_sources, name, 'auth source')
+    except NotFoundError:
+        return None
+    if not include_settings:
+        return found
+    return client.auth_sources.get(int(dict(found)['$key']),
+                                   include_settings=True)
 
 
 def source_result(source, include_settings):
@@ -135,12 +162,9 @@ def main():
 
     try:
         if module.params.get('name'):
-            try:
-                sources = [client.auth_sources.get(
-                    name=module.params['name'],
-                    include_settings=include_settings)]
-            except NotFoundError:
-                sources = []
+            found = find_source(module, client, module.params['name'],
+                                include_settings)
+            sources = [] if found is None else [found]
         elif include_settings:
             # list() does not carry settings; fetch each source fully
             sources = [client.auth_sources.get(dict(s)['$key'],

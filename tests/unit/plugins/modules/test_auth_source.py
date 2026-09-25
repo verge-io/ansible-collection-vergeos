@@ -327,6 +327,94 @@ class TestFindSource:
         assert module.exit_json.call_args[1]['changed'] is True
 
 
+def run_info(mock_module, mock_client):
+    with patch('ansible_collections.vergeio.vergeos.plugins.modules.'
+               'auth_source_info.get_vergeos_client', return_value=mock_client), \
+         patch('ansible_collections.vergeio.vergeos.plugins.modules.'
+               'auth_source_info.HAS_PYVERGEOS', True), \
+         patch('ansible_collections.vergeio.vergeos.plugins.modules.'
+               'auth_source_info.AnsibleModule', return_value=mock_module):
+        try:
+            _info().main()
+        except SystemExit:
+            pass
+
+
+def info_params(**overrides):
+    params = {'name': None, 'include_settings': False}
+    params.update(overrides)
+    return params
+
+
+class TestInfoNameLookup:
+    """auth_source_info was the remaining get(name=) call (#72).
+
+    Zero matches stay an empty list. One match is that source. More than
+    one match fails instead of returning whichever row the API listed first.
+    """
+
+    def test_unknown_name_is_an_empty_list(self):
+        client = MagicMock()
+        client.auth_sources.list.return_value = []
+        module = make_module(info_params(name='missing'))
+
+        run_info(module, client)
+
+        result = module.exit_json.call_args.kwargs
+        assert result['changed'] is False
+        assert result['auth_sources'] == []
+        client.auth_sources.get.assert_not_called()
+
+    def test_one_match_is_returned(self):
+        client = MagicMock()
+        client.auth_sources.list.return_value = [
+            make_source(key=1, name='Other'),
+            make_source(key=3, name='Corporate Azure'),
+        ]
+        module = make_module(info_params(name='Corporate Azure'))
+
+        run_info(module, client)
+
+        sources = module.exit_json.call_args.kwargs['auth_sources']
+        assert [s['key'] for s in sources] == [3]
+        assert sources[0]['name'] == 'Corporate Azure'
+        assert 'name' not in client.auth_sources.list.call_args.kwargs
+        assert 'filter' not in client.auth_sources.list.call_args.kwargs
+        client.auth_sources.get.assert_not_called()
+
+    def test_duplicate_names_are_refused(self):
+        client = MagicMock()
+        client.auth_sources.list.return_value = [
+            make_source(key=3, name='Corporate Azure'),
+            make_source(key=9, name='Corporate Azure'),
+        ]
+        module = make_module(info_params(name='Corporate Azure'))
+
+        run_info(module, client)
+
+        msg = module.fail_json.call_args.kwargs['msg']
+        assert 'refusing to guess' in msg
+        assert '3' in msg and '9' in msg
+        module.exit_json.assert_not_called()
+        client.auth_sources.get.assert_not_called()
+
+    def test_settings_are_fetched_by_key_and_the_secret_is_stripped(self):
+        client = MagicMock()
+        client.auth_sources.list.return_value = [make_source()]
+        client.auth_sources.get.return_value = make_source(
+            settings=dict(FULL_SETTINGS))
+        module = make_module(info_params(name='Corporate Azure',
+                                         include_settings=True))
+
+        run_info(module, client)
+
+        client.auth_sources.get.assert_called_once_with(3, include_settings=True)
+        assert 'name' not in client.auth_sources.get.call_args.kwargs
+        settings = module.exit_json.call_args.kwargs['auth_sources'][0]['settings']
+        assert settings['client_id'] == 'id'
+        assert 'client_secret' not in settings
+
+
 class TestSdkErrorsAreHandled:
     @pytest.mark.parametrize('exc', [
         APIError, AuthenticationError, ValidationError, VergeConnectionError,

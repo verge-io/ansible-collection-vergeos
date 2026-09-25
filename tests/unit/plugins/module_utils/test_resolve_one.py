@@ -15,6 +15,10 @@ succeed, list() shows both, and get(name=) silently returns one of them.
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+import ast
+import glob
+import os
+
 import pytest
 from unittest.mock import MagicMock
 
@@ -162,3 +166,32 @@ class TestNoServerSideNameFilter:
                 make_resource({'$key': 2, 'name': 'zz-decoy'})]
         out = _resolve_one()(_module(), _manager(*rows), name, 'catalog')
         assert dict(out)['$key'] == 1
+
+
+def _plugin_files():
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.abspath(os.path.join(here, '..', '..', '..', '..'))
+    return sorted(glob.glob(os.path.join(root, 'plugins', '**', '*.py'),
+                            recursive=True))
+
+
+def test_no_plugin_calls_get_by_name():
+    """A name= keyword on .get() is the SDK single-get (#72).
+
+    That call is list(filter=..., limit=1)[0]. It returns one row and
+    cannot report a second. Name lookups go through resolve_one(), which
+    lists without that limit and refuses when more than one row matches.
+    Docstrings may still mention the old call; this reads the AST.
+    """
+    hits = []
+    for path in _plugin_files():
+        tree = ast.parse(open(path).read(), filename=path)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute) or func.attr != 'get':
+                continue
+            if any(kw.arg == 'name' for kw in node.keywords):
+                hits.append('%s:%d' % (os.path.relpath(path), node.lineno))
+    assert hits == []
