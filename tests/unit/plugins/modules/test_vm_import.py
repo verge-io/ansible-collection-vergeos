@@ -13,6 +13,14 @@ by name and never reads an OVA identifier. Requiring one of
 ``ova_file_id``, ``ova_file_name``, or ``file_id`` on every state rejected
 a delete that only had ``name``. Those identifiers are required only when
 ``state`` is ``present``.
+
+Repeated names (#162): VergeOS keeps a ``vm_imports`` row for every import
+and does not require the name to be unique. ``state=absent`` used to call
+``resolve_one``, which refuses when two rows share a name, so a name that
+had been imported twice could never be removed. Absent now deletes every
+finished record of that name. It does not stop at the first row, and it
+does not delete a row with a different name. A record that is still
+importing blocks the sweep. ``import_key`` deletes one record.
 """
 
 from __future__ import (absolute_import, division, print_function)
@@ -272,3 +280,212 @@ class TestVmImportOvaRequiredOnlyWhenPresent:
         assert result['vm_id'] == '57'
         assert result['msg'] == "VM 'qa-probe-import' already exists"
         client._request.assert_not_called()
+
+
+def _named(key, name, **extra):
+    data = {'$key': key, 'name': name}
+    data.update(extra)
+    return make_row(data)
+
+
+class TestVmImportAbsentRepeatedName:
+    """Issue #162. A name imported twice must still be removable.
+
+    The reported failure was ``resolve_one`` refusing to guess. The other
+    failure mode, stopping at the first match, would delete one row and
+    leave the other. Neither is acceptable, and a neighbour with a
+    different name must not be deleted.
+    """
+
+    def test_absent_deletes_every_finished_record_of_a_repeated_name(self, capsys):
+        client = MagicMock()
+        other = _named('other-1', 'qa-other', status='complete')
+        first = _named('d7946a7a', 'qa-p-dup', status='complete')
+        second = _named('9399f782', 'qa-p-dup', status='complete')
+        # The decoy is first on purpose. A lookup that stops at the first
+        # list row, or at the first name match, leaves a record behind.
+        client.vm_imports.list.return_value = [other, first, second]
+
+        result = run_real(capsys, client, {
+            'state': 'absent',
+            'name': 'qa-p-dup',
+        })
+
+        assert result['changed'] is True
+        assert result['msg'] == "Deleted 2 VM import records named 'qa-p-dup'"
+        assert result['import_keys'] == ['d7946a7a', '9399f782']
+        assert 'import_key' not in result
+        first.delete.assert_called_once_with()
+        second.delete.assert_called_once_with()
+        other.delete.assert_not_called()
+        client._request.assert_not_called()
+
+    def test_absent_deletes_rows_whose_list_projection_has_no_status(self, capsys):
+        """The single-record fixture has never carried status. Two of those
+        rows are still finished history, not a live import."""
+        client = MagicMock()
+        first = _named('imp-1', 'qa-p-dup')
+        second = _named('imp-2', 'qa-p-dup')
+        client.vm_imports.list.return_value = [first, second]
+
+        result = run_real(capsys, client, {
+            'state': 'absent',
+            'name': 'qa-p-dup',
+        })
+
+        assert result['changed'] is True
+        assert result['import_keys'] == ['imp-1', 'imp-2']
+        first.delete.assert_called_once_with()
+        second.delete.assert_called_once_with()
+
+    def test_absent_check_mode_deletes_nothing_when_the_name_is_repeated(self, capsys):
+        client = MagicMock()
+        first = _named('imp-1', 'qa-p-dup', status='complete')
+        second = _named('imp-2', 'qa-p-dup', status='complete')
+        client.vm_imports.list.return_value = [first, second]
+
+        result = run_real(capsys, client, {
+            'state': 'absent',
+            'name': 'qa-p-dup',
+            '_ansible_check_mode': True,
+        })
+
+        assert result['changed'] is True
+        assert result['msg'] == (
+            "Would delete 2 VM import records named 'qa-p-dup' (check mode)")
+        assert result['import_keys'] == ['imp-1', 'imp-2']
+        first.delete.assert_not_called()
+        second.delete.assert_not_called()
+
+    def test_absent_refuses_the_set_when_one_record_is_still_importing(self, capsys):
+        client = MagicMock()
+        done = _named('imp-done', 'qa-p-dup', status='complete')
+        live = _named('imp-live', 'qa-p-dup', status='importing')
+        client.vm_imports.list.return_value = [done, live]
+
+        result = run_real(capsys, client, {
+            'state': 'absent',
+            'name': 'qa-p-dup',
+        }, failed=True)
+
+        assert 'still importing' in result['msg']
+        assert 'imp-live' in result['msg']
+        assert 'import_key' in result['msg']
+        done.delete.assert_not_called()
+        live.delete.assert_not_called()
+
+    def test_absent_treats_a_vm_still_importing_as_in_progress(self, capsys):
+        client = MagicMock()
+        done = _named('imp-done', 'qa-p-dup', status='complete')
+        live = _named('imp-live', 'qa-p-dup', vm={'status': 'importing'})
+        client.vm_imports.list.return_value = [done, live]
+
+        result = run_real(capsys, client, {
+            'state': 'absent',
+            'name': 'qa-p-dup',
+        }, failed=True)
+
+        assert 'still importing' in result['msg']
+        done.delete.assert_not_called()
+        live.delete.assert_not_called()
+
+    def test_absent_deletes_an_aborted_import_alongside_a_finished_one(self, capsys):
+        client = MagicMock()
+        done = _named('imp-done', 'qa-p-dup', status='complete')
+        aborted = _named('imp-abort', 'qa-p-dup', status='importing',
+                         aborted=True)
+        client.vm_imports.list.return_value = [done, aborted]
+
+        result = run_real(capsys, client, {
+            'state': 'absent',
+            'name': 'qa-p-dup',
+        })
+
+        assert result['changed'] is True
+        assert result['import_keys'] == ['imp-done', 'imp-abort']
+        done.delete.assert_called_once_with()
+        aborted.delete.assert_called_once_with()
+
+    def test_absent_still_deletes_a_single_in_progress_record(self, capsys):
+        """One row has always been deleted by name, including a stuck import.
+        The in-progress guard applies only when the sweep would remove
+        more than that row."""
+        client = MagicMock()
+        live = _named('imp-live', 'qa-p-dup', status='importing')
+        client.vm_imports.list.return_value = [live]
+
+        result = run_real(capsys, client, {
+            'state': 'absent',
+            'name': 'qa-p-dup',
+        })
+
+        assert result['changed'] is True
+        assert result['msg'] == 'Import deleted'
+        assert result['import_key'] == 'imp-live'
+        live.delete.assert_called_once_with()
+
+    def test_import_key_deletes_only_that_record(self, capsys):
+        client = MagicMock()
+        first = _named('imp-1', 'qa-p-dup', status='complete')
+        second = _named('imp-2', 'qa-p-dup', status='importing')
+        client.vm_imports.list.return_value = [first, second]
+
+        result = run_real(capsys, client, {
+            'state': 'absent',
+            'name': 'qa-p-dup',
+            'import_key': 'imp-1',
+        })
+
+        assert result['changed'] is True
+        assert result['msg'] == 'Import deleted'
+        assert result['import_key'] == 'imp-1'
+        assert result['import_keys'] == ['imp-1']
+        first.delete.assert_called_once_with()
+        second.delete.assert_not_called()
+
+    def test_import_key_can_delete_the_in_progress_record_alone(self, capsys):
+        client = MagicMock()
+        done = _named('imp-done', 'qa-p-dup', status='complete')
+        live = _named('imp-live', 'qa-p-dup', status='importing')
+        client.vm_imports.list.return_value = [done, live]
+
+        result = run_real(capsys, client, {
+            'state': 'absent',
+            'name': 'qa-p-dup',
+            'import_key': 'imp-live',
+        })
+
+        assert result['changed'] is True
+        assert result['import_key'] == 'imp-live'
+        live.delete.assert_called_once_with()
+        done.delete.assert_not_called()
+
+    def test_import_key_refuses_a_record_with_a_different_name(self, capsys):
+        client = MagicMock()
+        row = _named('imp-9', 'qa-other', status='complete')
+        client.vm_imports.list.return_value = [row]
+
+        result = run_real(capsys, client, {
+            'state': 'absent',
+            'name': 'qa-p-dup',
+            'import_key': 'imp-9',
+        }, failed=True)
+
+        assert 'qa-other' in result['msg']
+        assert 'qa-p-dup' in result['msg']
+        row.delete.assert_not_called()
+
+    def test_import_key_missing_is_unchanged(self, capsys):
+        client = MagicMock()
+        row = _named('imp-9', 'qa-p-dup', status='complete')
+        client.vm_imports.list.return_value = [row]
+
+        result = run_real(capsys, client, {
+            'state': 'absent',
+            'name': 'qa-p-dup',
+            'import_key': 'missing',
+        })
+
+        assert result['changed'] is False
+        assert result['msg'] == "Import 'missing' not found"
+        row.delete.assert_not_called()

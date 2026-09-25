@@ -146,6 +146,23 @@
             preserve_drive_format: true
             poll_timeout: "{{ image_pipeline_import_timeout }}"
             state: present
+          register: image_pipeline_import
+
+        # VergeOS keeps this row after the VM exists and after the VM is
+        # deleted, and it does not require the name to be unique. Leaving
+        # it is how every build of the same template name becomes a row
+        # that state=absent by name used to be unable to remove (#162).
+        # The VM is not deleted here. Only the import record is.
+        - name: Remove the completed import record
+          vergeio.vergeos.vm_import:
+            host: "{{ image_pipeline_host }}"
+            username: "{{ image_pipeline_username }}"
+            password: "{{ image_pipeline_password }}"
+            insecure: "{{ image_pipeline_insecure }}"
+            name: "{{ image_pipeline_template_name }}"
+            import_key: "{{ image_pipeline_import.import_key }}"
+            state: absent
+          when: image_pipeline_import.import_key is defined
 
         - name: Enforce the template specs
           vergeio.vergeos.vm:
