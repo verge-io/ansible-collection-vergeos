@@ -329,6 +329,35 @@ class TestCreateAndUpdatePathsAgree:
         assert vm.UPDATE_FIELD_MAP['bios_type'] == 'uefi'
         assert vm.bios_to_uefi('uefi') is True
         assert vm.bios_to_uefi('seabios') is False
+        sent = set(vm.UPDATE_FIELD_MAP.values()) | set(vm.CREATE_PARAM_MAP.values())
+        assert 'bios_type' not in sent
+        assert 'uefi' in sent
+
+    def test_vm_removed_non_columns_are_not_options(self):
+        """#87. `machine_subtype` and `network` were accepted, documented,
+        and sent. No VM column holds either value, the API answered HTTP 200
+        and discarded them, and the VM reported changed on every run.
+
+        Mapping them to themselves is already rejected by KNOWN_BAD. This is
+        the other way back in: an option the argument spec accepts and then
+        never writes, which is a silent no-op, or a column name that sneaks
+        into the payload under a different parameter. Same shape as
+        subnet_mask on network.
+        """
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        documented = _documented_options(vm)
+        spec = _argument_spec_options(vm)
+        sent = set(vm.UPDATE_FIELD_MAP.values()) | set(
+            vm.CREATE_PARAM_MAP.values())
+        for name in ('machine_subtype', 'network'):
+            assert name not in spec, (
+                'vm accepts %r again. It is not a VM column, so Ansible '
+                'must reject it.' % name)
+            assert name not in documented
+            assert name not in vm.UPDATE_FIELD_MAP
+            assert name not in vm.CREATE_PARAM_MAP
+            assert name not in sent
+            assert name not in vm.COMPARISON_FIELDS
 
     def test_vm_fetches_boot_order_which_the_default_projection_omits(self):
         """Found while fixing #87, in the same file: boot_order is compared
@@ -832,6 +861,26 @@ class TestTheLiveLadderCannotDriftFromTheCode:
             "verify-field-contract.yml's vm_api_fields has drifted from "
             "vm.UPDATE_FIELD_MAP. ladder-only=%s module-only=%s"
             % (sorted(actual - expected), sorted(expected - actual)))
+        for name in ('machine_subtype', 'bios_type', 'network'):
+            assert name not in actual, (
+                'the vm ladder lists %r as a column the module sends. '
+                'That is issue #87.' % name)
+
+    def test_vm_ladder_asserts_issue_87_names_are_not_columns(self):
+        """The field list above only checks names the module sends. #87's
+        other half is that the three option names are not columns, so a
+        future API that grows one of them fails here instead of leaving the
+        old resolution in place. `network` was missing from this assert."""
+        import os
+        here = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.abspath(os.path.join(here, '..', '..', '..', '..'))
+        path = os.path.join(root, 'tests', 'live', 'verify-field-contract.yml')
+        vm_section = open(path).read().split('Field contract -- vm', 1)[1]
+        for name in ('machine_subtype', 'bios_type', 'network'):
+            needle = "'%s' not in vm_row" % name
+            assert needle in vm_section, (
+                'verify-field-contract.yml no longer asserts that %s is '
+                'not a VM column. That is issue #87.' % name)
 
     def test_ladder_field_list_matches_the_module(self):
         from ansible_collections.vergeio.vergeos.plugins.modules import network

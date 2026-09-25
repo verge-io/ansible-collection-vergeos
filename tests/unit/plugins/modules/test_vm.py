@@ -819,3 +819,99 @@ class TestRamRounding:
         self._run(client, self._params(ram=1000, description='web'))
 
         stored.save.assert_called_once_with(description='web')
+
+
+class TestIssue87NonColumnFields:
+    """machine_subtype, bios_type and network are not VM columns (#87).
+
+    The API accepts an unknown field with HTTP 200 and discards it, so
+    sending the option name reported success and changed on every later run.
+    machine_subtype and network are not options. bios_type is written as the
+    boolean uefi, on both the create and the update path.
+    """
+
+    def _module(self, **overrides):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        params = {key: None for key in vm.CREATE_PARAM_MAP}
+        params.update(overrides)
+        module = MagicMock()
+        module.params = params
+        module.check_mode = False
+        return module
+
+    def test_create_writes_uefi_and_drops_the_removed_names(self, make_resource):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        module = self._module(
+            name='zz-vm', enabled=True, bios_type='uefi',
+            machine_subtype='q35', network='Core',
+        )
+        client = MagicMock()
+        client.vms.create.return_value = make_resource(
+            {'$key': 1, 'name': 'zz-vm', 'uefi': True})
+
+        changed, _row = vm.create_vm(module, client)
+
+        assert changed is True
+        sent = client.vms.create.call_args.kwargs
+        assert sent['uefi'] is True
+        for name in ('bios_type', 'machine_subtype', 'network'):
+            assert name not in sent, (
+                'create sent %r, which is not a VM column' % name)
+
+    def test_create_seabios_writes_uefi_false(self, make_resource):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        module = self._module(name='zz-vm', enabled=True, bios_type='seabios')
+        client = MagicMock()
+        client.vms.create.return_value = make_resource(
+            {'$key': 1, 'name': 'zz-vm', 'uefi': False})
+
+        vm.create_vm(module, client)
+
+        assert client.vms.create.call_args.kwargs['uefi'] is False
+
+    def test_update_converges_when_uefi_already_matches(self, make_resource):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        stored = make_resource(
+            {'$key': 1, 'name': 'zz-vm', 'uefi': True, 'description': 'd'})
+        module = self._module(name='zz-vm', bios_type='uefi',
+                               machine_subtype='q35', network='Core')
+
+        changed, _row = vm.update_vm(module, MagicMock(), stored)
+
+        assert changed is False
+        stored.save.assert_not_called()
+
+    def test_update_converges_when_uefi_is_the_integer_one(self, make_resource):
+        """A numeric 1 is the same firmware choice as True."""
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        stored = make_resource({'$key': 1, 'name': 'zz-vm', 'uefi': 1})
+        module = self._module(name='zz-vm', bios_type='uefi')
+
+        changed, _row = vm.update_vm(module, MagicMock(), stored)
+
+        assert changed is False
+        stored.save.assert_not_called()
+
+    def test_update_sets_uefi_when_the_vm_is_seabios(self, make_resource):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        stored = make_resource({'$key': 1, 'name': 'zz-vm', 'uefi': False})
+        stored.save.return_value = stored
+        module = self._module(name='zz-vm', bios_type='uefi',
+                               machine_subtype='q35', network='Core')
+
+        changed, _row = vm.update_vm(module, MagicMock(), stored)
+
+        assert changed is True
+        sent = stored.save.call_args.kwargs
+        assert sent == {'uefi': True}
+
+    def test_update_clears_uefi_for_seabios(self, make_resource):
+        from ansible_collections.vergeio.vergeos.plugins.modules import vm
+        stored = make_resource({'$key': 1, 'name': 'zz-vm', 'uefi': True})
+        stored.save.return_value = stored
+        module = self._module(name='zz-vm', bios_type='seabios')
+
+        changed, _row = vm.update_vm(module, MagicMock(), stored)
+
+        assert changed is True
+        assert stored.save.call_args.kwargs == {'uefi': False}
