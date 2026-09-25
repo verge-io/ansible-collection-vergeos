@@ -48,6 +48,16 @@ the numbers the platform used in front of the operator, next to the
 observation that the node was never given a host, so the failure reads as a
 placement refusal rather than as a mystery.
 
+``n1_headroom`` is one of those numbers, not a new rule. It is
+``drain_capacity`` asked about the largest online node: VM RAM that survives
+losing that node, minus RAM already committed. On a two-node cluster that is
+the smallest node's ``vm_ram`` minus committed RAM, the figure issue #24
+measured. ``cluster_info`` already answers the same question for a drain
+candidate, so the timeout shows that arithmetic next to the request. It does
+not fail the power-on early. A 65536 MB node started when the figure was
+59136 MB; refusing on ``request > headroom`` would block a placement the
+platform accepts.
+
 Field names were measured on VergeOS 26.1.8, not inferred:
 
   cluster_status : total_nodes online_nodes running_machines
@@ -104,11 +114,18 @@ def _int(value):
 def fetch_cluster_status(client):
     """Rows from the ``cluster_status`` table, one per cluster.
 
-    Reached with ``_request`` rather than a manager because this collection
-    floors at pyvergeos 1.2.7, where the table is not modelled at all --
-    ``clusters.py`` exposes a status *string* and stops, so the capacity
-    figures are unreachable through the SDK. Newer pyvergeos does model it
-    (``client.cluster_status``); switch to that when the floor moves.
+    pyvergeos 1.5.0 models this table (``client.cluster_status``, and scoped
+    ``cluster.cluster_status``; pyVergeOS#127). The read stays on
+    ``_request`` because this collection floors at pyvergeos>=1.2.7, where
+    the table is not modelled at all -- ``clusters.py`` exposes a status
+    *string* and stops, so the capacity figures are unreachable through the
+    SDK.
+
+    ``ClusterStatus.can_lose_one_node()`` is not a drop-in for
+    ``drain_capacity`` once the floor moves. It divides ``online_ram`` evenly
+    across ``online_nodes``, so on uneven nodes a True is not an N-1
+    guarantee (pyvergeos 1.6.1, #135). The drain check uses each node's
+    ``vm_ram``.
     """
     rows = client._request('GET', 'cluster_status', params={'fields': 'all'})
     if not isinstance(rows, list):
@@ -323,6 +340,70 @@ def drain_capacity(status, nodes, target):
             " NOTE: this node reported no vm_ram, so physical ram was used "
             "instead, which overstates available capacity.")
     return result
+
+
+def n1_headroom(status_rows, node_rows):
+    """RAM left after losing the largest online node, minus RAM committed.
+
+    ``drain_capacity`` asked about that node, so the survivor set, the
+    ``vm_ram`` preference and the missing-``running`` refusal cannot drift
+    from the check ``cluster_info`` publishes. On a two-node cluster the
+    survivor is the smaller node's ``vm_ram``, which is the N-1 figure
+    issue #24 measured.
+
+    Returns a dict, or ``None`` when the rows cannot support the arithmetic
+    (no status, no online node, or ``running`` absent from every row). A
+    caller that treated ``None`` as zero would invent a headroom the cluster
+    did not report.
+
+    Where several clusters are visible, the tightest headroom is the one
+    returned: a tenant node is placed in one cluster, and the roomiest
+    cluster's number would hide the constraint.
+    """
+    rows = [dict(n) for n in node_rows or []]
+    statuses = [dict(s) for s in status_rows or [] if isinstance(s, dict)]
+    if not rows or not statuses:
+        return None
+
+    by_status = {}
+    for status in statuses:
+        by_status[status.get('cluster')] = status
+
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row.get('cluster'), []).append(row)
+
+    tightest = None
+    for key, peers in grouped.items():
+        status = by_status.get(key)
+        if status is None and len(statuses) == 1:
+            status = statuses[0]
+        if status is None:
+            continue
+
+        online = [row for row in peers
+                  if _is_running(row) is True and not row.get('maintenance')]
+        if not online:
+            continue
+        largest = max(online, key=lambda row: usable_ram(row)[0])
+        name = largest.get('name')
+        if not name:
+            continue
+
+        check = drain_capacity(status, peers, name)
+        if check['fits'] is None:
+            continue
+        candidate = {
+            'headroom_mb': check['survivor_ram_mb'] - check['used_ram_mb'],
+            'survivor_ram_mb': check['survivor_ram_mb'],
+            'used_ram_mb': check['used_ram_mb'],
+            'largest_node': name,
+            'largest_node_ram_mb': check['target_ram_mb'],
+        }
+        if (tightest is None
+                or candidate['headroom_mb'] < tightest['headroom_mb']):
+            tightest = candidate
+    return tightest
 
 
 def failover_reserved(nodes):

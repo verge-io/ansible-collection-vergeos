@@ -526,6 +526,7 @@ class TestPlacementDiagnostic:
         msg = module.fail_json.call_args[1]['msg']
         assert 'never given a physical host' not in msg
         assert "'acme-node1' on node2" in msg
+        assert 'N-1 headroom' not in msg
 
     def test_the_structured_detail_is_returned_too(self):
         client = self._client_that_never_starts()
@@ -539,24 +540,36 @@ class TestPlacementDiagnostic:
         assert placement['nodes'][0]['ram_mb'] == 16384
         assert placement['capacity']['used_ram_mb'] == 74752
         assert placement['capacity']['largest_node_vm_ram_mb'] == 69120
+        # Losing node2 (69120) leaves node1's 68352; 74752 is committed.
+        assert placement['capacity']['n1_headroom_mb'] == 68352 - 74752
+        assert placement['capacity']['n1_survivor_ram_mb'] == 68352
+        assert placement['capacity']['n1_largest_node'] == 'node2'
 
-    def test_no_verdict_is_offered(self):
-        """Issue #24 proposed N-1 headroom as the placement rule. Measured
-        again on 26.1.8 it is refuted in both directions -- see
-        module_utils/clusters.py -- so the module reports figures and stops.
-        A confident wrong mechanism is worse than the silence it replaces."""
+    def test_timeout_shows_n1_headroom_without_a_false_verdict(self):
+        """Issue #24 asked for the N-1 comparison in the timeout.
+
+        On these rows the largest node is node2 (69120 MB). Surviving VM RAM
+        is node1's 68352 MB and 74752 MB is already committed, so headroom is
+        -6400 MB against a 16384 MB request. Measured again on 26.1.8, a node
+        has started with less headroom than it requested, so the message
+        shows the arithmetic and does not conclude the platform refused.
+        """
         client = self._client_that_never_starts()
 
         module = make_module(base_params(state='running', wait_timeout=0))
         with patch('time.sleep'):
             run_main(module, client)
 
-        msg = module.fail_json.call_args[1]['msg'].lower()
-        for word in ('headroom', 'n-1', 'will not fit', 'cannot fit',
-                     'insufficient'):
-            assert word not in msg, (
+        msg = module.fail_json.call_args[1]['msg']
+        assert 'N-1 headroom is -6400 MB' in msg
+        assert "68352 MB of VM RAM survives losing 'node2'" in msg
+        assert "'acme-node1' requests 16384 MB" in msg
+        lower = msg.lower()
+        for phrase in ('cannot be placed', 'will not fit', 'cannot fit',
+                       'insufficient', 'refusing'):
+            assert phrase not in lower, (
                 'the message asserts a placement rule (%r) that measurement '
-                'does not support' % word)
+                'does not support' % phrase)
 
     def test_a_capacity_read_that_fails_does_not_mask_the_timeout(self):
         client = self._client_that_never_starts()
