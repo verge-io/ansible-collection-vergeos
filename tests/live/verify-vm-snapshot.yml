@@ -16,16 +16,19 @@
 #   - forwards description
 #   - snapshots, mutates, restores in place, asserts the mutation is gone
 #   - refuses restore while the VM is running
+#   - refuses restore and delete of another VM's snapshot key (#161)
 #   - tears down every zz-* it created
 - name: VM snapshot live ladder
   hosts: localhost
   gather_facts: true
   vars:
     probe_vm: zz-snap-vm
+    other_vm: zz-snap-vm-b
     never_name: zz-snap-never
     zero_name: zz-snap-zero
     finite_name: zz-snap-finite
     restore_name: zz-snap-restore
+    cross_name: zz-snap-other
     finite_expires: "{{ (ansible_date_time.epoch | int) + 7200 }}"
   tasks:
     - name: "0. Nothing of these names is lying around"
@@ -34,7 +37,7 @@
       register: before
       changed_when: false
       failed_when: >-
-        before.vms | selectattr('name', 'equalto', probe_vm)
+        before.vms | selectattr('name', 'in', [probe_vm, other_vm])
         | list | length > 0
 
     - name: The ladder
@@ -243,12 +246,134 @@
               - restored is changed
               - restored.operation == 'restore'
 
-      always:
-        - name: "T. List leftover snapshots on the probe"
+        # ── #161 a snapshot key from another VM ────────────────────────
+        # B owns the snapshot. Restore and delete name A. Both must fail
+        # in check mode and for real, and B must stay on the mutation.
+
+        - name: "11. Create a second stopped VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ other_vm }}"
+            state: present
+            cpu_cores: 1
+            ram: 1024
+            description: snap-b-base
+
+        - name: "12. Snapshot B"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ other_vm }}"
+            snapshot_name: "{{ cross_name }}"
+            description: other vm snapshot
+            operation: create
+          register: other_snap
+
+        - name: "13. Mutate B away from the snapshot"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ other_vm }}"
+            state: present
+            description: changed-after-snap
+
+        - name: "13b. Confirm B changed"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ other_vm }}"
+          register: other_mutated
+          changed_when: false
+          failed_when: >-
+            (other_mutated.vms | first).description != 'changed-after-snap'
+
+        - name: "14. Check mode restore of B's snapshot, named as A, must fail"
           vergeio.vergeos.vm_snapshot:
             insecure: true
             vm_name: "{{ probe_vm }}"
+            snapshot_id: "{{ other_snap.snapshot_id }}"
+            operation: restore
+          check_mode: true
+          register: cross_check
+          failed_when: cross_check is succeeded
+
+        - name: "14b. Check-mode refusal names both VMs"
+          ansible.builtin.assert:
+            that:
+              - probe_vm in cross_check.msg
+              - other_vm in cross_check.msg
+
+        - name: "15. Real restore of B's snapshot, named as A, must fail"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            snapshot_id: "{{ other_snap.snapshot_id }}"
+            operation: restore
+          register: cross_run
+          failed_when: cross_run is succeeded
+
+        - name: "15b. Real refusal names both VMs"
+          ansible.builtin.assert:
+            that:
+              - probe_vm in cross_run.msg
+              - other_vm in cross_run.msg
+
+        - name: "16. B was not reverted"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ other_vm }}"
+          register: other_after
+          changed_when: false
+          failed_when: >-
+            (other_after.vms | first).description != 'changed-after-snap'
+
+        - name: "17. Check mode delete of B's snapshot, named as A, must fail"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            snapshot_id: "{{ other_snap.snapshot_id }}"
+            operation: delete
+          check_mode: true
+          register: cross_del_check
+          failed_when: cross_del_check is succeeded
+
+        - name: "18. Real delete of B's snapshot, named as A, must fail"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ probe_vm }}"
+            snapshot_id: "{{ other_snap.snapshot_id }}"
+            operation: delete
+          register: cross_del
+          failed_when: cross_del is succeeded
+
+        - name: "18b. Delete refusal names both VMs"
+          ansible.builtin.assert:
+            that:
+              - probe_vm in cross_del.msg
+              - other_vm in cross_del.msg
+
+        - name: "19. B's snapshot is still there"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ other_vm }}"
             operation: list
+          register: other_listed
+          changed_when: false
+
+        - name: "19b. The snapshot key was not deleted"
+          ansible.builtin.assert:
+            that:
+              - >
+                  other_listed.snapshots
+                  | selectattr('name', 'equalto', cross_name)
+                  | list | length == 1
+
+      always:
+        - name: "T. List leftover snapshots on the probe VMs"
+          vergeio.vergeos.vm_snapshot:
+            insecure: true
+            vm_name: "{{ item }}"
+            operation: list
+          loop:
+            - "{{ probe_vm }}"
+            - "{{ other_vm }}"
           register: leftover_snaps
           changed_when: false
           failed_when: false
@@ -256,27 +381,35 @@
         - name: "T. Delete each zz-snap-* we still see"
           vergeio.vergeos.vm_snapshot:
             insecure: true
-            snapshot_id: "{{ item['$key'] }}"
+            vm_name: "{{ item.0.item }}"
+            snapshot_id: "{{ item.1['$key'] }}"
             operation: delete
-          loop: "{{ leftover_snaps.snapshots | default([]) }}"
+          loop: >-
+            {{ leftover_snaps.results | default([])
+               | subelements('snapshots', skip_missing=True) }}
           when:
-            - leftover_snaps.snapshots is defined
-            - item.name is defined
-            - item.name is match('^zz-snap-')
+            - item.1.name is defined
+            - item.1.name is match('^zz-snap-')
           failed_when: false
 
-        - name: "T. Stop the probe VM"
+        - name: "T. Stop the probe VMs"
           vergeio.vergeos.vm:
             insecure: true
-            name: "{{ probe_vm }}"
+            name: "{{ item }}"
             state: stopped
+          loop:
+            - "{{ probe_vm }}"
+            - "{{ other_vm }}"
           failed_when: false
 
-        - name: "T. Delete the probe VM"
+        - name: "T. Delete the probe VMs"
           vergeio.vergeos.vm:
             insecure: true
-            name: "{{ probe_vm }}"
+            name: "{{ item }}"
             state: absent
+          loop:
+            - "{{ probe_vm }}"
+            - "{{ other_vm }}"
           failed_when: false
 
     - name: "Z. Zero leftovers of our probe VM"
@@ -285,7 +418,7 @@
       register: after
       changed_when: false
       failed_when: >-
-        after.vms | selectattr('name', 'equalto', probe_vm)
+        after.vms | selectattr('name', 'in', [probe_vm, other_vm])
         | list | length > 0
 
     - name: PASSED
@@ -295,4 +428,6 @@
           store expires=0 (never) -> a future epoch is stored as sent -> a past
           epoch is refused -> description is forwarded -> restore of a running
           VM is refused -> check mode would restore without doing it ->
-          in-place restore reverts the mutation -> zero leftovers
+          in-place restore reverts the mutation -> a snapshot key from the
+          other VM is refused for restore and delete, and that VM stays
+          changed -> zero leftovers
