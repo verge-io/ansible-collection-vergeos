@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`vm_snapshot`: restore and delete could act on a different VM when `snapshot_id` belonged to it** (#161). `vm.snapshots.get(key)` returns whatever snapshot owns the key, so naming VM A and passing B's snapshot reverted B (or, on delete, removed B's snapshot) and reported A's id. Before check mode and before the write, the snapshot's `machine` is compared to the named VM's `machine`. A mismatch is refused and the message names both VMs. Delete that passes only `snapshot_id` is unchanged.
+
 - **`vm_import`: `state=absent` required an OVA identifier the delete path never uses** (#154). `required_one_of` applied to both states, so removing an import by name failed unless `ova_file_id`, `ova_file_name`, or `file_id` was also set. Those parameters are required only when `state=present`.
 
 - **`tag_category`: deleting a category with tags deleted those tags and their assignments and reported success** (#153). The docs said a category that contains tags cannot be deleted. On VergeOS the platform cascades: the category, every tag in it, and every assignment of those tags are removed. `state=absent` now refuses unless `force=true`. With `force`, the result names each tag and how many assignments it had, including in check mode. An empty category still deletes without `force`. Check mode for `tag` and `tag_category` says "Would delete" rather than "deleted".
