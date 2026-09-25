@@ -5,19 +5,15 @@
 The failure mode below is historical. The guards that exist for it are
 named at the end, and they are in this tree.
 
----
-
 ## The short version
 
 We found several bugs that our automated tests said did not exist. The tests
-were not badly written by accident — they were wrong in a specific, repeatable
+were not badly written by accident. They were wrong in a specific, repeatable
 way that is worth understanding, because it will happen again if we do not
 change how we work.
 
 **One sentence:** we were checking our work against our own assumptions
 instead of against the real product.
-
----
 
 ## What a "test" is, and what went wrong
 
@@ -27,7 +23,7 @@ thing. Tests run in seconds and do not need a real VergeOS system, which is
 why we lean on them.
 
 To run without a real system, a test has to **pretend**. It hands the code a
-made-up piece of data and checks what the code does with it.
+made up piece of data and checks what the code does with it.
 
 That pretending is where this went wrong.
 
@@ -38,7 +34,7 @@ Imagine you are writing instructions for someone collecting a parcel:
 > "Go to the desk and ask for the parcel under **Reference Number**."
 
 To check your instructions, you build a pretend front desk out of cardboard,
-and you label the pretend form **Reference Number** — because that is what you
+and you label the pretend form **Reference Number**, because that is what you
 assumed it was called.
 
 Your instructions work perfectly against your cardboard desk.
@@ -47,12 +43,10 @@ At the real depot, the form is called **Order ID**. There is no "Reference
 Number" anywhere. Your instructions fail immediately.
 
 Your test passed because **you built the test out of the same wrong assumption
-as the instructions.** The test could never have caught the mistake — it was a
+as the instructions.** The test could never have caught the mistake. It was a
 copy of the mistake.
 
 That is exactly what happened to us, three separate times.
-
----
 
 ## The three real cases
 
@@ -67,8 +61,8 @@ Our pretend data said `online`, so the test passed. Against a real system,
 every server reported as **switched off**, even though both were running fine.
 
 **What that would have caused in production:** our upgrade tool decided there
-were no servers to upgrade, and its safety check — "did every server come back
-after the upgrade?" — started from an empty list, so it could not have noticed
+were no servers to upgrade, and its safety check ("did every server come back
+after the upgrade?") started from an empty list, so it could not have noticed
 a server failing to come back. A safety net with a hole in it, reporting
 success.
 
@@ -86,13 +80,13 @@ pretend data used our invented names.
 **What that would have caused in production:** we have a setting that means
 "make this group's membership exactly this list, remove anyone else." Because
 the code believed every group was empty, it would have concluded that nobody
-needed removing and that everyone needed adding — silently doing nothing
+needed removing and that everyone needed adding, silently doing nothing
 about accounts that should have been taken out.
 
 ### 3. Tests that ran but checked nothing
 
-This one is different. Here the tests were not built from a wrong assumption —
-they simply were not testing anything, while appearing to pass.
+This one is different. Here the tests were not built from a wrong assumption.
+They simply were not testing anything, while appearing to pass.
 
 Three separate causes, all subtle:
 
@@ -104,7 +98,7 @@ Three separate causes, all subtle:
 - Pretend data was assembled in a way the programming language quietly
   ignores, so the code received an **empty** record instead of the intended
   one. Seven tests did this. One of them failed and drew attention; the other
-  six passed — and would have passed no matter what the data contained.
+  six passed, and would have passed no matter what the data contained.
 
 - Some tests substituted a fake in the wrong place, a bit like changing the
   phone number in the directory after someone has already written it down.
@@ -112,8 +106,6 @@ Three separate causes, all subtle:
 
 We had been treating six failing tests as "normal background noise." Every one
 was a defect in the tests themselves.
-
----
 
 ## The thing that makes this genuinely hard
 
@@ -125,7 +117,7 @@ We tried that. It is not sufficient, and here is why.
 **The name of a piece of information depends on how you ask for it.**
 
 When we ask VergeOS for a list of servers one way, the answer includes
-`running`. Ask for "all fields" — which sounds like it should return more —
+`running`. Ask for "all fields", which sounds like it should return more,
 and `running` is **not there at all**.
 
 The same happens with group members. The identifier comes back as `users/1` in
@@ -146,12 +138,10 @@ the record years ago.
 is a snapshot of one situation, presented as a general rule.
 
 We proved this the hard way: the fix for problem 1 above shipped with a
-comment confidently stating where the `running` field comes from — and that
+comment confidently stating where the `running` field comes from, and that
 comment was wrong. The person writing it had already found and fixed the bug,
 was specifically paying attention, and still got it wrong. That is the clearest
 possible evidence that care and attention are not the answer here.
-
----
 
 ## What changed in the test suite
 
@@ -186,7 +176,7 @@ that the real names (`running`, `member`, `member_display`, `installed`,
 appear to pass.
 
 **4. Separate checks for tests that check nothing.**
-The same file scans the unit suite for the vacuous-mock patterns: stubbing
+The same file scans the unit suite for the vacuous mock patterns: stubbing
 `pyvergeos` out of `sys.modules` (issue #66), `dict(mock)` collapsing to
 `{}`, and a patch aimed at the definition site rather than the module under
 test. Each check is itself tested by the patterns it names.
@@ -194,10 +184,8 @@ test. Each check is itself tested by the patterns it names.
 When those checks were first written, the suite that contained them was
 recorded as 553 tests, all passing, in about 4 seconds. The suite has grown
 since. `docs/SDK-COMPATIBILITY.md` records 936 collection unit tests green
-on 2026-09-23 against pyvergeos 1.6.1, before `site_info` landed. This page
+on 2026/09/23 against pyvergeos 1.6.1, before `site_info` landed. This page
 does not restate a count from a later day.
-
----
 
 ## What else covers the same class of miss
 
@@ -205,23 +193,21 @@ These shipped after the explainer was first written. They do not replace the
 fixture guard. They catch different slices of the same mistake.
 
 - **Continuous integration (#66).** Unit tests and `ansible-test sanity` run
-  on ansible-core 2.15 and 2.20. `ansible-lint` runs at the production
+  on `ansible-core` 2.15 and 2.20. `ansible-lint` runs at the production
   profile. A collection build runs. `sanity` is a required check on `dev`
   and `main`.
-- **Sanity on the advertised floor (#77).** ansible-core 2.15 runs more
+- **Sanity on the advertised floor (#77).** `ansible-core` 2.15 runs more
   sanity tests than 2.20. The 2.15 run had been crashing on an unparsable
   `DOCUMENTATION` block and skipping the rest. Both cores are in the
   workflow.
-- **The field-contract harness (#75).**
+- **The field contract harness (#75).**
   `tests/live/verify-field-contract.yml` asserts, against a live system,
   that a field a module sends exists on the resource, that the value
-  round-trips, and that a second apply reports `changed=false`.
+  round trips, and that a second apply reports `changed=false`.
   `tests/unit/plugins/modules/test_field_contracts.py` checks the structural
   half in CI, including that the live ladder has not drifted from the code.
   The fixture guard catches "this name was never sent." The contract harness
   catches "this name was sent and the platform discarded it."
-
----
 
 ## What this costs and what it buys
 

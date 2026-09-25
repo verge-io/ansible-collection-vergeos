@@ -1,5 +1,5 @@
 # Signal tables from GET /api/v4 on VergeOS 26.1.8, diffed against
-# pyvergeos 1.2.3 on 2026-09-09. Source list for docs/PYVERGEOS-GAPS.md.
+# pyvergeos 1.2.3 on 2026/09/09. Source list for docs/PYVERGEOS-GAPS.md.
 # This is not a diff against pyvergeos 1.6.1. cluster_status and
 # machine_drive_stats are modelled on that floor; the collection still
 # reads both with client._request. See docs/PYVERGEOS-GAPS.md.
