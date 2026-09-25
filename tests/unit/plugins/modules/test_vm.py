@@ -73,6 +73,9 @@ class TestVmStatePresent:
         mock_module.exit_json.assert_called_once()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is True
+        assert call_kwargs['vm']['$key'] == 1
+        assert call_kwargs['vm']['key'] == 1
+        assert 'key' not in mock_new_vm_state
 
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
@@ -160,7 +163,10 @@ class TestVmStatePresent:
                 pass
 
         mock_vm.save.assert_called_once_with(description='x')
-        assert mock_module.exit_json.call_args[1]['changed'] is True
+        result = mock_module.exit_json.call_args[1]
+        assert result['changed'] is True
+        assert result['vm']['$key'] == 1
+        assert result['vm']['key'] == 1
 
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.get_vergeos_client')
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm.HAS_PYVERGEOS', True)
@@ -212,6 +218,9 @@ class TestVmStatePresent:
         mock_module.exit_json.assert_called_once()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is False
+        assert call_kwargs['vm']['$key'] == 1
+        assert call_kwargs['vm']['key'] == 1
+        assert 'key' not in mock_vm_state
 
 
 class TestVmStateAbsent:

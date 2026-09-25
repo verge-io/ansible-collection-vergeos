@@ -52,13 +52,17 @@ RETURN = r'''
 vms:
   description:
     - Matching virtual machines.
-    - Each item is a VM row. The identifier is C($key). Power is C(status)
-      (a string such as C(running) or C(stopped)) and C(running) (a bool).
-      There is no C(power_state) key and no C(id) key.
+    - Each item is a VM row. The platform identifier is C($key). C(key) is
+      that same value, and it is the name this RETURN documents, because
+      Jinja cannot read C($key) with dot notation. C($key) stays on the row
+      so existing plays can keep reading it with brackets. Power is
+      C(status) (a string such as C(running) or C(stopped)) and C(running)
+      (a bool). There is no C(power_state) key and no C(id) key.
     - The module asks for C(['all', 'snapshot_profile', 'tags']). On
       pyvergeos 1.6.1, C(all) is expanded with the SDK's computed fields,
       which is what puts C(status), C(running) and C(node_name) on the row.
-      The sample lists the keys this collection's roles read, plus
+      The sample lists the keys this collection's roles read, with the
+      identifier documented as C(key) rather than C($key), plus
       C(snapshot_profile) and C(tags), which the projection names because
       the default summary omits them. A live row has more columns than
       the sample shows.
@@ -66,8 +70,11 @@ vms:
   type: list
   elements: dict
   contains:
-    "$key":
-      description: VM identifier. Roles read this as C(['$key']).
+    key:
+      description:
+        - VM identifier. The same value as the platform row's C($key).
+        - Roles that already read C(['$key']) keep working. C(key) is what
+          Jinja can read with dot notation.
       type: int
       returned: always
     name:
@@ -113,7 +120,7 @@ vms:
       type: str
       returned: always
     machine:
-      description: Underlying machine key. Distinct from C($key).
+      description: Underlying machine key. Distinct from C(key).
       type: int
       returned: always
     ha_group:
@@ -137,7 +144,7 @@ vms:
       type: raw
       returned: always
   sample:
-    - "$key": 1
+    - key: 1
       name: app-01
       description: ""
       enabled: true
@@ -157,6 +164,7 @@ vms:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    alias_platform_key,
     resolve_one,
     get_vergeos_client,
     sdk_error_handler,
@@ -231,7 +239,10 @@ def main():
             # Get all VMs
             vms = [dict(vm) for vm in client.vms.list(fields=FIELDS)]
 
-        module.exit_json(changed=False, vms=vms)
+        module.exit_json(
+            changed=False,
+            vms=[alias_platform_key(row) for row in vms],
+        )
 
     except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
         sdk_error_handler(module, e)

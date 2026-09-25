@@ -61,7 +61,12 @@ class TestVmInfo:
         mock_module.exit_json.assert_called_once()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is False
-        assert 'vms' in call_kwargs
+        assert [row['name'] for row in call_kwargs['vms']] == ['vm1', 'vm2']
+        assert call_kwargs['vms'][0]['$key'] == 1
+        assert call_kwargs['vms'][0]['key'] == 1
+        assert call_kwargs['vms'][1]['key'] == 2
+        assert 'key' not in mock_vm1_state
+        assert 'key' not in mock_vm2_state
 
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.get_vergeos_client')
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.HAS_PYVERGEOS', True)
@@ -99,6 +104,10 @@ class TestVmInfo:
         mock_module.exit_json.assert_called_once()
         call_kwargs = mock_module.exit_json.call_args[1]
         assert call_kwargs['changed'] is False
+        assert call_kwargs['vms'][0]['name'] == 'web-server'
+        assert call_kwargs['vms'][0]['$key'] == 1
+        assert call_kwargs['vms'][0]['key'] == 1
+        assert 'key' not in mock_vm_state
 
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.get_vergeos_client')
     @patch('ansible_collections.vergeio.vergeos.plugins.modules.vm_info.HAS_PYVERGEOS', True)
