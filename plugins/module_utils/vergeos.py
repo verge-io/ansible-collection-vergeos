@@ -246,6 +246,26 @@ def cloudinit_file_needs_update(client, file_key, contents, stored_render,
             != _normalize_cloudinit_render(desired_render))
 
 
+def alias_platform_key(row):
+    """Copy the platform identifier ``$key`` onto ``key``.
+
+    VergeOS rows identify themselves with ``$key``. Jinja cannot read that
+    name with dot notation, and ansible-core 2.21's validate-modules rejects
+    it as a documented return key (``bad-return-value-key``). ``key`` is the
+    same value, and it is the name ``vm`` and ``vm_info`` document.
+
+    ``$key`` stays on the row. Roles already read it with brackets, and
+    removing it would change the payload those plays see. A row with no
+    ``$key`` (a check-mode create, which has not been assigned one) is
+    returned unchanged. An existing ``key`` is left alone.
+    """
+    if not isinstance(row, dict) or '$key' not in row or 'key' in row:
+        return row
+    aliased = dict(row)
+    aliased['key'] = aliased['$key']
+    return aliased
+
+
 def vergeos_argument_spec():
     """
     Returns argument spec for VergeOS modules.

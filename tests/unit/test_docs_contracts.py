@@ -76,8 +76,10 @@ DEFAULT_PROJECTION = {
     'cloudinit_datasource', 'running', 'status', 'node_name', 'cluster_name',
 }
 
-# What this collection's roles read off a vm_info row.
+# What this collection's roles read off a vm_info row. The role uses
+# brackets for $key. RETURN documents that value as key (#151).
 ROLE_FIELDS = {'$key', 'name', 'status', 'running', 'node_name'}
+DOCUMENTED_ROLE_FIELDS = (ROLE_FIELDS - {'$key'}) | {'key'}
 
 FORBIDDEN = {'power_state', 'id'}
 
@@ -109,22 +111,31 @@ class TestVmReturnSamples:
         block = _return_block('vm')
         sample = _sample_keys(block, 'vm')
         fetched = _aliases(vm.VM_FIELDS)
-        assert sample == fetched, (
+        # $key is still fetched. RETURN documents it as key, because $key
+        # is not a Jinja identifier (ansible-core 2.21 bad-return-value-key).
+        assert '$key' in fetched
+        documented = (fetched - {'$key'}) | {'key'}
+        assert sample == documented, (
             'vm RETURN sample drifted from VM_FIELDS. '
             'sample-only=%s projection-only=%s'
-            % (sorted(sample - fetched), sorted(fetched - sample)))
+            % (sorted(sample - documented), sorted(documented - sample)))
         assert _contains_keys(block, 'vm') == sample
-        assert {'$key', 'status', 'running'} <= sample
+        assert '$key' not in sample
+        assert '$key' not in _contains_keys(block, 'vm')
+        assert {'key', 'status', 'running'} <= sample
         assert not (FORBIDDEN & sample)
 
     def test_vm_sample_keys_are_real_columns_or_the_named_boot_order(self):
-        """boot_order is a column the default summary omits. Everything else
-        the vm module returns is on the default projection."""
+        """boot_order is a column the default summary omits. key is the
+        documented alias of the platform $key. Everything else the vm
+        module documents is on the default projection."""
         fixture = _fixture()
         sample = _sample_keys(_return_block('vm'), 'vm')
         assert set(fixture['vm_only']) == {'boot_order'}
         assert 'boot_order' in sample
-        invented = sample - {'boot_order'} - DEFAULT_PROJECTION
+        assert 'key' in sample
+        assert '$key' not in sample
+        invented = sample - {'boot_order', 'key'} - DEFAULT_PROJECTION
         assert not invented, 'vm RETURN documents keys that are not on a VM row: %s' % sorted(invented)
 
     def test_vm_info_sample_is_a_subset_of_the_fixture_row(self):
@@ -132,12 +143,16 @@ class TestVmReturnSamples:
         allowed = set(fixture['default_projection']) | set(fixture['vm_info_extra'])
         block = _return_block('vm_info')
         sample = _sample_keys(block, 'vms')
-        invented = sample - allowed
+        contains = _contains_keys(block, 'vms')
+        invented = sample - allowed - {'key'}
         assert not invented, (
             'vm_info RETURN documents keys that are not on the fixture row: %s'
             % sorted(invented))
-        assert ROLE_FIELDS <= sample
-        assert ROLE_FIELDS <= _contains_keys(block, 'vms')
+        assert 'key' in sample
+        assert '$key' not in sample
+        assert '$key' not in contains
+        assert DOCUMENTED_ROLE_FIELDS <= sample
+        assert DOCUMENTED_ROLE_FIELDS <= contains
         assert {'snapshot_profile', 'tags'} <= sample
         assert not (FORBIDDEN & sample)
         assert not (FORBIDDEN & _contains_keys(block, 'vms'))

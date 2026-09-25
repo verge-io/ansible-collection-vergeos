@@ -132,8 +132,10 @@ On that same SDK, against VergeOS 26.1.8:
 `status` and `running` are computed joins (`machine#status#...`), not
 columns. A raw `fields=all` omits them. pyvergeos 1.6.1 appends the
 manager's computed fields when the projection contains `all` (pyVergeOS#117),
-which is why `vm_info` returns them on this floor. The row's identifier is
-`$key`. There is no `power_state` key and no `id` key.
+which is why `vm_info` returns them on this floor. The platform identifier
+is `$key`. The module also returns that value as `key`, which Jinja can
+read with dot notation. `$key` stays on the row. There is no `power_state`
+key and no `id` key.
 
 ## Node-scoped physical drives (pyVergeOS#143)
 

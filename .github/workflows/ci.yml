@@ -88,6 +88,11 @@ jobs:
             python: "3.11"
           - ansible: "2.20"
             python: "3.12"
+          # 2.21 is inside requires_ansible >=2.15.0. Its controller Python
+          # is 3.12-3.14; 3.12 matches the 2.20 job. This is the core that
+          # added bad-return-value-key, which 2.15 and 2.20 do not run.
+          - ansible: "2.21"
+            python: "3.12"
     steps:
       - name: Check out the collection
         uses: actions/checkout@v4

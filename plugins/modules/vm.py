@@ -188,16 +188,22 @@ RETURN = r'''
 vm:
   description:
     - The VM row after the requested state was applied.
-    - Keys are the API's. The identifier is C($key). Power is C(status)
-      (a string such as C(running) or C(stopped)) and C(running) (a bool).
-      There is no C(power_state) key and no C(id) key.
+    - Keys are the API's, plus C(key). The platform identifier is C($key).
+      C(key) is that same value under a name Jinja can read with dot
+      notation. C($key) stays on the dict so existing plays can keep reading
+      it with brackets; it is not a documented return key. Power is
+      C(status) (a string such as C(running) or C(stopped)) and C(running)
+      (a bool). There is no C(power_state) key and no C(id) key.
     - This is the projection C(VM_FIELDS) fetches, not every column on the
       VM. C(vm_info) returns a wider row.
   returned: when state is present, running, or stopped
   type: dict
   contains:
-    "$key":
-      description: VM identifier.
+    key:
+      description:
+        - VM identifier. The same value as the platform row's C($key).
+        - Plays that already read C(['$key']) keep working. C(key) is what
+          Jinja can read with dot notation.
       type: int
       returned: always
     name:
@@ -249,7 +255,7 @@ vm:
       type: bool
       returned: always
   sample:
-    "$key": 1
+    key: 1
     name: web-server-01
     description: Web server for production
     enabled: true
@@ -272,6 +278,7 @@ import time
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    alias_platform_key,
     resolve_one,
     get_vergeos_client,
     sdk_error_handler,
@@ -726,11 +733,11 @@ def main():
             if vm:
                 # Update existing VM
                 changed, updated_vm = update_vm(module, client, vm)
-                module.exit_json(changed=changed, vm=updated_vm)
+                module.exit_json(changed=changed, vm=alias_platform_key(updated_vm))
             else:
                 # Create new VM
                 changed, new_vm = create_vm(module, client)
-                module.exit_json(changed=changed, vm=new_vm)
+                module.exit_json(changed=changed, vm=alias_platform_key(new_vm))
 
         elif state == 'running':
             if not vm:
@@ -752,7 +759,8 @@ def main():
             # Ensure VM is running (only if we have a VM object)
             if vm:
                 power_changed, vm_dict = power_on_vm(module, client, vm)
-                module.exit_json(changed=changed or power_changed, vm=vm_dict)
+                module.exit_json(changed=changed or power_changed,
+                                 vm=alias_platform_key(vm_dict))
             else:
                 # Check mode - no actual VM object
                 module.exit_json(changed=True, msg=f"Would power on VM '{name}' (check mode)")
@@ -769,7 +777,8 @@ def main():
 
             # Ensure VM is stopped
             power_changed, vm_dict = power_off_vm(module, client, vm)
-            module.exit_json(changed=update_changed or power_changed, vm=vm_dict)
+            module.exit_json(changed=update_changed or power_changed,
+                             vm=alias_platform_key(vm_dict))
 
     except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
         sdk_error_handler(module, e)

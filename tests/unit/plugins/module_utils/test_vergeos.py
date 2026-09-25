@@ -192,3 +192,43 @@ class TestVergeosArgumentSpec:
         spec = vergeos_argument_spec()
 
         assert spec['insecure'].get('default') is False
+
+
+class TestAliasPlatformKey:
+    """$key stays; key is the same value under a Jinja-readable name."""
+
+    def test_copies_platform_key_without_mutating_the_row(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+            alias_platform_key,
+        )
+
+        row = {'$key': 7, 'name': 'app-01'}
+        aliased = alias_platform_key(row)
+
+        assert aliased['key'] == 7
+        assert aliased['$key'] == 7
+        assert aliased is not row
+        assert 'key' not in row
+
+    def test_leaves_a_row_with_no_platform_key_unchanged(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+            alias_platform_key,
+        )
+
+        row = {'name': 'check-mode-create'}
+        assert alias_platform_key(row) is row
+
+    def test_does_not_overwrite_an_existing_key(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+            alias_platform_key,
+        )
+
+        row = {'$key': 7, 'key': 7}
+        assert alias_platform_key(row) is row
+
+    def test_ignores_non_dicts(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+            alias_platform_key,
+        )
+
+        assert alias_platform_key(None) is None
