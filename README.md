@@ -164,7 +164,7 @@ group_by:
   - tags      # tag_production, tag_web
   - tenant
   - os_family
-  - cluster
+  - cluster   # cluster_<name> from cluster_name, e.g. cluster_example_lab
   - node      # node_node1, node_node2 (running VMs only)
 
 # Optional: Filter VMs
@@ -181,6 +181,13 @@ cache_timeout: 3600  # 1 hour
 # Optional: Concurrency settings
 max_workers: 10
 site_timeout: 60
+
+# Site fields are templated, so lookup('env', ...) above is resolved before
+# connecting. strict_sites defaults to false: a site that fails is skipped
+# with a warning. Set it to true to make any site failure fatal. Every site
+# failing is always an error. ansible-inventory still exits 0 on that error
+# unless ANSIBLE_INVENTORY_UNPARSED_FAILED=true.
+# strict_sites: true
 ```
 
 ### Available Host Variables
@@ -206,7 +213,8 @@ Each host in the inventory has these variables (with `vergeos_` prefix by defaul
 | `vergeos_ram` | RAM in MB |
 | `vergeos_cpu_cores` | Number of CPU cores |
 | `vergeos_tenant` | Tenant name |
-| `vergeos_cluster` | Cluster name |
+| `vergeos_cluster` | Cluster name (`cluster_name`) |
+| `vergeos_cluster_key` | Cluster id (`cluster_key`) |
 | `vergeos_node_name` | Node running VM (None if stopped) |
 | `vergeos_node_key` | Node resource key (None if stopped) |
 | `vergeos_vm_data` | Full VM data dictionary |

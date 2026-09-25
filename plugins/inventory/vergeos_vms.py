@@ -81,6 +81,12 @@ options:
     description:
       - Dimensions to group hosts by.
       - "Available dimensions: site, status, tags, tenant, os_family, cluster, node."
+      - >-
+        C(cluster) groups by the cluster name (C(cluster_name) on a VM row).
+        A name such as C(example-lab) becomes the group C(cluster_example_lab).
+        C(vergeos_cluster) is that name and C(vergeos_cluster_key) is the
+        numeric id. The SDK projection does not include a field named
+        C(cluster).
       - "Note: 'node' groups only include running VMs (stopped VMs have no node assignment)."
     type: list
     elements: str
@@ -601,7 +607,10 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 self.inventory.add_child(group, hostname)
 
         if 'cluster' in group_by:
-            cluster = vm.get('cluster')
+            # VMManager.list() projects `machine#cluster#name as cluster_name`
+            # and `machine#cluster as cluster_key`. There is no `cluster`
+            # field, so reading that key never created a group (issue #130).
+            cluster = vm.get('cluster_name')
             if cluster:
                 group = f"cluster_{self._sanitize_group_name(cluster)}"
                 self.inventory.add_group(group)
@@ -656,9 +665,11 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         self.inventory.set_variable(hostname, f'{prefix}os_family', vm.get('os_family'))
         self.inventory.set_variable(hostname, f'{prefix}os_description', vm.get('os_description'))
 
-        # Organization
+        # Organization. Cluster identity is cluster_name / cluster_key on the
+        # SDK row, not `cluster` (issue #130).
         self.inventory.set_variable(hostname, f'{prefix}tenant', vm.get('tenant'))
-        self.inventory.set_variable(hostname, f'{prefix}cluster', vm.get('cluster'))
+        self.inventory.set_variable(hostname, f'{prefix}cluster', vm.get('cluster_name'))
+        self.inventory.set_variable(hostname, f'{prefix}cluster_key', vm.get('cluster_key'))
 
         # Node info (None if VM is stopped)
         self.inventory.set_variable(hostname, f'{prefix}node_name', vm.get('node_name'))

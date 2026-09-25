@@ -13,10 +13,13 @@ green.
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+import inspect
+
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from ansible.errors import AnsibleError
+from ansible.parsing.dataloader import DataLoader
 
 
 def _plugin():
@@ -86,6 +89,111 @@ class TestTemplateSites:
                             {'name': 'b', 'password': '{{P2}}'}],
                            {'{{P1}}': 'one', '{{P2}}': 'two'})
         assert [s['password'] for s in out] == ['one', 'two']
+
+
+def _load_sites(path, text):
+    """Load a site list the way the plugin's config reader does.
+
+    ansible-core 2.19+ only templates strings marked trusted.
+    ``_read_config_data()`` loads with ``trusted_as_template=True``. Older
+    cores have no such argument and template every string.
+    """
+    path.write_text(text)
+    loader = DataLoader()
+    kwargs = {}
+    if 'trusted_as_template' in inspect.signature(loader.load_from_file).parameters:
+        kwargs['trusted_as_template'] = True
+    data = loader.load_from_file(str(path), **kwargs)
+    return loader, data['sites']
+
+
+_SITE_YAML = """\
+plugin: vergeio.vergeos.vergeos_vms
+sites:
+  - name: lab
+    host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+    username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+    password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+    api_key: "{{ lookup('env', 'VERGEOS_API_KEY') }}"
+    insecure: true
+    timeout: 45
+"""
+
+
+class TestLookupEnv:
+    """The documented lookup('env') form, through the real templar."""
+
+    def test_site_fields_resolve_lookup_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('VERGEOS_HOST', 'vergeos.example.com')
+        monkeypatch.setenv('VERGEOS_USERNAME', 'admin')
+        monkeypatch.setenv('VERGEOS_PASSWORD', 's3cret-from-env')
+        monkeypatch.setenv('VERGEOS_API_KEY', 'tok-from-env')
+
+        loader, sites = _load_sites(tmp_path / 'lab.vergeos_vms.yml', _SITE_YAML)
+        out = _plugin()._template_sites(sites, loader)
+
+        assert out[0]['host'] == 'vergeos.example.com'
+        assert out[0]['username'] == 'admin'
+        assert out[0]['password'] == 's3cret-from-env'
+        assert out[0]['api_key'] == 'tok-from-env'
+        assert out[0]['insecure'] is True
+        assert out[0]['timeout'] == 45
+        assert '{{' not in out[0]['password']
+
+    def test_parse_connects_with_the_resolved_password(self, tmp_path, monkeypatch):
+        """The value that reaches the client is the env var, not the Jinja."""
+        monkeypatch.setenv('VERGEOS_HOST', 'vergeos.example.com')
+        monkeypatch.setenv('VERGEOS_USERNAME', 'admin')
+        monkeypatch.setenv('VERGEOS_PASSWORD', 's3cret-from-env')
+        monkeypatch.delenv('VERGEOS_API_KEY', raising=False)
+
+        text = """\
+plugin: vergeio.vergeos.vergeos_vms
+sites:
+  - name: lab
+    host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+    username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+    password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+    insecure: true
+"""
+        loader, sites = _load_sites(tmp_path / 'lab.vergeos_vms.yml', text)
+
+        im = _plugin()
+        im.inventory = MagicMock()
+        im._options = {
+            'sites': sites,
+            'cache': False,
+            'max_workers': 2,
+            'site_timeout': 30,
+            'strict_sites': False,
+        }
+        im.get_option = im._options.get
+        im._read_config_data = lambda path: None
+        im._populate_inventory = lambda site_data: None
+
+        seen = {}
+
+        def fetch(site_config):
+            seen['site'] = site_config
+            return {
+                'site': site_config['name'],
+                'site_url': site_config['host'],
+                'vms': [],
+                'error': None,
+            }
+
+        im._fetch_site = fetch
+
+        plugin_mod = (
+            'ansible_collections.vergeio.vergeos.plugins.inventory.vergeos_vms')
+        with patch.object(im.__class__.__bases__[0], 'parse', lambda *a, **k: None):
+            with patch(plugin_mod + '.HAS_PYVERGEOS', True):
+                im.parse(im.inventory, loader, str(tmp_path / 'lab.vergeos_vms.yml'))
+
+        assert seen['site']['password'] == 's3cret-from-env'
+        assert seen['site']['host'] == 'vergeos.example.com'
+        assert seen['site']['username'] == 'admin'
+        assert '{{' not in seen['site']['password']
 
 
 class TestSiteFailureHandling:
