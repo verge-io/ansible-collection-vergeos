@@ -399,7 +399,14 @@ def main():
             if state == 'absent':
                 if tag:
                     delete_tag(module, client, tag)
-                    module.exit_json(changed=True, msg=f"Tag '{tag_name}' deleted")
+                    # Check mode used to say the tag was deleted (#153).
+                    # Same wording as vm (#127).
+                    if module.check_mode:
+                        module.exit_json(
+                            changed=True,
+                            msg=f"Would delete tag '{tag_name}'")
+                    module.exit_json(
+                        changed=True, msg=f"Tag '{tag_name}' deleted")
                 else:
                     module.exit_json(changed=False, msg=f"Tag '{tag_name}' does not exist")
 

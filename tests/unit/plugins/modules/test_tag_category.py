@@ -93,7 +93,24 @@ def make_client(categories):
     return client
 
 
-def run(capsys, client, task):
+def make_tag(key, name):
+    tag = MagicMock()
+    tag.key = key
+    tag.name = name
+    return tag
+
+
+def assign(client, counts):
+    """client.tags.members(key).list() returns ``counts[key]`` rows."""
+    def members(tag_key):
+        manager = MagicMock()
+        manager.list.return_value = [object()] * counts[tag_key]
+        return manager
+
+    client.tags.members.side_effect = members
+
+
+def run(capsys, client, task, failed=False):
     """Run tag_category.main() through a real AnsibleModule."""
     import importlib
     mod = importlib.import_module(
@@ -127,8 +144,12 @@ def run(capsys, client, task):
 
     captured = capsys.readouterr()
     text = (captured.out + captured.err).strip()
-    assert caught.value.code == 0, text
-    return json.loads(text.splitlines()[-1])
+    expected = 1 if failed else 0
+    assert caught.value.code == expected, text
+    result = json.loads(text.splitlines()[-1])
+    if failed:
+        assert result.get('failed') is True
+    return result
 
 
 def test_description_only_update_leaves_every_flag(capsys):
@@ -215,3 +236,115 @@ def test_explicit_false_clears_only_that_flag(capsys):
     assert result['category']['taggable_vms'] is False
     assert result['category']['taggable_networks'] is True
     assert result['category']['single_tag_selection'] is True
+
+
+def test_absent_refuses_a_category_that_still_has_tags(capsys):
+    """Issue #153. Tags present and no force must not delete anything."""
+    category = make_category()
+    client = make_client([category])
+    client.tags.list.return_value = [make_tag(5, 'DB'), make_tag(6, 'WEB')]
+
+    result = run(capsys, client, {'state': 'absent'}, failed=True)
+
+    client.tags.list.assert_called_once_with(category_key=CATEGORY_KEY)
+    client.tags.members.assert_not_called()
+    category.delete.assert_not_called()
+    assert "DB" in result['msg'] and "WEB" in result['msg']
+    assert 'force=true' in result['msg']
+    assert 'deleted' not in result['msg']
+
+
+def test_absent_check_mode_refuses_a_category_that_still_has_tags(capsys):
+    """Check mode must not claim a cascading delete succeeded."""
+    category = make_category()
+    client = make_client([category])
+    client.tags.list.return_value = [make_tag(5, 'DB')]
+
+    result = run(capsys, client, {
+        'state': 'absent',
+        '_ansible_check_mode': True,
+    }, failed=True)
+
+    category.delete.assert_not_called()
+    assert result['msg'].startswith('Refusing to delete')
+    assert "'DB'" in result['msg']
+    assert 'deleted' not in result['msg']
+
+
+def test_force_deletes_and_reports_the_cascade(capsys):
+    """force=true deletes, and names each tag with its assignment count."""
+    category = make_category()
+    client = make_client([category])
+    client.tags.list.return_value = [make_tag(5, 'DB'), make_tag(6, 'WEB')]
+    assign(client, {5: 2, 6: 0})
+
+    result = run(capsys, client, {'state': 'absent', 'force': True})
+
+    category.delete.assert_called_once()
+    assert result['changed'] is True
+    assert result['msg'].startswith("Tag category 'App' deleted")
+    assert not result['msg'].startswith('Would')
+    assert 'DB (2 assignments)' in result['msg']
+    assert 'WEB (0 assignments)' in result['msg']
+    assert result['deleted_tags'] == [
+        {'name': 'DB', 'key': 5, 'assignments': 2},
+        {'name': 'WEB', 'key': 6, 'assignments': 0},
+    ]
+
+
+def test_force_check_mode_reports_the_cascade_without_deleting(capsys):
+    """A dry run of a forced delete shows the blast radius and writes nothing."""
+    category = make_category()
+    client = make_client([category])
+    client.tags.list.return_value = [make_tag(5, 'DB'), make_tag(9, 'gold')]
+    assign(client, {5: 1, 9: 3})
+
+    result = run(capsys, client, {
+        'state': 'absent',
+        'force': True,
+        '_ansible_check_mode': True,
+    })
+
+    category.delete.assert_not_called()
+    assert result['changed'] is True
+    assert result['msg'].startswith('Would delete tag category')
+    assert 'deleted' not in result['msg']
+    assert 'DB (1 assignment)' in result['msg']
+    assert 'gold (3 assignments)' in result['msg']
+    assert result['deleted_tags'] == [
+        {'name': 'DB', 'key': 5, 'assignments': 1},
+        {'name': 'gold', 'key': 9, 'assignments': 3},
+    ]
+
+
+def test_empty_category_deletes_without_force(capsys):
+    """No tags means there is nothing to cascade. force is not required."""
+    category = make_category()
+    client = make_client([category])
+    client.tags.list.return_value = []
+
+    result = run(capsys, client, {'state': 'absent'})
+
+    client.tags.list.assert_called_once_with(category_key=CATEGORY_KEY)
+    client.tags.members.assert_not_called()
+    category.delete.assert_called_once()
+    assert result['changed'] is True
+    assert result['msg'] == "Tag category 'App' deleted"
+    assert 'deleted_tags' not in result
+
+
+def test_empty_category_check_mode_says_would_delete(capsys):
+    """Check mode on an empty category reports the delete and does not do it."""
+    category = make_category()
+    client = make_client([category])
+    client.tags.list.return_value = []
+
+    result = run(capsys, client, {
+        'state': 'absent',
+        '_ansible_check_mode': True,
+    })
+
+    category.delete.assert_not_called()
+    assert result['changed'] is True
+    assert result['msg'] == "Would delete tag category 'App'"
+    assert 'deleted' not in result['msg']

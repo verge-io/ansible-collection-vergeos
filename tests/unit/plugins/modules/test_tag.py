@@ -155,3 +155,18 @@ def test_absent_with_category_still_limits_the_lookup():
     assert client.tags.list.call_args.kwargs.get('category_name') == 'App'
     tag.delete.assert_called_once()
     assert module.exit_json.call_args[1]['changed'] is True
+
+
+def test_absent_check_mode_says_would_delete():
+    """Check mode must not say the tag was deleted (#153, same as vm #127)."""
+    tag = make_tag(7, 'qa-tag', category='App')
+    client = make_client([tag])
+    module = make_module(base_params(), check_mode=True)
+
+    run_main(module, client)
+
+    tag.delete.assert_not_called()
+    result = module.exit_json.call_args[1]
+    assert result['changed'] is True
+    assert result['msg'] == "Would delete tag 'qa-tag'"
+    assert 'deleted' not in result['msg']
