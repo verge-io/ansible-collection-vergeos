@@ -22,17 +22,23 @@ options:
       - The ID of the uploaded OVA file in VergeOS.
       - This file must be uploaded to VergeOS before calling this module.
       - Mutually exclusive with I(ova_file_name).
+      - One of I(ova_file_id), I(ova_file_name), or I(file_id) is required
+        when I(state=present). Not used when I(state=absent).
     type: str
   ova_file_name:
     description:
       - The name of the OVA file to import (e.g., C(rhel8.ova)).
       - The module will look up the file ID automatically.
       - Mutually exclusive with I(ova_file_id).
+      - One of I(ova_file_id), I(ova_file_name), or I(file_id) is required
+        when I(state=present). Not used when I(state=absent).
     type: str
   file_id:
     description:
       - Deprecated. Use I(ova_file_id) instead.
       - The ID of the uploaded OVA file in VergeOS.
+      - One of I(ova_file_id), I(ova_file_name), or I(file_id) is required
+        when I(state=present). Not used when I(state=absent).
     type: str
   name:
     description:
@@ -88,7 +94,8 @@ options:
         C(changed=false) and does not post another import. The platform
         rejects a duplicate name, so a second run used to fail instead of
         converging.
-      - C(absent) removes the import record (VM will remain if import completed).
+      - C(absent) removes the import record by I(name). The VM remains if
+        the import already completed. An OVA identifier is not required.
     type: str
     choices: [ present, absent ]
     default: present
@@ -138,7 +145,6 @@ EXAMPLES = r'''
     host: "192.168.1.100"
     username: "admin"
     password: "password"
-    file_id: "41"
     name: "imported-vm-01"
     state: absent
 '''
@@ -440,8 +446,10 @@ def main():
         mutually_exclusive=[
             ('ova_file_id', 'ova_file_name'),
         ],
-        required_one_of=[
-            ('ova_file_id', 'ova_file_name', 'file_id'),
+        # OVA identity is only an input to creating an import. Deleting
+        # looks the record up by name (#154).
+        required_if=[
+            ('state', 'present', ('ova_file_id', 'ova_file_name', 'file_id'), True),
         ],
     )
 
