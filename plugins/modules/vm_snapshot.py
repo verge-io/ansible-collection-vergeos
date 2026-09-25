@@ -43,14 +43,17 @@ options:
     type: str
   expiration:
     description:
-      - Expiration time for the snapshot in Unix epoch seconds.
-      - If not specified, snapshot will not expire.
+      - Expiration time for the snapshot as a Unix epoch (seconds).
+      - Omit or set to C(0) for a snapshot that never expires.
+      - A past epoch is rejected; it is not silently rewritten to one hour.
     type: int
   operation:
     description:
       - Operation to perform.
       - C(create) creates a new snapshot.
-      - C(restore) restores a VM from a snapshot.
+      - C(restore) reverts the VM in place to the snapshot state.
+        The VM must be powered off. This is destructive: changes since the
+        snapshot are lost.
       - C(list) lists snapshots (returns all snapshots or filtered by VM).
       - C(delete) deletes a snapshot.
     type: str
@@ -58,14 +61,14 @@ options:
     default: create
   poll_interval:
     description:
-      - Number of seconds to wait between status polls for async operations.
+      - Accepted for compatibility. The module does not poll; create and
+        restore return when the API accepts the request.
     type: int
     default: 5
   poll_timeout:
     description:
-      - Maximum time in seconds to wait for operation to complete.
-      - Snapshot creation is typically 2-5 minutes.
-      - Snapshot restore is typically 5-15 minutes.
+      - Accepted for compatibility. The module does not poll; create and
+        restore return when the API accepts the request.
     type: int
     default: 600
   state:
@@ -108,7 +111,7 @@ EXAMPLES = r'''
     operation: list
   register: all_snapshots
 
-- name: Restore VM from snapshot
+- name: Restore VM from snapshot (VM must be powered off; destructive)
   vergeio.vergeos.vm_snapshot:
     vm_name: "web-server-01"
     snapshot_id: "45"
@@ -180,21 +183,56 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_vm(client, module, vm_name=None, vm_id=None):
+# Power-state joins that actually resolve on 26.1.8 (see vm.py POWER_FIELDS).
+_VM_POWER_FIELDS = [
+    '$key',
+    'name',
+    'machine',
+    'machine#status#running as running',
+    'machine#status#status as status',
+]
+
+
+def get_vm(client, module, vm_name=None, vm_id=None, fields=None):
     """Get VM from name or ID using SDK."""
+    get_kwargs = {}
+    list_kwargs = {}
+    if fields is not None:
+        get_kwargs['fields'] = fields
+        list_kwargs['fields'] = fields
+
     if vm_id:
         try:
-            return client.vms.get(key=vm_id)
+            return client.vms.get(key=vm_id, **get_kwargs)
         except NotFoundError:
             module.fail_json(msg=f"VM with ID '{vm_id}' not found")
 
     if vm_name:
         try:
-            return resolve_one(module, client.vms, vm_name, 'VM')
+            return resolve_one(module, client.vms, vm_name, 'VM', **list_kwargs)
         except NotFoundError:
             module.fail_json(msg=f"VM '{vm_name}' not found")
 
     return None
+
+
+def vm_is_running(vm):
+    """True when the VM is powered on.
+
+    Prefer the SDK projected accessor when present; fall back to the raw
+    join columns this module asks for.
+    """
+    if hasattr(vm, 'is_running'):
+        try:
+            value = vm.is_running
+            if value is not None:
+                return bool(value)
+        except Exception:
+            pass
+    row = dict(vm)
+    if row.get('running') is not None:
+        return bool(row.get('running'))
+    return row.get('status') == 'running'
 
 
 def create_snapshot(client, module):
@@ -202,6 +240,7 @@ def create_snapshot(client, module):
     vm_name = module.params['vm_name']
     vm_id = module.params['vm_id']
     snapshot_name = module.params['snapshot_name']
+    description = module.params.get('description')
     expiration = module.params.get('expiration')
 
     if not snapshot_name:
@@ -214,18 +253,25 @@ def create_snapshot(client, module):
 
     resolved_vm_id = str(dict(vm).get('$key'))
 
-    # Build snapshot payload - SDK uses name and retention (in seconds)
-    snapshot_data = {
-        'name': snapshot_name,
-    }
-    # Convert expiration timestamp to retention duration if provided
-    if expiration:
-        current_time = int(time.time())
-        if expiration > current_time:
-            snapshot_data['retention'] = expiration - current_time
-        else:
-            # If expiration is in the past, use a minimal retention
-            snapshot_data['retention'] = 3600  # 1 hour default
+    # Resolve expires. Docs say omit => never. expiration=0 is also never.
+    # A past epoch used to be silently rewritten to +1h; refuse it instead.
+    #
+    # pyVergeOS create(retention=0) computes expires=0 but then omits the
+    # field from the body (pyVergeOS#146), so the platform applies its own
+    # +72h default. Always POST expires ourselves so "never" is actually
+    # never, on every supported SDK.
+    current_time = int(time.time())
+    if expiration is None or expiration == 0:
+        expires = 0
+    elif expiration > current_time:
+        expires = int(expiration)
+    else:
+        module.fail_json(
+            msg=(
+                "expiration must be a future Unix epoch, or 0 / omitted "
+                "for a snapshot that never expires (got %s)" % expiration
+            )
+        )
 
     # Converge instead of colliding. The platform rejects a duplicate snapshot
     # name with "This name is already in use", so re-running a play that takes
@@ -251,16 +297,29 @@ def create_snapshot(client, module):
             changed=True,
             msg="Would create snapshot (check mode)",
             vm_id=resolved_vm_id,
-            snapshot_name=snapshot_name
+            snapshot_name=snapshot_name,
+            expires=expires,
         )
 
-    # Create the snapshot using VM's snapshots manager (POST to machine_snapshots)
-    # Note: vm.snapshot() uses vm_actions which doesn't work for snapshot creation
-    # vm.snapshots.create() uses the correct machine_snapshots endpoint
-    result = vm.snapshots.create(**snapshot_data)
+    try:
+        machine_key = int(vm.snapshots.machine_key)
+    except (TypeError, ValueError) as exc:
+        module.fail_json(msg="VM has no machine key for snapshot create: %s" % exc)
+
+    body = {
+        'machine': machine_key,
+        'name': snapshot_name,
+        'created_manually': True,
+        'quiesce': False,
+        'expires': expires,
+    }
+    if description:
+        body['description'] = description
+
+    # Direct POST: keeps expires:0 in the body (SDK create drops it, #146).
+    result = client._request('POST', 'machine_snapshots', json_data=body)
     result_dict = dict(result) if result and hasattr(result, '__iter__') else {}
 
-    # Extract snapshot ID from the API response
     created_snapshot_id = str(result_dict.get('$key', '')) if result_dict else ''
 
     module.exit_json(
@@ -269,6 +328,7 @@ def create_snapshot(client, module):
         snapshot_id=created_snapshot_id,
         snapshot_name=snapshot_name,
         vm_id=resolved_vm_id,
+        expires=expires,
         response=result_dict
     )
 
@@ -304,7 +364,15 @@ def list_snapshots(client, module):
 
 
 def restore_snapshot(client, module):
-    """Restore a VM from a snapshot using SDK."""
+    """Revert a VM in place to a snapshot (destructive).
+
+    Docs and examples describe an in-place restore. The object method
+    ``snapshot.restore()`` is a *clone to a new VM* and, on current SDK
+    releases, posts the snap_machine (machine key) as a VM key -- that is
+    pyVergeOS#147 and is why this path always reported a false
+    "Snapshot not found". The manager method with ``replace_original=True``
+    is the in-place revert and works on the collection's SDK floor.
+    """
     vm_name = module.params.get('vm_name')
     vm_id = module.params.get('vm_id')
     snapshot_id = module.params.get('snapshot_id')
@@ -312,33 +380,58 @@ def restore_snapshot(client, module):
     if not snapshot_id:
         module.fail_json(msg="snapshot_id is required for restore operation")
 
-    # Get VM
-    vm = get_vm(client, module, vm_name, vm_id)
+    try:
+        snapshot_key = int(snapshot_id)
+    except (TypeError, ValueError):
+        module.fail_json(
+            msg="snapshot_id must be an integer key, got %r" % (snapshot_id,)
+        )
+
+    # Need power state up front: the platform refuses an in-place revert of a
+    # running VM, and check mode must say so rather than claim changed=true.
+    vm = get_vm(client, module, vm_name, vm_id, fields=_VM_POWER_FIELDS)
     if not vm:
         module.fail_json(msg="Either vm_name or vm_id must be provided for restore")
 
     resolved_vm_id = str(dict(vm).get('$key'))
+
+    if vm_is_running(vm):
+        module.fail_json(
+            msg=(
+                "VM must be powered off for in-place restore "
+                "(vm_id=%s, snapshot_id=%s)" % (resolved_vm_id, snapshot_id)
+            )
+        )
+
+    # Confirm the snapshot exists on this VM before claiming we would restore.
+    try:
+        vm.snapshots.get(key=snapshot_key)
+    except NotFoundError:
+        module.fail_json(msg="Snapshot '%s' not found" % snapshot_id)
 
     if module.check_mode:
         module.exit_json(
             changed=True,
             msg="Would restore from snapshot (check mode)",
             vm_id=resolved_vm_id,
-            snapshot_id=snapshot_id
+            snapshot_id=str(snapshot_key),
         )
 
-    # Restore from snapshot using per-VM snapshot manager
+    # In-place revert. Do NOT catch NotFoundError here: a failure from the
+    # restore action is not "snapshot not found" (that was the old lie).
     try:
-        snapshot = vm.snapshots.get(key=snapshot_id)
-        snapshot.restore()
-    except NotFoundError:
-        module.fail_json(msg=f"Snapshot '{snapshot_id}' not found")
+        result = vm.snapshots.restore(snapshot_key, replace_original=True)
+    except ValueError as exc:
+        module.fail_json(msg=str(exc))
+
+    result_dict = dict(result) if result and hasattr(result, '__iter__') else {}
 
     module.exit_json(
         changed=True,
         operation='restore',
         vm_id=resolved_vm_id,
-        snapshot_id=snapshot_id
+        snapshot_id=str(snapshot_key),
+        response=result_dict,
     )
 
 
