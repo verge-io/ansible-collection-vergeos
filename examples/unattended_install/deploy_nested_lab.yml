@@ -217,6 +217,8 @@
         installer_iso_key: "{{ iso_lookup.files[0]['$key'] }}"
 
     # ------------------------------------------------------------ VMs
+    # Install needs the CD tried first (VergeOS defaults to disk only).
+    # After the nested system is installed, change boot_order if desired.
     - name: Create node VMs
       vergeio.vergeos.vm:
         name: "{{ vlab_name }}-node-{{ item }}"
@@ -225,6 +227,7 @@
         cpu_cores: "{{ vlab_cpu_cores }}"
         ram: "{{ vlab_ram_mb }}"
         bios_type: uefi
+        boot_order: cd
         machine_type: "{{ vlab_machine_type | default(omit, true) }}"
         state: present
       loop: "{{ range(1, (vlab_node_count | int) + 1) | list }}"

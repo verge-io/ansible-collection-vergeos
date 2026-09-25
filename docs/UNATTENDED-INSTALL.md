@@ -109,6 +109,7 @@ existing cluster:
 2. Node VMs: 8 cores and 16 GB by default, UEFI (`bios_type: uefi`, which
    the `vm` module stores as `uefi`), tier 0 and tier 1 virtio-scsi disks,
    the installer ISO in a CD-ROM, NICs ordered **External, Core 1, Core 2**.
+   Deploy sets `boot_order: cd` so the installer is tried before the disk.
    The seed detects guest names in PCI order. Only the creation order
    matters. Additional NICs use the `nic` module, which matches a NIC by
    its network, so the second and third NIC are added rather than

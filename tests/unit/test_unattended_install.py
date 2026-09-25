@@ -139,6 +139,7 @@ def test_playbooks_keep_the_acceptance_shape():
     assert "media_source:" in deploy
     assert "nested_virtualization: true" in deploy
     assert "bios_type: uefi" in deploy
+    assert "boot_order: cd" in deploy
     assert "vergeio.vergeos.nic:" in deploy
     assert "vlab_node_count | int >= 2" in deploy
     assert "vlab_node_count | int >= 3" in deploy

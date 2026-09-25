@@ -41,6 +41,8 @@ export VERGEOS_HOST=<new-system-ip> VERGEOS_USERNAME=admin \
 ansible-playbook examples/unattended_install/post_install.yml
 ```
 
+Deploy sets `boot_order: cd` so the installer CD is tried before the disk.
+
 Node 2 and node 3 stay powered off. After node 1 is up:
 
 ```bash
