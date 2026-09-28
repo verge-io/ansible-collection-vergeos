@@ -73,6 +73,15 @@ built collection artifact:
 - `physical_drive_info` with `node` returned the same drives per node as
   the SDK, so the pyVergeOS#143 walk is live on 1.7.1.
 
+The recipe path was checked once more on **2026-09-28 against the published
+1.7.1**, the `v1.7.1` tag at `7dde9cb`. That tag is what pyVergeOS `main`
+points at, and it differs from `5b5c43f` only in `docs/changelog.rst`. The
+unit suite passed on `ansible-core` 2.21 and 2.15. All eight recipe ladders
+passed on 2.21. On 2.15 seven passed, and the eighth failed only on the bad
+password rung, which is #171. `verify-recipe-real` deployed 30 recipes and
+29 booted. CentOS 9 Stream failed because its upstream image URL returns
+HTTP 502, which is not an SDK or collection problem.
+
 ## Why the results are identical
 
 Four defects were filed against pyvergeos from this collection. All four are

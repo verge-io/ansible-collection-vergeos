@@ -8,7 +8,9 @@
 # PR #114). That version was prepared (pyVergeOS#122) and not published
 # to PyPI. The next published release is 1.6.1, which contains the fix,
 # so `>=1.2.8` installs 1.6.1 from PyPI. Verified through 1.6.1 on
-# 2026-09-23, and through 1.7.1 (commit 5b5c43f) on 2026-09-28.
+# 2026-09-23, and through 1.7.1 on 2026-09-28: first at commit 5b5c43f,
+# then at the published v1.7.1 tag (7dde9cb), which differs from 5b5c43f
+# only in docs/changelog.rst.
 # See docs/SDK-COMPATIBILITY.md.
 #
 # Client-side name matching stays. #100 is no longer the reason: the
