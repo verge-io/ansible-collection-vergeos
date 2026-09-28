@@ -18,6 +18,7 @@ reports a deploy as fine that would in fact build a VM with no OS drive.
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
+import json
 import re
 
 # Question types whose answers the API wants as integers.
@@ -166,6 +167,80 @@ def describe_options(name, question, options):
         "%s=%s" % (o.get("$key"), o.get("$display") or o.get("name") or o.get("$key"))
         for o in opts[:8])
     return ", valid: %s%s" % (shown, " ..." if len(opts) > 8 else "")
+
+
+def _inline_list_choices(question):
+    """Fixed choices on a list question, as ``{key: label}``, or {}.
+
+    A table-backed list (WINDOWS_ISO over ``files``) takes its choices from
+    the table, which ``describe_options`` already renders. This is the mapping
+    the recipe stores on the question itself, such as
+    ``{"dhcp": "DHCP", "static": "Static"}``. The platform may hand that
+    mapping back as a dict or as a JSON string. Anything else is not a choice
+    list, and guessing at it would refuse answers the recipe would accept.
+    """
+    if question.get("type") != "list" or question.get("table"):
+        return {}
+    raw = question.get("list")
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return {}
+        try:
+            raw = json.loads(text)
+        except ValueError:
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    choices = {}
+    for key, label in raw.items():
+        if key is None or key == "":
+            continue
+        choices[str(key)] = "" if label is None else str(label)
+    return choices
+
+
+def describe_list_choices(question):
+    """``, valid: key=label, ...`` for an inline list question, or ''."""
+    choices = _inline_list_choices(question)
+    if not choices:
+        return ""
+    items = list(choices.items())
+    shown = ", ".join("%s=%s" % (key, label) for key, label in items[:8])
+    return ", valid: %s%s" % (shown, " ..." if len(items) > 8 else "")
+
+
+def _choice_suffix(name, question, options):
+    """The ``valid:`` note for a table-backed question, else an inline list."""
+    listed = describe_options(name, question, options)
+    if listed:
+        return listed
+    return describe_list_choices(question)
+
+
+def _list_label_hint(value, choices):
+    """Name the key when ``value`` is a display label (or a cased key), or ''.
+
+    The platform's own refusal names the question by its display label and
+    does not list the keys a playbook has to send. ``DHCP`` is the label for
+    ``dhcp``; saying so is the difference between a message the operator can
+    act on and one that only repeats the label they already typed.
+    """
+    folded = value.strip().lower()
+    if not folded:
+        return ""
+    label_hits = [key for key, label in choices.items()
+                  if label.strip().lower() == folded]
+    if len(label_hits) == 1:
+        return "; %r is the label for key %r" % (value, label_hits[0])
+    if len(label_hits) > 1:
+        return "; %r is the label for keys %s" % (
+            value, ", ".join(repr(key) for key in label_hits))
+    key_hits = [key for key in choices
+                if key.lower() == folded and key != value]
+    if len(key_hits) == 1:
+        return "; %r matches key %r" % (value, key_hits[0])
+    return ""
 
 
 def _declared(bound):
@@ -391,12 +466,12 @@ def resolve_answers(questions, answers, vnets=None, options=None,
                 errors.append(
                     "missing required answer %r (%s)%s"
                     % (name, q.get("display") or qtype,
-                       describe_options(name, q, options)))
+                       _choice_suffix(name, q, options)))
             elif not required and (default is None or default == ""):
                 hints.append(
                     "%r is unanswered and its default is empty (%s)%s"
                     % (name, q.get("display") or qtype,
-                       describe_options(name, q, options)))
+                       _choice_suffix(name, q, options)))
             continue
 
         value = _coerce(answers[name], qtype)
@@ -435,6 +510,19 @@ def resolve_answers(questions, answers, vnets=None, options=None,
             if str(value) not in valid:
                 errors.append("answer %r is not a valid choice%s"
                               % (name, describe_options(name, q, options)))
+                continue
+
+        # Inline list choices live on the question (``list: {dhcp: DHCP}``),
+        # not in a table. The platform refuses the label and names the
+        # question by its display text, without the keys.
+        choices = _inline_list_choices(q)
+        if choices and not isinstance(value, (list, dict, tuple)):
+            text = value if isinstance(value, str) else str(value)
+            if text not in choices:
+                errors.append(
+                    "answer %r is not a valid choice%s%s"
+                    % (name, describe_list_choices(q),
+                       _list_label_hint(text, choices)))
                 continue
 
         resolved[name] = value
