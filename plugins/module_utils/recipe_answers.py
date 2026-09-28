@@ -22,6 +22,14 @@ import re
 
 # Question types whose answers the API wants as integers.
 NUMERIC_TYPES = frozenset({"num", "ram", "disksize", "seconds"})
+# A disksize answer is bytes. Anything above zero and under 1 MB was sent
+# through: 50 became fifty bytes, the recipe built the OS drive at the
+# image's own size, and the deploy reported success. Zero is the recipe's
+# "use the default" and stays valid. 1048576 is the count the issue names.
+_DISKSIZE_MIN_BYTES = 1048576
+# 50 * 1024**3. Quoted in the refusal so a GB-shaped answer has the byte
+# form next to it.
+_DISKSIZE_50GB_BYTES = 53687091200
 # Words a bool question accepts, compared after strip and lower. An empty
 # string is false, which is the coercion this already had. Anything else used
 # to be forwarded as a string, and the platform reads a string it does not
@@ -98,6 +106,16 @@ def _bool_answer_error(name, value):
     return ("answer %r is not a recognised boolean (got %r); accepted values "
             "are %s and %s" % (name, value, ", ".join(_BOOL_TRUE_WORDS),
                                ", ".join(_BOOL_FALSE_WORDS)))
+
+
+def _disksize_answer_error(name, value):
+    """Refusal for a disksize above zero and under 1 MB.
+
+    The unit is bytes. ``50`` is fifty bytes, not fifty gigabytes.
+    """
+    return ("answer %r is %d; a disksize answer is in bytes, so 50 GB is "
+            "%d, and a value above zero but under 1 MB (%d) is refused"
+            % (name, value, _DISKSIZE_50GB_BYTES, _DISKSIZE_MIN_BYTES))
 
 
 def _coerce(value, qtype):
@@ -188,6 +206,11 @@ def check_constraints(name, question, value):
         if mx is not None and mx > 0 and value > mx:
             errors.append("answer %r is %d; the recipe allows at most %d"
                           % (name, value, mx))
+        # The gate that was missing: a whole number still went through, so
+        # YB_DRIVE_OS_SIZE: 50 was fifty bytes. The recipe built the OS drive
+        # at the image size and the deploy reported success. Zero stays.
+        if qtype == "disksize" and 0 < value < _DISKSIZE_MIN_BYTES:
+            errors.append(_disksize_answer_error(name, value))
         return errors
 
     if qtype == "bool":

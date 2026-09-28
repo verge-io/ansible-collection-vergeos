@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`vm_recipe_deploy`: a disksize answer of 50 was sent as 50 bytes** (#176). A `disksize` question is in bytes. A value above zero and under 1 MB (1048576) was forwarded anyway, so the recipe built the OS drive at the image size and the deploy reported success. Those answers are now refused, and the message says the value is in bytes and that 50 GB is 53687091200. Zero still means use the recipe's default. A count of at least 1 MB is unchanged.
 - **`vm_recipe_deploy`: an unrecognised answer to a boolean question was sent through and read as false** (#175). A recipe bool such as `SELECT_CREATE_UEFI` accepts `true`/`yes`/`on`/`1` and `false`/`no`/`off`/`0`. Anything else, including `enabled` or `UEFI`, was forwarded as a string. The platform reads a string it does not know as false, so the deploy reported success and built a BIOS VM. Those answers are now refused, and the message names the accepted values. The integers `0` and `1` are accepted the same way the strings `"0"` and `"1"` are.
 
 ## [2.2.0] - 2026-09-28
