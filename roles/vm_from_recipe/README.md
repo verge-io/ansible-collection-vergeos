@@ -115,11 +115,12 @@ fails on one of those with `answer 'SELECT_OS_TIER' is not a valid choice`.
 Read the tiers off `vm_recipe_info` with `resolve_options: true`, as the
 usage example above does, and the same playbook runs anywhere.
 
-**`vm_from_recipe_power_on` is opt in for a reason beyond taste.** Power on
-goes through the `vergeio.vergeos.vm` module, whose `enabled` parameter
-defaults to `true`, so on the convergence path it would re-enable a VM that
-somebody had deliberately disabled. A VM this role has only just deployed is
-already enabled and merely stopped, so there is nothing to clobber there.
+**`vm_from_recipe_power_on` is opt in for a reason beyond taste.** On the
+convergence path this starts a VM the role only found, and a machine somebody
+stopped on purpose should not start as a side effect of a deploy that had
+nothing else to do. A disabled VM is refused rather than started: the
+platform returns `Error starting machine: Machine is disabled` and leaves
+the VM disabled and stopped.
 
 **`vm_from_recipe_fail_on_hints` asks more of you than it looks.** A hint is
 an unanswered question whose default is empty, and this option makes any hint

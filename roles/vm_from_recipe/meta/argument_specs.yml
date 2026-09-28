@@ -120,9 +120,13 @@ argument_specs:
       vm_from_recipe_power_on:
         description:
           - Power the VM on once its drives are ready.
-          - Opt-in because power-on goes through the M(vergeio.vergeos.vm)
-            module, whose C(enabled) parameter defaults to true, so on the
-            convergence path it would re-enable a deliberately disabled VM.
+          - Opt-in because on the convergence path this starts a VM the role
+            only found, and a machine somebody stopped on purpose should not
+            start as a side effect of a deploy that had nothing else to do.
+          - >-
+            A disabled VM is refused rather than started. The platform returns
+            C(Error starting machine: Machine is disabled) and leaves the VM
+            disabled and stopped.
         type: bool
         default: false
       vm_from_recipe_power_on_grace:
