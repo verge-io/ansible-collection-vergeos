@@ -11,7 +11,7 @@ DOCUMENTATION = r'''
 ---
 module: update_info
 short_description: Gather information about VergeOS platform updates
-version_added: "2.1.0"
+version_added: "2.2.0"
 description:
   - Report the update source and branch in use, whether updates are pending,
     downloaded or installed, and whether a reboot is outstanding.

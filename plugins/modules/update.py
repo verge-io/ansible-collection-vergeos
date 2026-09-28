@@ -11,7 +11,7 @@ DOCUMENTATION = r'''
 ---
 module: update
 short_description: Drive the VergeOS platform update lifecycle
-version_added: "2.1.0"
+version_added: "2.2.0"
 description:
   - Drives a platform update through its lifecycle - check, download, install,
     and optionally apply.

@@ -5,7 +5,7 @@ Ansible collection for managing VergeOS virtualization infrastructure via the Ve
 ## Requirements
 
 - **Python**: >= 3.9
-- **Ansible**: >= 2.14.0
+- **Ansible**: >= 2.15.0
 - **pyvergeos**: >= 1.2.8 (VergeOS Python SDK). The brace-escaping fix is in 1.2.8; the first release PyPI actually publishes at or above that is 1.6.1. See [docs/SDK-COMPATIBILITY.md](docs/SDK-COMPATIBILITY.md).
 
 ## Installation
@@ -154,6 +154,51 @@ Every module in `plugins/modules/`. A read-only module only gathers facts.
 | `tier_policy` | Declares which storage tier each VM's drives belong on |
 | `vm_backup` | Snapshot schedule, NAS export target, NFS exposure and export config from one policy |
 | `vm_from_recipe` | Deploys a VM from a recipe and waits until it is usable |
+
+## Example playbooks
+
+Every playbook under [`examples/`](examples). Recipe deploys are also walked
+through under [Deploying VMs from recipes](#deploying-vms-from-recipes). The
+silent-install lab is
+[`examples/unattended_install/`](examples/unattended_install/).
+
+| Playbook | What it shows |
+|---|---|
+| `api_key_rotation.yml` | Rotates a bearer key and proves the new secret before revoking the old one |
+| `apply_tags.yml` | Applies tags from VM name patterns via the dynamic inventory |
+| `billing_export.yml` | Read-only per-tenant usage export for invoicing and chargeback |
+| `create_vm.yml` | Creates a VM with a network and storage |
+| `delete_snapshot.yml` | Deletes one snapshot by id |
+| `deploy_from_recipe.yml` | Deploys one VM from a recipe, driving the modules directly |
+| `drive_health.yml` | SMART and vSAN triage for physical drives |
+| `gather_info.yml` | Read-only sweep of VMs and other infrastructure |
+| `health_report.yml` | Read-only green/amber/red digest of alarms, nodes, capacity, snapshots, and NAS |
+| `image_pipeline.yml` | Turns a local qcow2 into a versioned golden template VM |
+| `import_and_configure_vm.yml` | Imports an OVA and configures it with cloud-init |
+| `import_and_configure_winvm.yml` | Imports a Windows OVA and configures it with unattend |
+| `k3s_node.yml` | Builds k3s nodes as VMs |
+| `lb_stack.yml` | Deploys an HAProxy load balancer from a declarative spec |
+| `manage_api_keys.yml` | Manages per-user API keys as code |
+| `manage_tenants.yml` | Tenant, external IP, and network block layout as code |
+| `manage_users.yml` | Users, group membership, and permissions |
+| `network_policy.yml` | Per-network firewall rules from a YAML policy |
+| `node_drain.yml` | Evacuates a node into maintenance mode, or brings it back |
+| `protect.yml` | Enrolls a VM in a snapshot profile from a `protect/<class>` tag |
+| `rbac.yml` | Groups, membership, and permissions from one document |
+| `rebalance_advisor.yml` | Proposes live migrations for CPU/RAM hotspots and leaves the VMs in place |
+| `recipe_discover.yml` | Read-only listing of recipes and the questions each one asks |
+| `recipe_fleet.yml` | Several VMs from one recipe, each with its own size |
+| `recipe_preflight.yml` | Validates answers and runs the platform simulation without creating a VM |
+| `restore_drill.yml` | Clones a snapshot, boots the clone, and reports whether it stayed running |
+| `rolling_update.yml` | Prepares a platform update and hands the reboots to the platform's rolling apply |
+| `setup_tags.yml` | Creates the tag categories and tags other examples apply |
+| `snapshot_by_tag.yml` | Snapshots VMs selected by inventory tag, site, or status groups |
+| `snapshot_workflow.yml` | Snapshot, update, and restore workflow |
+| `test_inventory.yml` | Prints hostvars from the dynamic inventory |
+| `tier_policy.yml` | Declares which storage tier each VM's drives belong on |
+| `vm_backup.yml` | Snapshot schedule, NAS export target, NFS exposure, and export config from one policy |
+| `vm_from_recipe_role.yml` | One VM via `vm_from_recipe`, waited on until it can boot |
+| `vm_snapshots.yml` | Create, list, and optionally restore a VM snapshot |
 
 ## Deploying VMs from recipes
 

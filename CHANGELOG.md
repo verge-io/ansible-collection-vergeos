@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-28
+
 ### Breaking changes
 
 These ship in 2.2.0. Each one is a task that reported `changed` on v2.1.0 and fails on this release. The bullet says what to write instead.
@@ -20,7 +22,7 @@ These ship in 2.2.0. Each one is a task that reported `changed` on v2.1.0 and fa
 
 ### Changed
 
-- **pyvergeos floor is `>=1.2.8`**, and the compatibility notes match 1.6.1. `quote_value()` escapes `{` as of 1.2.8 (pyVergeOS#100); that release was not published, and 1.6.1 is the PyPI release that contains it. `vm` and `vm_info` RETURN samples document `$key`, `status` and `running`. The README lists every module.
+- **pyvergeos floor is `>=1.2.8`**, and the compatibility notes are verified through 1.7.1. `quote_value()` escapes `{` as of 1.2.8 (pyVergeOS#100); that release was not published, and 1.6.1 is the PyPI release that contains it. pyVergeOS 1.7.1 releases the #143 parent_drive node walk. `vm` and `vm_info` RETURN samples document `$key`, `status` and `running`. The README lists every module.
 
 ### Added
 
@@ -50,7 +52,7 @@ These ship in 2.2.0. Each one is a task that reported `changed` on v2.1.0 and fa
 
 - **`tag_category`: deleting a category with tags deleted those tags and their assignments and reported success** (#153). The docs said a category that contains tags cannot be deleted. On VergeOS the platform cascades: the category, every tag in it, and every assignment of those tags are removed. `state=absent` now refuses unless `force=true`. With `force`, the result names each tag and how many assignments it had, including in check mode. An empty category still deletes without `force`. Check mode for `tag` and `tag_category` says "Would delete" rather than "deleted".
 
-- **`physical_drive_info` `node:` returned zero drives on every released pyvergeos** (#145). Since the scoped `PhysicalDriveManager(node_key=...)` call, a per-node scan was `changed=false` with no failure and no warning, including through `drive_health`. Released SDKs from 1.2.7 through 1.6.1 still filter `node eq <key>` on `machine_drive_phys`, which has no `node` column. The parent_drive walk (pyVergeOS#143) is unreleased. The module uses that scoped manager only when the installed SDK has it, and otherwise matches `node_name` client-side, which also works on 1.2.7. A node that exists but has no drives warns instead of looking healthy. The collection floor is `pyvergeos>=1.2.8`.
+- **`physical_drive_info` `node:` returned zero drives on every released pyvergeos** (#145). Since the scoped `PhysicalDriveManager(node_key=...)` call, a per-node scan was `changed=false` with no failure and no warning, including through `drive_health`. Released SDKs from 1.2.7 through 1.6.1 still filter `node eq <key>` on `machine_drive_phys`, which has no `node` column. The parent_drive walk (pyVergeOS#143) is released as of pyVergeOS 1.7.1. The module uses that scoped manager only when the installed SDK has it, and otherwise matches `node_name` client-side, which also works on 1.2.7. A node that exists but has no drives warns instead of looking healthy. The collection floor is `pyvergeos>=1.2.8`.
 
 - **`vm_from_recipe`: a failed image import burned the whole wait, then advised raising it** (#131). The platform marks a drive `status: errors` within about two seconds and does not retry, but `media` stays `import`. `vm_drive_info` counted every `media=import` drive as unfinished, so the role waited out `vm_from_recipe_wait_timeout` and then suggested raising it. Terminal failure status `errors` is now reported on `failed_drives` and left out of `importing`. The wait exits on the next poll, and the assertion quotes the platform's `status_info` without the timeout advice.
 
@@ -88,6 +90,11 @@ These ship in 2.2.0. Each one is a task that reported `changed` on v2.1.0 and fa
 - **`vm_recipe_deploy` error messages** no longer use em dashes, so `valid: ...` now reads as an ordinary sentence.
 
 - **`vm`: `state` semantics corrected.** `absent` will not delete a *running* VM, because the platform refuses with *"Virtual Machine must be stopped to delete"*, and the module deliberately does not stop it for you, because an `absent` that powered off a running workload in order to remove it would be a far worse default than a refusal. `stopped` does **not** create a missing VM while `running` does. Both verified against VergeOS 26.1.8; neither was previously documented.
+
+- **Nine modules first shipped here are marked `version_added: "2.2.0"`.** `auth_source_info`, `node_info`, `node_maintenance`, `update`, `update_info`, `vm_drive_info`, `vm_nic_info`, `vm_recipe_deploy`, and `vm_recipe_info` are not in v2.1.0. They were marked `2.1.0`.
+- **README Ansible floor is `>=2.15.0`**, matching `meta/runtime.yml`. It said `>=2.14.0`.
+- **README lists the example playbooks** under `examples/`.
+
 ## [2.1.0] - 2026-09-24
 
 ### Added

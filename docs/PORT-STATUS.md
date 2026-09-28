@@ -8,9 +8,9 @@ six decisions that had not been applied. That draft is not the status of
 this tree. The sections below are the tree at `3e5adca` (2026/09/25),
 which added `site_info` for a read only site preflight (#148).
 
-`galaxy.yml` is still `2.1.0`. The port is in the unreleased changelog,
-ahead of tag `v2.1.0` (`be79cde`). Issue #57 is the index that tracked
-the port while it was off `dev`.
+`galaxy.yml` is `2.2.0`. The port ships in that release and is recorded
+under `[2.2.0]` in the changelog (tag `v2.1.0` is `be79cde`). Issue #57
+is the index that tracked the port while it was off `dev`.
 
 ## What is in the tree
 
@@ -183,7 +183,7 @@ refuses that stub.
 
 ## Related
 
-- `docs/SDK-COMPATIBILITY.md`: floor `pyvergeos>=1.2.8`, verified on 1.6.1
+- `docs/SDK-COMPATIBILITY.md`: floor `pyvergeos>=1.2.8`, verified through 1.7.1
 - `docs/PYVERGEOS-GAPS.md`: the 2026/09/09 index diff, and what 1.6.1 changed
 - `docs/WHY-TESTS-MISSED-THESE.md`: why fixtures built from the same wrong field names passed
 - `docs/KNOWN-BUGS.md`: B8, and where the register lives

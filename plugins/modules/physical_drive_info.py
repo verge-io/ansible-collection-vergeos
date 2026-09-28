@@ -26,9 +26,10 @@ options:
         returning an empty list that reads as a healthy node.
       - When the installed pyvergeos has the pyVergeOS#143 parent_drive
         walk, the list is scoped with C(PhysicalDriveManager(node_key=...)).
-        Released pyvergeos through 1.6.1 still filters on a C(node) column
-        that C(machine_drive_phys) does not have, so those versions list
-        the fleet and match C(node_name) client-side.
+        That walk is released as of pyVergeOS 1.7.1. Released pyvergeos
+        through 1.6.1 still filters on a C(node) column that
+        C(machine_drive_phys) does not have, so those versions list the
+        fleet and match C(node_name) client-side.
       - A node that exists but has no drives produces a warning. An empty
         report is not a silent success.
     type: str
@@ -223,7 +224,7 @@ LADDER = ('ok', 'info', 'warning', 'critical')
 # pyvergeos through 1.6.1 builds filter="node eq <key>". That column does not
 # exist, so the list is empty and a per-node health scan looks healthy
 # (pyVergeOS#143). The fix walks nodes.machine -> machine_drives ->
-# parent_drive and lives on the SDK's dev branch only; it adds
+# parent_drive and is released as of pyVergeOS 1.7.1; it adds
 # _parent_drive_filter_for_node. Use the scoped manager only when this
 # install has that method. Otherwise list the fleet and match node_name
 # client-side, which is what worked on the 1.2.7 floor before the scoped

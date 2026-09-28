@@ -11,7 +11,7 @@ DOCUMENTATION = r'''
 ---
 module: auth_source_info
 short_description: Gather information about VergeOS authentication sources
-version_added: "2.1.0"
+version_added: "2.2.0"
 description:
   - List authentication sources (SSO/OIDC providers), optionally with
     their settings documents.

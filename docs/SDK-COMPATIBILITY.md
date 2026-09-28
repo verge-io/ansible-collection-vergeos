@@ -13,10 +13,12 @@ on.
 | 1.2.5 | OData apostrophe escape (pyvergeos#72) |
 | 1.2.7 | Previous floor. Last release published before the brace fix. `quote_value()` still did not escape `{` |
 | **1.2.8** | `quote_value()` escapes `{` (pyVergeOS#100, PR #114). Prepared in pyVergeOS#122 and **not published to PyPI** |
-| **1.6.1** | First release PyPI publishes at or above 1.2.8. Contains the brace fix, plus the 1.4 through 1.6 refactors (declarative accessors, int-coercion on polymorphic refs, `cluster_status` and `machine_drive_stats`, partial snapshots, snapshot-wait). Verified through this version |
+| **1.6.1** | First release PyPI publishes at or above 1.2.8. Contains the brace fix, plus the 1.4 through 1.6 refactors (declarative accessors, int-coercion on polymorphic refs, `cluster_status` and `machine_drive_stats`, partial snapshots, snapshot-wait) |
+| **1.7.1** | Releases the parent_drive node walk (pyVergeOS#143, PR #144). Verified through this version |
 
 `>=1.2.8` therefore installs **1.6.1** from PyPI today. There is no 1.3, 1.4
-or 1.5 package, and there is no 1.2.8 package.
+or 1.5 package, and there is no 1.2.8 package. 1.7.1 is the release that
+contains the #143 node walk; the floor stays `>=1.2.8`.
 
 ## What was tested
 
@@ -61,6 +63,15 @@ dev reporting that version) on the same lab:
 Ladders needing a NAS service (`verify-vm-export`, `verify-nas-modules`) and
 the destructive sweeps (`verify-recipe-real`, `verify-recipe-bulk`) were not
 in the 15-ladder matrix. They are covered elsewhere.
+
+Checked again on **2026-09-28 against pyVergeOS 1.7.1** (`5b5c43f`), from a
+built collection artifact:
+
+- ansible-core 2.21: all 42 live ladders passed.
+- ansible-core 2.15: 38 of 42 passed. The four failures are deferred
+  collection issues #171 and #172, not an SDK mismatch.
+- `physical_drive_info` with `node` returned the same drives per node as
+  the SDK, so the pyVergeOS#143 walk is live on 1.7.1.
 
 ## Why the results are identical
 
@@ -148,8 +159,9 @@ list is empty, `changed=false`, and nothing warns. `drive_health` passes
 healthy.
 
 The parent_drive walk that fixes it (`nodes.machine` → `machine_drives` →
-`parent_drive eq ...`, method `_parent_drive_filter_for_node`) is on
-pyVergeOS `dev` only (issue #143 / PR #144). No release tag contains it.
+`parent_drive eq ...`, method `_parent_drive_filter_for_node`) is released
+as of pyVergeOS 1.7.1 (issue #143 / PR #144). Releases from 1.2.7 through
+1.6.1 do not contain it.
 
 The module calls the scoped manager only when that method is a real
 function on the installed class. Otherwise it lists the fleet and matches
@@ -162,6 +174,8 @@ empty report. The collection floor is `pyvergeos>=1.2.8`.
 - The floor is `pyvergeos>=1.2.8`. 1.2.7 is no longer a supported SDK.
 - Do not describe #100 as open. `quote_value()` escapes `{` from 1.2.8 on,
   and 1.6.1 is the published release that carries it.
+- Do not describe #143 as unreleased. The parent_drive node walk is released
+  as of pyVergeOS 1.7.1. Releases through 1.6.1 still filter `node eq <key>`.
 - Client-side name matching stays, for ambiguous names (#72), not because
   braces are still stripped.
 

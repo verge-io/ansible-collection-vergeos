@@ -11,7 +11,7 @@ DOCUMENTATION = r'''
 ---
 module: vm_nic_info
 short_description: Gather information about a VM's NICs in VergeOS
-version_added: "2.1.0"
+version_added: "2.2.0"
 description:
   - Gather facts about the network interfaces attached to a virtual machine,
     including which network each one is attached to.
