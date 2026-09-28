@@ -66,8 +66,12 @@ options:
       - A C(list) question that carries its own choices (for example
         C(YB_IP_ADDR_TYPE) with C(dhcp) and C(static)) is checked locally.
         The value has to be the choice's key, not the label the UI shows.
-        C(DHCP) is refused, and the message names the key C(dhcp) and the
-        valid choices.
+        C(DHCP) is refused, and the message names the value it received, the
+        key C(dhcp) and the valid choices.
+        YAML reads an unquoted C(yes), C(no), C(true), C(false), C(on) or
+        C(off) as a boolean. When the keys include those words the boolean
+        is still refused (it is not rewritten to the string) and the message
+        says to quote it, for example C("no").
       - Stock Linux recipes publish a C(HOSTNAME) pattern that matches one
         letter, or three or more. A two-letter name such as C(db) does not
         match it, because the optional group uses a plus quantifier where a
