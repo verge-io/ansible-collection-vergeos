@@ -77,6 +77,64 @@ def test_bool_answer_to_a_numeric_question_is_refused():
     assert out["errors"]
 
 
+# -- bool answers that are not booleans --------------------------------------
+
+@pytest.mark.parametrize("junk", [
+    "enabled", "UEFI", "uefi", "Enabled", "y", "t", "n", "f",
+    "2", "1.0", "onoff", "none", "null", "yesno",
+])
+def test_unrecognised_bool_strings_are_refused(junk):
+    """A bool question given a word _coerce does not know must not reach the API.
+
+    Defect found: _coerce returned the string unchanged and check_constraints
+    had no bool branch, so "enabled" and "UEFI" passed local validation. The
+    platform reads an unrecognised string as false, and the deploy reported
+    success -- SELECT_CREATE_UEFI: enabled built a BIOS VM.
+    """
+    out = resolve_answers([q("SELECT_CREATE_UEFI", "bool")],
+                          {"SELECT_CREATE_UEFI": junk})
+    assert out["errors"], "%r passed validation for a bool question" % junk
+    msg = errs(out)
+    assert "SELECT_CREATE_UEFI" in msg
+    assert "recognised boolean" in msg
+    for word in ("true", "yes", "on", "1", "false", "no", "off", "0"):
+        assert word in msg, "%r missing from %s" % (word, msg)
+    # Failing closed: not recorded as the True the playbook meant to ask for.
+    assert out["answers"].get("SELECT_CREATE_UEFI") is not True
+
+
+@pytest.mark.parametrize("junk", [2, -1, 10, 1.0, 0.0, None])
+def test_non_boolean_scalars_are_refused_for_bool_questions(junk):
+    """Integer 0 and 1 are booleans. Every other number is not.
+
+    Defect found: only strings were inspected, so an integer other than the
+    words _coerce knew -- or a float, or null -- was forwarded untouched.
+    """
+    out = resolve_answers([q("B", "bool")], {"B": junk})
+    assert out["errors"], "%r passed validation for a bool question" % junk
+    assert "recognised boolean" in errs(out)
+    assert out["answers"].get("B") is not True
+
+
+def test_a_list_answer_to_a_bool_question_is_refused():
+    out = resolve_answers([q("B", "bool")], {"B": [True]})
+    assert out["errors"]
+    assert out["answers"].get("B") is not True
+
+
+def test_required_bool_given_null_names_the_accepted_values():
+    """Null on a required bool must not be reported as merely empty.
+
+    The empty-answer check used to fire first and skip the list of accepted
+    values, so the operator was told the answer was empty and not what would
+    have been accepted.
+    """
+    out = resolve_answers([q("B", "bool", required=True, default="")],
+                          {"B": None})
+    assert "recognised boolean" in errs(out)
+    assert "supplied empty" not in errs(out)
+
+
 def test_list_answer_to_a_numeric_question_is_refused():
     out = resolve_answers([q("YB_RAM", "ram")], {"YB_RAM": [1024]})
     assert out["errors"]

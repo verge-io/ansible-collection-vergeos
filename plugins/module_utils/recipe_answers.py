@@ -22,6 +22,15 @@ import re
 
 # Question types whose answers the API wants as integers.
 NUMERIC_TYPES = frozenset({"num", "ram", "disksize", "seconds"})
+# Words a bool question accepts, compared after strip and lower. An empty
+# string is false, which is the coercion this already had. Anything else used
+# to be forwarded as a string, and the platform reads a string it does not
+# know as false -- so SELECT_CREATE_UEFI: enabled built a BIOS VM and the
+# deploy still reported success.
+_BOOL_TRUE_WORDS = ("true", "yes", "on", "1")
+_BOOL_FALSE_WORDS = ("false", "no", "off", "0")
+_BOOL_TRUE = frozenset(_BOOL_TRUE_WORDS)
+_BOOL_FALSE = frozenset(_BOOL_FALSE_WORDS + ("",))
 # Types carrying a secret; their variable names drive redaction in the module.
 SECRET_TYPES = frozenset({"password"})
 # Names that mark an answer as a secret when its type cannot say so. A recipe
@@ -59,16 +68,47 @@ def _is_int(value):
     return False
 
 
+def _coerce_bool(value):
+    """A real bool for a known form, or None when ``value`` is not one.
+
+    Integer 0 and 1 are accepted the same way the strings ``"0"`` and ``"1"``
+    are, so a playbook that already passes them keeps working. ``bool`` is a
+    subclass of ``int``, so it is handled first. None here means "not a
+    boolean form", not false: callers must not treat it as False.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return None
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in _BOOL_TRUE:
+            return True
+        if low in _BOOL_FALSE:
+            return False
+    return None
+
+
+def _bool_answer_error(name, value):
+    """Refusal for a bool answer that is not a form ``_coerce_bool`` accepts."""
+    return ("answer %r is not a recognised boolean (got %r); accepted values "
+            "are %s and %s" % (name, value, ", ".join(_BOOL_TRUE_WORDS),
+                               ", ".join(_BOOL_FALSE_WORDS)))
+
+
 def _coerce(value, qtype):
     """Coerce one answer to the shape the API expects for its question type."""
     if qtype in NUMERIC_TYPES and _is_int(value):
         return int(value)
-    if qtype == "bool" and isinstance(value, str):
-        low = value.strip().lower()
-        if low in ("true", "yes", "on", "1"):
-            return True
-        if low in ("false", "no", "off", "0", ""):
-            return False
+    if qtype == "bool":
+        coerced = _coerce_bool(value)
+        # False is a successful coercion. Only None means "leave it alone".
+        if coerced is not None:
+            return coerced
     return value
 
 
@@ -148,6 +188,15 @@ def check_constraints(name, question, value):
         if mx is not None and mx > 0 and value > mx:
             errors.append("answer %r is %d; the recipe allows at most %d"
                           % (name, value, mx))
+        return errors
+
+    if qtype == "bool":
+        # The gate that was missing: _coerce only converts the words it knows
+        # (and integer 0 and 1). "enabled" and "UEFI" arrived here still
+        # strings, matched no branch below, and were sent on. The platform
+        # reads that string as false.
+        if not isinstance(value, bool):
+            return [_bool_answer_error(name, value)]
         return errors
 
     if isinstance(value, str) and qtype in ("string", "hostname", "textarea",
@@ -347,7 +396,11 @@ def resolve_answers(questions, answers, vnets=None, options=None,
                 errors.append("network %r not found (answer %r)" % (value, name))
                 continue
 
-        if bool(q.get("required")) and (value is None or value == ""):
+        # A bool is not "empty". "" has already coerced to False, and a
+        # required null has to name the accepted values rather than say
+        # "supplied empty" and skip that list. check_constraints does it.
+        if (qtype != "bool" and bool(q.get("required"))
+                and (value is None or value == "")):
             errors.append("required answer %r was supplied empty" % name)
             continue
 

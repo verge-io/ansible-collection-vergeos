@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`vm_recipe_deploy`: an unrecognised answer to a boolean question was sent through and read as false** (#175). A recipe bool such as `SELECT_CREATE_UEFI` accepts `true`/`yes`/`on`/`1` and `false`/`no`/`off`/`0`. Anything else, including `enabled` or `UEFI`, was forwarded as a string. The platform reads a string it does not know as false, so the deploy reported success and built a BIOS VM. Those answers are now refused, and the message names the accepted values. The integers `0` and `1` are accepted the same way the strings `"0"` and `"1"` are.
+
 ## [2.2.0] - 2026-09-28
 
 ### Breaking changes
