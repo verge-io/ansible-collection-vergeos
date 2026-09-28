@@ -172,18 +172,27 @@ still has its firmware read the boot sector and send a few DHCP packets, so
 read counters and NIC counters both move off zero on a guest sitting at "no
 bootable device". Only written bytes separate the two.
 
-### Your VM name may appear as asterisks
+### What `no_log` still hides
 
 The `answers` parameter is marked `no_log`, because recipe answers routinely
-carry a guest password. A side effect catches everyone once: Ansible scrubs
-every value in that mapping from the task output, so a non secret answer that
-happens to equal another string in the result gets masked too.
+carry a guest password. Ansible scrubs every value in that mapping from the
+task output, and it does it by substring, so a short answer such as `1` would
+also hide every `1`.
 
-In practice this bites `HOSTNAME`, which is usually the same string as the VM
-name, so the VM name shows up as `********` in that task's output. That is
-Ansible protecting the mapping, not an error. The module's own messages
-identify the VM by key for exactly this reason. Use `vm_key`, or read the name
-back with a separate `vm_info` task.
+Once the module has read the recipe's questions, it stops masking answers that
+are not credentials. A recipe that publishes questions does not print the VM
+name as `********`. A new deploy prints the name. A rerun against a VM that
+already exists does not print the name at all; the message gives the key only.
+
+Two cases stay masked.
+
+A recipe that publishes no questions cannot be classified, so every answer
+stays masked and the result is scrubbed in full.
+
+A value that is still masked is removed wherever it occurs. The recipe row is
+where this shows: `name` can read `Debian ********2 (Bookworm)`, `version`
+`********.0`, `creator` `node********`, and integer fields such as `build` and
+`vm_snapshot` are replaced with `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER`.
 
 ### fail_on_hints asks more of you than it looks
 
@@ -263,7 +272,7 @@ explicit act:
 | `network 'x' not found` | A network answer named something that is not on this system. Check the name, including case |
 | VM exists but will not boot | The image import may still be running. The role waits for this; the module does not |
 | VM boots but reaches nothing | A network question was probably left at `__new_internal__`. Check with `vm_nic_info` |
-| VM name shows as `********` | Expected. `answers` is `no_log`. Use `vm_key`, or read the name back with `vm_info` |
+| `Debian ********2 (Bookworm)`, or `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER` | The recipe publishes no questions, so every answer stays masked and a short value is scrubbed from the result. A recipe that publishes questions does not do this |
 | `fail_on_hints is set and questions are unanswered` | Read the hints, answer the ones that matter, see the section above |
 
 ## Where to look next

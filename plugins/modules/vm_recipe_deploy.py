@@ -73,16 +73,20 @@ options:
         then fails mid-deploy; those are reported in RV(hints), and
         O(fail_on_hints) makes them fatal.
       - Marked C(no_log), because recipe answers routinely carry a guest
-        password. One side effect is worth knowing - Ansible scrubs every
-        value in this mapping from the task's output, so a non-secret answer
-        that happens to equal another string in the result is masked there
-        too.
-      - In practice that bites C(HOSTNAME), which is usually the same string
-        as O(name), so the VM name appears as C(********) in this task's
-        output. That is Ansible protecting the mapping, not an error. This
-        module's own messages identify the VM by key for that reason; use
-        RV(vm_key), or read the name from a separate
-        M(vergeio.vergeos.vm_info) task.
+        password. Ansible scrubs every value in this mapping from the task
+        output, by substring, and it treats integers as values. A short
+        answer such as C(1) would otherwise hide every C(1).
+      - Once this module has read the recipe's questions, answers that are
+        not credentials are no longer masked in its own output. A new deploy
+        prints O(name). The already-exists result does not print the name at
+        all; it identifies the VM by RV(vm_key) only.
+      - Two cases stay masked. A recipe that publishes no questions cannot
+        be classified, so every answer stays masked and the result is
+        scrubbed in full. A value that is still masked is removed wherever
+        it occurs, so RV(recipe) can show C(Debian ********2 (Bookworm)),
+        C(********.0) or C(node********), and integer fields such as
+        C(build) and C(vm_snapshot) are replaced with
+        C(VALUE_SPECIFIED_IN_NO_LOG_PARAMETER).
       - Answer values are never echoed back regardless - RV(answers_sent)
         reports names only.
     type: dict
@@ -339,15 +343,20 @@ if HAS_PYVERGEOS:
     )
 
 
-def resolve(client, recipe_key, answers, prune_unknown):
+def resolve(client, recipe_key, answers, prune_unknown, questions=None):
     """Validate the answer set, resolving table-backed options as needed.
 
     Two passes on purpose. The first tells us which questions are table-backed
     and so which tables have to be read; the second validates the answers with
     those valid values in hand, which is what lets a bad choice be reported as
     "not a valid choice, valid are ..." instead of surfacing mid-deploy.
+
+    ``questions`` may already have been fetched. The already-exists path reads
+    them so it can narrow no_log before returning, and passing them in avoids
+    reading the question set twice on the deploy path.
     """
-    questions = fetch_questions(client, recipe_key)
+    if questions is None:
+        questions = fetch_questions(client, recipe_key)
     networks = fetch_networks(client)
 
     first = resolve_answers(questions, answers, vnets=networks,
@@ -388,8 +397,9 @@ def narrow_no_log(module, resolved):
         ``api_key`` -- stays masked, read from the argument spec rather than
         named here so a future no_log parameter is covered automatically.
 
-    Everything before this point in main() still runs fully masked. That is
-    deliberate: it fails closed.
+    The already-exists return includes the recipe row, so this has to run
+    before that return too. Everything before this call in main() still runs
+    fully masked. That is deliberate: it fails closed.
     """
     if not resolved.get('introspectable'):
         return
@@ -443,17 +453,28 @@ def main():
             hints=[],
         )
 
+        # Question types before the already-exists return. That return
+        # includes the recipe row, and until the types are known every answer
+        # is still a no_log value. Ansible then masks each one as a substring,
+        # so SELECT_OS_TIER=1 scrubs every "1" in the row. See narrow_no_log().
+        # Credential classification needs only the question types, not the
+        # network list or option tables, and a failure of those lookups must
+        # not turn a rerun into an error. Answer errors are not fatal here
+        # either: an existing VM is still a no-op. The deploy path validates.
+        questions = fetch_questions(client, recipe['$key'])
+        classified = resolve_answers(questions, params['answers'],
+                                     prune_unknown=params['prune_unknown'])
+        narrow_no_log(module, classified)
+
         # Converge on the VM, not on the recipe instance: some recipes set
         # YB_DETACH_RECIPE, which drops the instance row once the guest agent
         # reports in, so the instance is not a durable identity. The VM is.
         existing = find_vm_by_name(client, name)
         if existing:
-            # The name is deliberately NOT interpolated here. `answers` is
-            # no_log, and Ansible masks every no_log VALUE wherever it appears
-            # in output -- HOSTNAME is normally the same string as the VM
-            # name, so the message came out as "VM '********' already exists".
-            # Correct and unreadable. The key identifies it and cannot
-            # collide with an answer.
+            # The name is not interpolated. This message never prints it, only
+            # the key. A recipe that publishes no questions still masks every
+            # answer, and HOSTNAME is usually that name, so putting the name
+            # here would hide it.
             result.update(
                 already_existed=True,
                 vm_key=str(existing.get('$key') or ''),
@@ -465,11 +486,10 @@ def main():
 
         resolved, _questions = resolve(client, recipe['$key'],
                                        params['answers'],
-                                       params['prune_unknown'])
-
-        # Before the first message that quotes the recipe's own numbers back
-        # at the operator, and after the question types that classify the
-        # credentials. See narrow_no_log().
+                                       params['prune_unknown'],
+                                       questions=questions)
+        # Before the first message that quotes the recipe's own numbers.
+        # Idempotent with the classify above. See narrow_no_log().
         narrow_no_log(module, resolved)
 
         result['answers_sent'] = sorted(resolved['answers'])

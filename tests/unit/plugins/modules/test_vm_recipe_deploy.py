@@ -12,7 +12,12 @@ deploy POST fires on the next line.
 import pytest
 from unittest.mock import MagicMock, patch
 
+from ansible.module_utils.common.parameters import remove_values
+
 from ansible_collections.vergeio.vergeos.plugins.modules import vm_recipe_deploy
+from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    maskable_strings,
+)
 
 
 class FakeManager:
@@ -145,6 +150,42 @@ def run(client, check_mode=False, **over):
     return module
 
 
+def run_masked(client, **over):
+    """Run main() and return the result after ansible-core's no_log scrub.
+
+    ``answers`` and ``password`` start out fully masked, the way AnsibleModule
+    collects them before any module code runs. ``narrow_no_log()`` may then
+    drop the non-credential strings. The returned dict is what ``exit_json``
+    would print.
+    """
+    module = MagicMock()
+    module.params = params(**over)
+    module.check_mode = False
+    module.no_log_values = (maskable_strings(module.params['answers'])
+                            | maskable_strings(module.params['password']))
+    module.argument_spec = {
+        'answers': {'no_log': True},
+        'password': {'no_log': True},
+        'api_key': {'no_log': True},
+    }
+    recorded = {}
+
+    def _exit(**kwargs):
+        recorded.clear()
+        recorded.update(remove_values(dict(kwargs), set(module.no_log_values)))
+        raise SystemExit(0)
+
+    module.exit_json.side_effect = _exit
+    module.fail_json.side_effect = SystemExit(1)
+
+    with patch.object(vm_recipe_deploy, 'AnsibleModule', return_value=module), \
+         patch.object(vm_recipe_deploy, 'get_vergeos_client', return_value=client):
+        with pytest.raises(SystemExit) as caught:
+            vm_recipe_deploy.main()
+    assert caught.value.code == 0, module.fail_json.call_args
+    return recorded
+
+
 def exited(module):
     assert module.exit_json.called, (
         "expected exit_json, got fail_json: %s" % (module.fail_json.call_args,))
@@ -193,6 +234,78 @@ def test_convergence_does_not_even_simulate():
     client = FakeClient(recipes=[RECIPE],
                         vms=[{'name': 'web-01', '$key': 12}])
     run(client)
+    assert client.posts == []
+
+
+# The shape the issue recorded. '1' is a substring of the name, version and
+# creator, and it is contained in the integer fields, which ansible-core
+# replaces outright rather than with asterisks.
+_DEBIAN = {
+    'name': 'Debian 12 (Bookworm)',
+    '$key': 'abc1',
+    'version': '1.0',
+    'creator': 'node1',
+    'build': 13,
+    'vm_snapshot': 1,
+    'catalog_display': 'Local',
+}
+
+
+def test_existing_vm_does_not_scramble_recipe_fields_shared_with_an_answer():
+    """SELECT_OS_TIER=1 must not mask the recipe row on a rerun.
+
+    The already-exists path used to return before narrow_no_log(), so every
+    answer was still a no_log value. Ansible then scrubbed '1' out of the
+    result: the name became 'Debian ********2 (Bookworm)' and build became
+    VALUE_SPECIFIED_IN_NO_LOG_PARAMETER.
+    """
+    client = FakeClient(recipes=[_DEBIAN],
+                        questions=[question('SELECT_OS_TIER', 'row',
+                                            default='')],
+                        vms=[{'name': 'web-01', '$key': 12}])
+    result = run_masked(client, recipe='Debian 12 (Bookworm)',
+                        answers={'SELECT_OS_TIER': 1})
+    assert result['already_existed'] is True
+    assert result['changed'] is False
+    assert result['vm_key'] == '12'
+    assert 'key 12' in result['msg']
+    recipe = result['recipe']
+    assert recipe['name'] == 'Debian 12 (Bookworm)'
+    assert recipe['version'] == '1.0'
+    assert recipe['creator'] == 'node1'
+    assert recipe['build'] == 13
+    assert recipe['vm_snapshot'] == 1
+    assert recipe['$key'] == 'abc1'
+    assert client.posts == []
+
+
+def test_existing_vm_with_no_questions_stays_fully_masked():
+    """No question types, so a short answer still scrubs the recipe row."""
+    client = FakeClient(recipes=[_DEBIAN],
+                        vms=[{'name': 'web-01', '$key': 12}])
+    result = run_masked(client, recipe='Debian 12 (Bookworm)',
+                        answers={'SELECT_OS_TIER': 1})
+    recipe = result['recipe']
+    assert recipe['name'] == 'Debian ********2 (Bookworm)'
+    assert recipe['version'] == '********.0'
+    assert recipe['creator'] == 'node********'
+    assert recipe['$key'] == 'abc********'
+    assert recipe['build'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
+    assert recipe['vm_snapshot'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
+    # vm_key is a string, so the '1' is replaced in place rather than the
+    # whole value being dropped the way an integer is.
+    assert result['vm_key'] == '********2'
+    assert client.posts == []
+
+
+def test_existing_vm_is_a_no_op_even_when_an_answer_is_unknown():
+    """The question lookup runs first, but it must not fail the rerun."""
+    client = FakeClient(recipes=[RECIPE],
+                        questions=[question('HOSTNAME')],
+                        vms=[{'name': 'web-01', '$key': 12}])
+    result = exited(run(client, answers={'HOTSNAME': 'typo'}))
+    assert result['already_existed'] is True
+    assert result['changed'] is False
     assert client.posts == []
 
 
