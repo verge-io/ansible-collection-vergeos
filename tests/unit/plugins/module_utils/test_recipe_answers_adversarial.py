@@ -219,11 +219,30 @@ def test_string_over_max_length_is_refused():
 
 
 def test_string_regex_is_anchored_not_searched():
-    """A recipe pattern must match the whole answer, not a substring."""
+    """A recipe pattern must match the whole answer, not a substring.
+
+    search() accepts zz-ok!!! because zz-ok matches the stock HOSTNAME
+    pattern and the trailing marks are left over. fullmatch does not.
+    Reading that pattern's plus as a star, so that db is a hostname, must
+    not switch the check to search: zz-db!!! still fails, and a pattern
+    that is not the stock one still has to match the whole answer.
+    """
     pat = r"[a-zA-Z]([a-zA-Z0-9_-]+[a-zA-Z0-9])?"
     out = resolve_answers([q("HOSTNAME", "hostname", regex=pat)],
                           {"HOSTNAME": "zz-ok!!!"})
     assert "does not match" in errs(out)
+    out = resolve_answers([q("HOSTNAME", "hostname", regex=pat)],
+                          {"HOSTNAME": "zz-db!!!"})
+    assert "does not match" in errs(out)
+    out = resolve_answers([q("LABEL", "string", regex="ok")],
+                          {"LABEL": "zz-ok!!!"})
+    assert "does not match" in errs(out)
+    out = resolve_answers([q("LABEL", "string", regex="ok")],
+                          {"LABEL": "ok"})
+    assert out["errors"] == [], errs(out)
+    out = resolve_answers([q("HOSTNAME", "hostname", regex=pat)],
+                          {"HOSTNAME": "db"})
+    assert out["errors"] == [], errs(out)
 
 
 def test_an_uncompilable_recipe_regex_does_not_crash_the_resolver():

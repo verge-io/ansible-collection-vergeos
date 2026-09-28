@@ -68,6 +68,15 @@ options:
         The value has to be the choice's key, not the label the UI shows.
         C(DHCP) is refused, and the message names the key C(dhcp) and the
         valid choices.
+      - Stock Linux recipes publish a C(HOSTNAME) pattern that matches one
+        letter, or three or more. A two-letter name such as C(db) does not
+        match it, because the optional group uses a plus quantifier where a
+        star was intended. The platform does not enforce recipe patterns on
+        deploy. For that one published pattern the collection matches as if
+        the quantifier were a star, so C(db) is accepted. A value that still
+        does not match, such as a leading digit or a trailing hyphen, is
+        refused. Every other pattern is unchanged, and it has to match the
+        whole answer.
       - Not required does not mean safe to omit. Some stock recipes carry
         questions that are optional with an empty default whose empty value
         then fails mid-deploy; those are reported in RV(hints), and
