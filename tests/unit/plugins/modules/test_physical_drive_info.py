@@ -8,7 +8,7 @@ filter were not, and the node filter has been wrong twice. Matching
 ``node in location`` never matched, because location is the slot. Scoping
 through PhysicalDriveManager(node_key=...) then returned nothing on every
 released pyvergeos, because that manager filters ``node eq <key>`` against
-a column that does not exist (pyVergeOS#143, unreleased). Mocking the
+a column that does not exist (pyVergeOS#143, released as of pyVergeOS 1.7.1). Mocking the
 manager hid the second one.
 """
 

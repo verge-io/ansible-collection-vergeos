@@ -235,8 +235,9 @@ def _physical_drive_node_filters(node_key=2):
     """Filters the installed PhysicalDriveManager emits for node_key.
 
     No mock. Released pyvergeos (1.2.7 through 1.6.1) appends
-    ``node eq <key>`` inside list(). pyVergeOS#143, unreleased, walks
-    nodes -> machine_drives and filters ``parent_drive eq`` instead.
+    ``node eq <key>`` inside list(). pyVergeOS#143, released as of
+    pyVergeOS 1.7.1, walks nodes -> machine_drives and filters
+    ``parent_drive eq`` instead. Releases through 1.6.1 do not.
     """
     from pyvergeos.resources.physical_drives import PhysicalDriveManager
 

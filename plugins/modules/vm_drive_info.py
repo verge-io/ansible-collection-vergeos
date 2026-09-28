@@ -11,7 +11,7 @@ DOCUMENTATION = r'''
 ---
 module: vm_drive_info
 short_description: Gather information about a VM's drives in VergeOS
-version_added: "2.1.0"
+version_added: "2.2.0"
 description:
   - Gather facts about the drives attached to a virtual machine, including
     each drive's media type and import status.

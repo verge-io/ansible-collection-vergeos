@@ -11,7 +11,7 @@ DOCUMENTATION = r'''
 ---
 module: vm_recipe_info
 short_description: Gather information about VM recipes in VergeOS
-version_added: "2.1.0"
+version_added: "2.2.0"
 description:
   - Gather facts about VM recipes, and optionally about the questions a recipe
     accepts as deploy-time answers.

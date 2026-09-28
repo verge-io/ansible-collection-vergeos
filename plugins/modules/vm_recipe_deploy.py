@@ -11,7 +11,7 @@ DOCUMENTATION = r'''
 ---
 module: vm_recipe_deploy
 short_description: Deploy a VM from a VergeOS recipe
-version_added: "2.1.0"
+version_added: "2.2.0"
 description:
   - Deploy a VM from a native VergeOS recipe, validating the answer set against
     the recipe's own questions before anything is created.

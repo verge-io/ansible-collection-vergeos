@@ -11,7 +11,7 @@ DOCUMENTATION = r'''
 ---
 module: node_maintenance
 short_description: Put a VergeOS node into or out of maintenance mode
-version_added: "2.1.0"
+version_added: "2.2.0"
 description:
   - Enter or leave maintenance mode on a physical node. Entering maintenance
     evacuates the node's running workloads to the rest of the cluster.

@@ -11,7 +11,7 @@ DOCUMENTATION = r'''
 ---
 module: node_info
 short_description: Gather information about VergeOS nodes
-version_added: "2.1.0"
+version_added: "2.2.0"
 description:
   - Gather facts about physical nodes, including online state, maintenance
     mode, resource usage, and whether a node is waiting for a restart.
