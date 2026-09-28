@@ -172,18 +172,28 @@ still has its firmware read the boot sector and send a few DHCP packets, so
 read counters and NIC counters both move off zero on a guest sitting at "no
 bootable device". Only written bytes separate the two.
 
-### Your VM name may appear as asterisks
+### When asterisks show up in the result
 
 The `answers` parameter is marked `no_log`, because recipe answers routinely
-carry a guest password. A side effect catches everyone once: Ansible scrubs
-every value in that mapping from the task output, so a non secret answer that
-happens to equal another string in the result gets masked too.
+carry a guest password. Ansible replaces each of those values wherever it
+appears in the task result, and the replacement is a plain substring. An
+answer of `1` turns a recipe name of `Debian 12 (Bookworm)` into
+`Debian ********2 (Bookworm)`. A field whose whole value is `1`, such as a
+build number, is replaced with `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER`.
 
-In practice this bites `HOSTNAME`, which is usually the same string as the VM
-name, so the VM name shows up as `********` in that task's output. That is
-Ansible protecting the mapping, not an error. The module's own messages
-identify the VM by key for exactly this reason. Use `vm_key`, or read the name
-back with a separate `vm_info` task.
+A recipe that publishes questions is classified before the module returns.
+Answers that are not credentials stop being masked, and that includes the
+return for a VM that already exists. A second run prints the recipe row and
+the VM key intact. `HOSTNAME` being the same string as the VM name does not
+turn the name into asterisks on that path. The exists-path message does not
+print the name. It prints the key, in `vm_key`.
+
+A recipe that publishes no questions cannot be classified. Every answer stays
+masked, so a short value still scrambles the result. A VM name that equals
+an answer is masked wherever that name is printed: `********` inside a longer
+string, or `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER` when the whole value is the
+name. A credential stays masked on every recipe. That is a password-typed
+question, or an answer whose name looks like a secret.
 
 ### fail_on_hints asks more of you than it looks
 
@@ -263,7 +273,7 @@ explicit act:
 | `network 'x' not found` | A network answer named something that is not on this system. Check the name, including case |
 | VM exists but will not boot | The image import may still be running. The role waits for this; the module does not |
 | VM boots but reaches nothing | A network question was probably left at `__new_internal__`. Check with `vm_nic_info` |
-| VM name shows as `********` | Expected. `answers` is `no_log`. Use `vm_key`, or read the name back with `vm_info` |
+| Recipe row or VM key shows as `********` or `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER` | The recipe publishes no questions, so every answer stays masked. A recipe that publishes questions unmasks non-credential answers, including when the VM already exists. A password stays masked |
 | `fail_on_hints is set and questions are unanswered` | Read the hints, answer the ones that matter, see the section above |
 
 ## Where to look next

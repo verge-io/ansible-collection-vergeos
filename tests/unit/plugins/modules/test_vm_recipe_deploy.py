@@ -12,6 +12,10 @@ deploy POST fires on the next line.
 import pytest
 from unittest.mock import MagicMock, patch
 
+from ansible.module_utils.common.parameters import remove_values
+from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    maskable_strings,
+)
 from ansible_collections.vergeio.vergeos.plugins.modules import vm_recipe_deploy
 
 
@@ -137,6 +141,17 @@ def run(client, check_mode=False, **over):
     module.check_mode = check_mode
     module.exit_json.side_effect = SystemExit(0)
     module.fail_json.side_effect = SystemExit(1)
+    # The real AnsibleModule seeds this set from every no_log parameter and
+    # then masks the return data from it. narrow_no_log() mutates the same
+    # set, so a test can see what would still be scrubbed at exit_json time.
+    module.argument_spec = {
+        'password': {'no_log': True},
+        'api_key': {'no_log': True},
+        'answers': {'no_log': True},
+    }
+    module.no_log_values = set()
+    for key in ('password', 'api_key', 'answers'):
+        module.no_log_values |= maskable_strings(module.params.get(key))
 
     with patch.object(vm_recipe_deploy, 'AnsibleModule', return_value=module), \
          patch.object(vm_recipe_deploy, 'get_vergeos_client', return_value=client):
@@ -193,6 +208,103 @@ def test_convergence_does_not_even_simulate():
     client = FakeClient(recipes=[RECIPE],
                         vms=[{'name': 'web-01', '$key': 12}])
     run(client)
+    assert client.posts == []
+
+
+def test_existing_vm_unmasks_non_secret_answers_before_returning():
+    """A rerun used to return before the questions were read.
+
+    Every answer was still no_log, so a tier of 1 was masked through the
+    recipe name, the version and the VM key. The recipe row stays in the
+    result. What changes is the set Ansible masks from.
+    """
+    recipe = {
+        'name': 'Debian 12 (Bookworm)',
+        '$key': 'abc1',
+        'catalog_display': 'Local',
+        'version': '1.0',
+        'creator': 'node1',
+        'build': 1,
+    }
+    client = FakeClient(
+        recipes=[recipe],
+        questions=[question('HOSTNAME'),
+                   question('SELECT_OS_TIER', 'num'),
+                   question('PASSWORD', 'password')],
+        vms=[{'name': 'web-01', '$key': 12}])
+    module = run(client, recipe='Debian 12 (Bookworm)',
+                 answers={'HOSTNAME': 'web-01', 'SELECT_OS_TIER': 1,
+                          'PASSWORD': 'hunter2'})
+    result = exited(module)
+    assert result['already_existed'] is True
+    assert result['changed'] is False
+    assert result['vm_key'] == '12'
+    assert result['recipe']['name'] == 'Debian 12 (Bookworm)'
+    assert result['recipe']['version'] == '1.0'
+    assert result['recipe']['build'] == 1
+    assert client.posts == []
+    # What Ansible would actually print. The digit 1 no longer scrambles
+    # the recipe row or the key. The guest password and the connection
+    # password still do not appear.
+    shown = remove_values(result, module.no_log_values)
+    assert shown['recipe']['name'] == 'Debian 12 (Bookworm)'
+    assert shown['recipe']['version'] == '1.0'
+    assert shown['recipe']['creator'] == 'node1'
+    assert shown['recipe']['build'] == 1
+    assert shown['recipe']['$key'] == 'abc1'
+    assert shown['vm_key'] == '12'
+    shown_args = remove_values(module.params, module.no_log_values)
+    assert shown_args['name'] == 'web-01'
+    assert shown_args['answers']['SELECT_OS_TIER'] == 1
+    assert shown_args['answers']['PASSWORD'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
+    assert shown_args['password'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
+
+
+def test_existing_vm_keeps_masking_a_value_shared_with_a_credential():
+    """Masking wins when a tier and a password are the same string."""
+    client = FakeClient(
+        recipes=[RECIPE],
+        questions=[question('SELECT_OS_TIER', 'num'),
+                   question('PASSWORD', 'password')],
+        vms=[{'name': 'web-01', '$key': 12}])
+    module = run(client, answers={'SELECT_OS_TIER': 1, 'PASSWORD': '1'})
+    exited(module)
+    assert '1' in module.no_log_values
+    assert client.posts == []
+
+
+def test_existing_vm_with_no_questions_keeps_every_answer_masked():
+    """No question types means nothing is safe to unmask.
+
+    The vendor Services recipe is like this. A short answer still masks
+    every copy of itself in the result.
+    """
+    client = FakeClient(recipes=[RECIPE], questions=[],
+                        vms=[{'name': 'web-01', '$key': 12}])
+    module = run(client, answers={'HOSTNAME': 'web-01', 'SELECT_OS_TIER': 1})
+    result = exited(module)
+    assert result['already_existed'] is True
+    assert result['recipe']['name'] == 'Ubuntu 22.04'
+    assert client.posts == []
+    # Full masking. The key contains the answer 1, and the VM name is the
+    # whole value of HOSTNAME.
+    shown = remove_values(result, module.no_log_values)
+    assert shown['vm_key'] == '********2'
+    assert '********2' in shown['msg']
+    shown_args = remove_values(module.params, module.no_log_values)
+    assert shown_args['name'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
+    assert shown_args['answers']['SELECT_OS_TIER'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
+
+
+def test_existing_vm_is_returned_even_when_the_answer_set_is_invalid():
+    """Convergence wins. Classification must not turn a rerun into a refusal."""
+    client = FakeClient(recipes=[RECIPE],
+                        questions=[question('HOSTNAME')],
+                        vms=[{'name': 'web-01', '$key': 12}])
+    result = exited(run(client, answers={'HOTSNAME': 'typo'}))
+    assert result['already_existed'] is True
+    assert result['vm_key'] == '12'
+    assert result['changed'] is False
     assert client.posts == []
 
 

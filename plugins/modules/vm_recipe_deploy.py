@@ -73,15 +73,23 @@ options:
         then fails mid-deploy; those are reported in RV(hints), and
         O(fail_on_hints) makes them fatal.
       - Marked C(no_log), because recipe answers routinely carry a guest
-        password. One side effect is worth knowing - Ansible scrubs every
-        value in this mapping from the task's output, so a non-secret answer
-        that happens to equal another string in the result is masked there
-        too.
-      - In practice that bites C(HOSTNAME), which is usually the same string
-        as O(name), so the VM name appears as C(********) in this task's
-        output. That is Ansible protecting the mapping, not an error. This
-        module's own messages identify the VM by key for that reason; use
-        RV(vm_key), or read the name from a separate
+        password. Ansible scrubs every value in this mapping from the task's
+        output, and it does so as a substring, so a short answer can mask
+        digits inside the result.
+      - Once the recipe's questions have been read, answers that are not
+        credentials stop being masked. A credential is a password-typed
+        question, or one whose name looks like a secret. Narrowing happens
+        before a deploy and before the return that reports an existing VM,
+        so an ordinary answer such as a storage tier of 1 does not scramble
+        RV(recipe) or RV(vm_key).
+      - A recipe that publishes no questions cannot be classified, so every
+        answer stays masked. A non-secret value then still shows up as
+        C(********) inside a longer string, or as
+        C(VALUE_SPECIFIED_IN_NO_LOG_PARAMETER) when it is the whole value,
+        including a VM name that equals C(HOSTNAME). A credential stays
+        masked on every recipe.
+      - The exists-path message identifies the VM by key. The name is not in
+        that message. Use RV(vm_key), or read the name from a separate
         M(vergeio.vergeos.vm_info) task.
       - Answer values are never echoed back regardless - RV(answers_sent)
         reports names only.
@@ -388,8 +396,10 @@ def narrow_no_log(module, resolved):
         ``api_key`` -- stays masked, read from the argument spec rather than
         named here so a future no_log parameter is covered automatically.
 
-    Everything before this point in main() still runs fully masked. That is
-    deliberate: it fails closed.
+    A failure before the questions have been read still runs fully masked.
+    That is deliberate: it fails closed. The already-exists return is not
+    one of those. It includes the recipe row, so this runs before that
+    return.
     """
     if not resolved.get('introspectable'):
         return
@@ -443,17 +453,27 @@ def main():
             hints=[],
         )
 
+        # Classify before any return that includes the recipe row. The
+        # exists path used to exit while every answer was still a no_log
+        # value, so a short non-secret answer such as a tier of 1 was
+        # masked through recipe.name, the version and the VM key. See
+        # narrow_no_log().
+        resolved, _questions = resolve(client, recipe['$key'],
+                                       params['answers'],
+                                       params['prune_unknown'])
+        narrow_no_log(module, resolved)
+
         # Converge on the VM, not on the recipe instance: some recipes set
         # YB_DETACH_RECIPE, which drops the instance row once the guest agent
         # reports in, so the instance is not a durable identity. The VM is.
         existing = find_vm_by_name(client, name)
         if existing:
-            # The name is deliberately NOT interpolated here. `answers` is
-            # no_log, and Ansible masks every no_log VALUE wherever it appears
-            # in output -- HOSTNAME is normally the same string as the VM
-            # name, so the message came out as "VM '********' already exists".
-            # Correct and unreadable. The key identifies it and cannot
-            # collide with an answer.
+            # The name is not interpolated. On a recipe that publishes no
+            # questions every answer stays masked, and HOSTNAME is usually
+            # the VM name, so the message would read "VM '********' already
+            # exists". The key is what this message reports. A recipe that
+            # publishes questions has already been narrowed above, so a
+            # non-secret answer such as 1 does not scramble that key.
             result.update(
                 already_existed=True,
                 vm_key=str(existing.get('$key') or ''),
@@ -462,15 +482,6 @@ def main():
                     % (existing.get('$key') or '?'),
             )
             module.exit_json(**result)
-
-        resolved, _questions = resolve(client, recipe['$key'],
-                                       params['answers'],
-                                       params['prune_unknown'])
-
-        # Before the first message that quotes the recipe's own numbers back
-        # at the operator, and after the question types that classify the
-        # credentials. See narrow_no_log().
-        narrow_no_log(module, resolved)
 
         result['answers_sent'] = sorted(resolved['answers'])
         result['hints'] = resolved['hints']
