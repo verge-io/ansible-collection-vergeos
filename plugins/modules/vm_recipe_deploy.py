@@ -53,6 +53,11 @@ options:
       - Defaults are not sent - the platform applies them itself.
       - Network-type answers may be given as a network name or as a vnet key.
         The literal C(__new_internal__) creates a new internal network.
+      - A boolean question accepts a real boolean, the integers C(0) and C(1),
+        or the strings C(true), C(yes), C(on), C(1) and C(false), C(no),
+        C(off), C(0). Any other value, such as C(enabled), is refused. The
+        platform reads an unrecognised string as false, so sending it would
+        build the wrong VM and still report success.
       - Not required does not mean safe to omit. Some stock recipes carry
         questions that are optional with an empty default whose empty value
         then fails mid-deploy; those are reported in RV(hints), and

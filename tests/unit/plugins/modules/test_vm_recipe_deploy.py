@@ -217,6 +217,43 @@ def test_unknown_answer_fails_and_nothing_is_posted():
     assert client.posts == []
 
 
+def test_unrecognised_bool_answer_fails_before_anything_is_posted():
+    """SELECT_CREATE_UEFI: enabled must not reach the platform as a string.
+
+    The platform reads that string as false, so the deploy would report
+    success and build a BIOS VM.
+    """
+    client = FakeClient(recipes=[RECIPE],
+                        questions=[question('SELECT_CREATE_UEFI', 'bool')])
+    module = run(client, answers={'SELECT_CREATE_UEFI': 'enabled'})
+    msg = failed(module)['msg']
+    assert 'recognised boolean' in msg
+    assert 'true' in msg and 'false' in msg
+    assert client.posts == []
+
+
+@pytest.mark.parametrize('given', [True, 'yes', 1])
+def test_recognised_bool_answer_is_sent_as_a_real_boolean(given):
+    client = FakeClient(recipes=[RECIPE],
+                        questions=[question('SELECT_CREATE_UEFI', 'bool')],
+                        responses=[SIMULATE_405,
+                                   {'$key': 5, 'response': {'vm': 42}}])
+    exited(run(client, answers={'SELECT_CREATE_UEFI': given}))
+    assert client.posts[0]['answers']['SELECT_CREATE_UEFI'] is True
+    assert client.posts[1]['answers']['SELECT_CREATE_UEFI'] is True
+
+
+@pytest.mark.parametrize('given', [False, 'off', 0])
+def test_recognised_false_answer_is_sent_as_false(given):
+    client = FakeClient(recipes=[RECIPE],
+                        questions=[question('SELECT_CREATE_UEFI', 'bool')],
+                        responses=[SIMULATE_405,
+                                   {'$key': 5, 'response': {'vm': 42}}])
+    exited(run(client, answers={'SELECT_CREATE_UEFI': given}))
+    assert client.posts[0]['answers']['SELECT_CREATE_UEFI'] is False
+    assert client.posts[1]['answers']['SELECT_CREATE_UEFI'] is False
+
+
 def test_missing_required_answer_fails():
     client = FakeClient(recipes=[RECIPE],
                         questions=[question('USER', required=True, default='')])

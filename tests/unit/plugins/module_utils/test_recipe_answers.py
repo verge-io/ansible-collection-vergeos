@@ -66,11 +66,37 @@ def test_non_numeric_value_for_numeric_type_passes_through():
     assert out["answers"]["N"] == "auto"
 
 
-@pytest.mark.parametrize("given,want", [("true", True), ("no", False),
-                                        ("1", True), ("off", False)])
-def test_bool_strings_coerce(given, want):
+@pytest.mark.parametrize("given,want", [
+    (True, True), (False, False),
+    ("true", True), ("TRUE", True), (" yes ", True), ("on", True), ("1", True),
+    (1, True),
+    ("false", False), ("NO", False), ("off", False), ("0", False), ("", False),
+    ("   ", False),
+    (0, False),
+])
+def test_bool_values_coerce(given, want):
+    """Known bool forms, including integer 0 and 1, become real booleans."""
     out = resolve_answers([q("B", "bool")], {"B": given})
+    assert out["errors"] == []
     assert out["answers"]["B"] is want
+
+
+@pytest.mark.parametrize("given", ["enabled", "UEFI", "uefi", "y", "2"])
+def test_unrecognised_bool_answer_is_refused(given):
+    """A word _coerce does not know must not be sent on as a string.
+
+    The platform reads that string as false, so SELECT_CREATE_UEFI: enabled
+    built a BIOS VM and the deploy reported success.
+    """
+    out = resolve_answers([q("SELECT_CREATE_UEFI", "bool")],
+                          {"SELECT_CREATE_UEFI": given})
+    assert out["errors"], "%r was accepted for a bool question" % given
+    msg = " ".join(out["errors"])
+    assert "SELECT_CREATE_UEFI" in msg
+    assert "recognised boolean" in msg
+    for word in ("true", "yes", "on", "1", "false", "no", "off", "0"):
+        assert word in msg
+    assert out["answers"].get("SELECT_CREATE_UEFI") is not True
 
 
 def test_network_name_resolves_to_vnet_key():
