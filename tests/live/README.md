@@ -18,6 +18,8 @@ Every ladder:
 
 ## Running them
 
+Run them on ansible-core >=2.15, the floor `meta/runtime.yml` declares, through current releases (including 2.15 and 2.21).
+
 ```bash
 set -a; . ~/.config/vergeos/env; set +a     # VERGEOS_HOST / _USERNAME / _PASSWORD / _INSECURE
 export ANSIBLE_COLLECTIONS_PATH=<where the collection is installed>

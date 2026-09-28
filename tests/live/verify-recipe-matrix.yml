@@ -122,10 +122,12 @@
           {{ all_recipes.recipes | length }} recipes found;
           {{ matrix_blocked | length }} declared known-blocked.
 
-    # failed_when: false rather than a rescue per recipe. The loop records
-    # every outcome in one results list, and the verdict is computed from
-    # it below -- so one refusal does not stop the matrix, which is the
-    # whole point of running it across the estate.
+    # ignore_errors rather than a rescue per recipe, and rather than
+    # failed_when: false. The loop records every outcome in one results
+    # list, and the verdict is computed from it below, so one refusal does
+    # not stop the matrix. `.failed` is the refusal signal on every core:
+    # failed_when would clear it, and failed_when_suppressed_exception is
+    # not set on ansible-core 2.15.
     - name: "1. Simulate each recipe in check mode"
       vergeio.vergeos.vm_recipe_deploy:
         insecure: true
@@ -138,7 +140,7 @@
                         'YB_HOSTNAME': 'zz-mx-' ~ item['$key'][:6]})
              | combine(matrix_overrides[item.name] | default({})) }}
       check_mode: true
-      failed_when: false
+      ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: matrix_runs
       loop: "{{ all_recipes.recipes | sort(attribute='name') }}"
       loop_control:
@@ -150,13 +152,12 @@
           {%- set out = [] -%}
           {%- for r in matrix_runs.results -%}
             {%- set nm = r.item.name -%}
-            {#- `.failed` is ALWAYS false here: the loop sets failed_when:
-                false, so ansible-core clears it. Testing it was a tautology
-                that happened not to matter, because the simulate_result
-                clause below carried the whole verdict on its own. Using the
-                real signal instead, so a future edit cannot drop the clause
-                that works and keep the one that never could. -#}
-            {%- set refused = r.failed_when_suppressed_exception is defined -%}
+            {#- `.failed` stays set under ignore_errors on every core this
+                collection supports, including 2.15. failed_when: false
+                clears it, and failed_when_suppressed_exception is only
+                attached by newer cores, so a refusal on 2.15 used to look
+                like a pass. -#}
+            {%- set refused = r.failed | default(false) -%}
             {%- set ok = (not refused)
                          and (r.simulate_result | default({})).ok | default(false) -%}
             {%- set blocked = nm in matrix_blocked -%}

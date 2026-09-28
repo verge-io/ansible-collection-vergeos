@@ -189,6 +189,37 @@ def test_localhost_ini_parses_and_pins_the_interpreter():
     assert host.vars.get('ansible_connection') == 'local'
 
 
+# #172. These ladders decide whether vm_recipe_deploy refused an input.
+# ansible-core 2.15 never sets failed_when_suppressed_exception, so a check
+# for that key reads every real refusal as a pass on the declared floor.
+_RECIPE_REFUSAL_LADDERS = (
+    'verify-recipe-fuzz.yml',
+    'verify-recipe-scenarios.yml',
+    'verify-recipe-edges.yml',
+    'verify-recipe-matrix.yml',
+)
+
+
+def test_recipe_ladders_do_not_read_failed_when_suppressed_exception():
+    """#172. Refusal detection has to work on ansible-core 2.15.
+
+    `failed_when: false` forces `.failed` false, and the only other marker
+    newer cores attach (`failed_when_suppressed_exception`) does not exist
+    on 2.15. The ladders use `ignore_errors` and read `.failed` instead,
+    which every core this collection supports sets the same way.
+    """
+    for name in _RECIPE_REFUSAL_LADDERS:
+        path = os.path.join(_live_dir(), name)
+        with open(path) as fh:
+            body = fh.read()
+        assert '.failed_when_suppressed_exception' not in body, (
+            "%s still detects a refusal via failed_when_suppressed_exception. "
+            "ansible-core 2.15 never sets that key (#172)." % name)
+        assert 'ignore_errors: true' in body, (
+            "%s no longer records refusals with ignore_errors, so `.failed` "
+            "is not a usable signal (#172)." % name)
+
+
 def test_unquoted_jinja_is_not_an_inventory():
     """The line #29 shipped with, so this guard can fail.
 
