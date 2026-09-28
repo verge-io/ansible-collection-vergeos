@@ -254,6 +254,35 @@ def test_recognised_false_answer_is_sent_as_false(given):
     assert client.posts[1]['answers']['SELECT_CREATE_UEFI'] is False
 
 
+@pytest.mark.parametrize('given', [50, 1024, 1048575])
+def test_implausible_disksize_fails_before_anything_is_posted(given):
+    """YB_DRIVE_OS_SIZE: 50 must not reach the platform as fifty bytes.
+
+    The recipe would build the OS drive at the image size and the deploy
+    would report success.
+    """
+    client = FakeClient(recipes=[RECIPE],
+                        questions=[question('YB_DRIVE_OS_SIZE', 'disksize')])
+    module = run(client, answers={'YB_DRIVE_OS_SIZE': given})
+    msg = failed(module)['msg']
+    assert 'bytes' in msg
+    assert '53687091200' in msg
+    assert '1048576' in msg
+    assert client.posts == []
+
+
+@pytest.mark.parametrize('given', [0, 1048576, 21474836480])
+def test_disksize_byte_count_is_sent(given):
+    """Zero and a real byte count are posted. Zero is the recipe default."""
+    client = FakeClient(recipes=[RECIPE],
+                        questions=[question('YB_DRIVE_OS_SIZE', 'disksize')],
+                        responses=[SIMULATE_405,
+                                   {'$key': 5, 'response': {'vm': 42}}])
+    exited(run(client, answers={'YB_DRIVE_OS_SIZE': given}))
+    assert client.posts[0]['answers']['YB_DRIVE_OS_SIZE'] == given
+    assert client.posts[1]['answers']['YB_DRIVE_OS_SIZE'] == given
+
+
 def test_missing_required_answer_fails():
     client = FakeClient(recipes=[RECIPE],
                         questions=[question('USER', required=True, default='')])

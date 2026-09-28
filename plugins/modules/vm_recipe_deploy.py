@@ -58,6 +58,11 @@ options:
         C(off), C(0). Any other value, such as C(enabled), is refused. The
         platform reads an unrecognised string as false, so sending it would
         build the wrong VM and still report success.
+      - A C(disksize) question is in bytes. C(0) means use the recipe's
+        default. A value above zero and under 1 MB (1048576) is refused,
+        because a number like C(50) is fifty bytes. The recipe then builds
+        the OS drive at the image size and still reports success. 50 GB is
+        C(53687091200).
       - Not required does not mean safe to omit. Some stock recipes carry
         questions that are optional with an empty default whose empty value
         then fails mid-deploy; those are reported in RV(hints), and

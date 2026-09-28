@@ -99,6 +99,48 @@ def test_unrecognised_bool_answer_is_refused(given):
     assert out["answers"].get("SELECT_CREATE_UEFI") is not True
 
 
+@pytest.mark.parametrize("given", [50, 1024, 1048575, "50", "1024", "1048575"])
+def test_disksize_under_one_megabyte_is_refused(given):
+    """A disksize answer is bytes. 50 was sent as fifty bytes.
+
+    The recipe then built the OS drive at the image size and the deploy
+    reported success. Anything above zero and under 1 MB cannot be a disk.
+    """
+    out = resolve_answers([q("YB_DRIVE_OS_SIZE", "disksize")],
+                          {"YB_DRIVE_OS_SIZE": given})
+    assert out["errors"], "%r was accepted for a disksize question" % given
+    msg = " ".join(out["errors"])
+    assert "YB_DRIVE_OS_SIZE" in msg
+    assert "bytes" in msg
+    assert "53687091200" in msg
+    assert "1048576" in msg
+
+
+@pytest.mark.parametrize("given,want", [
+    (0, 0),
+    ("0", 0),
+    (1048576, 1048576),
+    ("1048576", 1048576),
+    (21474836480, 21474836480),
+    ("21474836480", 21474836480),
+    (53687091200, 53687091200),
+])
+def test_disksize_zero_and_real_byte_counts_are_accepted(given, want):
+    """Zero is the recipe default. A count of at least 1 MB is a disk."""
+    out = resolve_answers([q("YB_DRIVE_OS_SIZE", "disksize")],
+                          {"YB_DRIVE_OS_SIZE": given})
+    assert out["errors"] == [], " ".join(out["errors"])
+    assert out["answers"]["YB_DRIVE_OS_SIZE"] == want
+
+
+@pytest.mark.parametrize("qtype", ["num", "ram", "seconds"])
+def test_other_numeric_types_ignore_the_disksize_floor(qtype):
+    """RAM, counts and timeouts are not byte sizes. 50 stays valid for them."""
+    out = resolve_answers([q("N", qtype)], {"N": 50})
+    assert out["errors"] == []
+    assert out["answers"]["N"] == 50
+
+
 def test_network_name_resolves_to_vnet_key():
     out = resolve_answers([q("YB_NIC_ETH0", "network")],
                           {"YB_NIC_ETH0": "External"},

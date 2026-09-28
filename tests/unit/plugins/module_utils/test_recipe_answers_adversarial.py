@@ -159,6 +159,32 @@ def test_negative_answer_is_refused_even_with_no_min_declared():
     assert out["errors"]
 
 
+@pytest.mark.parametrize("value", [50, 1024, 1048575])
+def test_disksize_above_zero_and_under_one_megabyte_is_refused(value):
+    """A disksize answer is bytes. 50 must not reach the API as fifty bytes.
+
+    Defect found: check_constraints accepted any non-negative whole number,
+    so YB_DRIVE_OS_SIZE: 50 was posted. The recipe built the OS drive at the
+    image size (3 GB) and the deploy reported success.
+    """
+    out = resolve_answers([q("YB_DRIVE_OS_SIZE", "disksize")],
+                          {"YB_DRIVE_OS_SIZE": value})
+    assert out["errors"], "%r passed validation for a disksize question" % value
+    msg = errs(out)
+    assert "bytes" in msg
+    assert "53687091200" in msg
+    assert "1048576" in msg
+
+
+@pytest.mark.parametrize("value", [0, 1048576, 21474836480, 53687091200])
+def test_disksize_zero_and_real_byte_counts_pass(value):
+    """Zero means use the recipe default. A real byte count is sent on."""
+    out = resolve_answers([q("YB_DRIVE_OS_SIZE", "disksize")],
+                          {"YB_DRIVE_OS_SIZE": value})
+    assert out["errors"] == [], errs(out)
+    assert out["answers"]["YB_DRIVE_OS_SIZE"] == value
+
+
 def test_min_zero_is_honoured_and_not_treated_as_absent():
     """min='0' is falsy as a string only if you forget it is '0', not ''."""
     out = resolve_answers([q("N", "num", min="0", max="10")], {"N": -5})
@@ -174,7 +200,14 @@ def test_max_zero_means_no_limit_not_a_limit_of_zero(qtype):
     also started honouring max=0, and most stock recipes ship max=0 on their
     string questions to mean 'unbounded'. Every answer to every stock recipe
     was refused as 'allows at most 0' until this was put back."""
-    value = 4096 if qtype in ("num", "ram", "disksize") else "a fairly long answer"
+    # 4096 bytes is under the disksize floor and would be refused for that
+    # reason. A real byte count still has to pass when max=0 means unbounded.
+    if qtype == "disksize":
+        value = 21474836480
+    elif qtype in ("num", "ram"):
+        value = 4096
+    else:
+        value = "a fairly long answer"
     out = resolve_answers([q("A", qtype, max=0, min=0)], {"A": value})
     assert out["errors"] == [], errs(out)
 
