@@ -90,8 +90,9 @@
 
         # Both of these cost time, so both are opt in. power_on is also worth
         # reading about in the role README before you use it on the
-        # convergence path, because it goes through the vm module and will
-        # re-enable a VM somebody deliberately disabled.
+        # convergence path: it starts a VM the role merely found, and a
+        # machine someone stopped on purpose should not be started as a side
+        # effect. A disabled VM is refused rather than started.
         vm_from_recipe_power_on: true
         vm_from_recipe_verify_boot: true
 
