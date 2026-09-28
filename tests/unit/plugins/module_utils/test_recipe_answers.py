@@ -258,12 +258,71 @@ def test_hostname_within_max_is_accepted():
     assert out["errors"] == []
 
 
+# Published by stock Linux recipes. The inner + is what refuses "db".
+STOCK_HOSTNAME_RE = "[a-zA-Z]([a-zA-Z0-9_-]+[a-zA-Z0-9])?"
+
+
 def test_regex_violation_is_refused_locally():
     out = resolve_answers(
-        [q("HOSTNAME", "string", default="",
-           regex="[a-zA-Z]([a-zA-Z0-9_-]+[a-zA-Z0-9])?")],
+        [q("HOSTNAME", "string", default="", regex=STOCK_HOSTNAME_RE)],
         {"HOSTNAME": "9starts-with-digit"})
     assert any("pattern" in e for e in out["errors"])
+    assert STOCK_HOSTNAME_RE in " ".join(out["errors"])
+
+
+@pytest.mark.parametrize("qtype", ["string", "hostname"])
+@pytest.mark.parametrize("value", ["db", "DB", "d1", "a", "ab", "abc", "a-b",
+                                   "web-01"])
+def test_two_letter_hostname_matches_the_stock_linux_pattern(qtype, value):
+    """The published pattern refuses db. The platform accepts it.
+
+    One letter already matched, and three or more already matched. Two
+    characters starting with a letter and ending in an alphanumeric are the
+    gap the plus quantifier opens. The refusal message is not raised.
+    """
+    out = resolve_answers(
+        [q("HOSTNAME", qtype, default="", regex=STOCK_HOSTNAME_RE)],
+        {"HOSTNAME": value})
+    assert out["errors"] == []
+    assert out["answers"]["HOSTNAME"] == value
+
+
+@pytest.mark.parametrize("value", ["d-", "d_", "-d", "9db", "db!", "zz-ok!!!"])
+def test_stock_hostname_pattern_still_refuses_a_real_mismatch(value):
+    """Reading the plus as a star does not accept a trailing hyphen or a
+    leading digit, and it does not accept a pattern match sitting inside a
+    longer string."""
+    out = resolve_answers(
+        [q("HOSTNAME", "string", default="", regex=STOCK_HOSTNAME_RE)],
+        {"HOSTNAME": value})
+    assert any("does not match" in e for e in out["errors"])
+    assert STOCK_HOSTNAME_RE in " ".join(out["errors"])
+
+
+def test_two_letter_hostname_still_honours_a_declared_minimum_length():
+    out = resolve_answers(
+        [q("HOSTNAME", "string", default="", min=3, regex=STOCK_HOSTNAME_RE)],
+        {"HOSTNAME": "db"})
+    assert any("at least 3" in e for e in out["errors"])
+    assert not any("pattern" in e for e in out["errors"])
+
+
+def test_two_letter_hostname_is_still_refused_by_a_different_pattern():
+    """The stock-pattern correction is not an opt-out for every regex."""
+    out = resolve_answers(
+        [q("HOSTNAME", "hostname", regex="[a-zA-Z]{3,}")],
+        {"HOSTNAME": "db"})
+    assert any("does not match" in e for e in out["errors"])
+
+
+def test_catalog_pattern_that_already_uses_a_star_accepts_db():
+    """A catalog fix that publishes the star form needs no local rewrite."""
+    fixed = "[a-zA-Z]([a-zA-Z0-9_-]*[a-zA-Z0-9])?"
+    out = resolve_answers(
+        [q("HOSTNAME", "string", default="", regex=fixed)],
+        {"HOSTNAME": "db"})
+    assert out["errors"] == []
+    assert out["answers"]["HOSTNAME"] == "db"
 
 
 def test_broken_regex_in_the_recipe_does_not_crash():

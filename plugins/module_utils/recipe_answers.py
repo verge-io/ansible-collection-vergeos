@@ -248,6 +248,33 @@ def _declared(bound):
     return None if bound is None or bound == "" else int(bound)
 
 
+# Stock Linux recipes publish this HOSTNAME pattern. The optional group is
+# one-or-more of the class and then one alphanumeric, so a name is either one
+# letter or at least three characters. "db" is neither. The quantifier was
+# meant to be "*": zero or more, then one alphanumeric. The pattern belongs
+# to the recipe catalog. VergeOS does not enforce it on deploy -- a simulate
+# with HOSTNAME db completes and the rendered hostname is db -- so applying
+# the published string unchanged is the only refusal. Match the corrected
+# form for this one string. A value that still fails is refused, and the
+# message quotes the pattern the recipe published. Every other pattern is
+# applied unchanged with re.fullmatch.
+_STOCK_HOSTNAME_REGEX = "[a-zA-Z]([a-zA-Z0-9_-]+[a-zA-Z0-9])?"
+_STOCK_HOSTNAME_REGEX_AS_INTENDED = "[a-zA-Z]([a-zA-Z0-9_-]*[a-zA-Z0-9])?"
+
+
+def _regex_to_apply(regex):
+    """Pattern to fullmatch against an answer.
+
+    The stock HOSTNAME pattern is one quantifier off. Applying it unchanged
+    refuses two-letter names the platform accepts. Anything else, including
+    a catalog that has already published the star form, is the recipe's own
+    pattern.
+    """
+    if regex == _STOCK_HOSTNAME_REGEX:
+        return _STOCK_HOSTNAME_REGEX_AS_INTENDED
+    return regex
+
+
 def check_constraints(name, question, value):
     """Enforce the question's own min/max/regex before the API has to."""
     errors = []
@@ -311,7 +338,10 @@ def check_constraints(name, question, value):
         regex = question.get("regex")
         if regex:
             try:
-                if not re.fullmatch(regex, value):
+                # fullmatch, not search: a pattern matches the whole answer.
+                # The stock HOSTNAME string is the one exception to applying
+                # the published text byte for byte; see _regex_to_apply.
+                if not re.fullmatch(_regex_to_apply(regex), value):
                     errors.append("answer %r does not match the recipe's "
                                   "pattern %s" % (name, regex))
             except re.error:

@@ -459,6 +459,40 @@ def test_disksize_byte_count_is_sent(given):
     assert client.posts[1]['answers']['YB_DRIVE_OS_SIZE'] == given
 
 
+STOCK_HOSTNAME_RE = '[a-zA-Z]([a-zA-Z0-9_-]+[a-zA-Z0-9])?'
+
+
+def test_two_letter_hostname_is_sent():
+    """HOSTNAME db is a name the platform accepts. It has to be posted."""
+    client = FakeClient(
+        recipes=[RECIPE],
+        questions=[question('HOSTNAME', regex=STOCK_HOSTNAME_RE)],
+        responses=[SIMULATE_405, {'$key': 5, 'response': {'vm': 42}}])
+    exited(run(client, answers={'HOSTNAME': 'db'}))
+    assert client.posts[0]['answers']['HOSTNAME'] == 'db'
+    assert client.posts[1]['answers']['HOSTNAME'] == 'db'
+
+
+def test_stock_hostname_pattern_still_refuses_a_leading_digit_before_post():
+    client = FakeClient(
+        recipes=[RECIPE],
+        questions=[question('HOSTNAME', regex=STOCK_HOSTNAME_RE)])
+    module = run(client, answers={'HOSTNAME': '9db'})
+    msg = failed(module)['msg']
+    assert 'does not match' in msg
+    assert STOCK_HOSTNAME_RE in msg
+    assert client.posts == []
+
+
+def test_a_different_hostname_pattern_still_refuses_two_letters_before_post():
+    client = FakeClient(
+        recipes=[RECIPE],
+        questions=[question('HOSTNAME', regex='[a-zA-Z]{3,}')])
+    module = run(client, answers={'HOSTNAME': 'db'})
+    assert 'does not match' in failed(module)['msg']
+    assert client.posts == []
+
+
 def test_missing_required_answer_fails():
     client = FakeClient(recipes=[RECIPE],
                         questions=[question('USER', required=True, default='')])
