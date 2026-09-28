@@ -370,6 +370,61 @@ def test_secret_values_are_never_placed_in_errors_or_hints():
     assert "hunter2" not in errs(out)
 
 
+# -- inline list choices -----------------------------------------------------
+
+@pytest.mark.parametrize("raw", ["not-json", ["dhcp", "static"], 12, None, ""])
+def test_a_garbage_list_choice_field_does_not_crash_or_refuse(raw):
+    """A list column that is not a key/label mapping is not a choice set.
+
+    Guessing at it would refuse answers the recipe would accept.
+    """
+    out = resolve_answers(
+        [q("YB_IP_ADDR_TYPE", "list", default="dhcp", list=raw)],
+        {"YB_IP_ADDR_TYPE": "dhcp"})
+    assert out["errors"] == [], errs(out)
+    assert out["answers"]["YB_IP_ADDR_TYPE"] == "dhcp"
+
+
+def test_a_container_answer_to_a_list_question_is_still_a_single_value():
+    out = resolve_answers(
+        [q("YB_IP_ADDR_TYPE", "list", list={"dhcp": "DHCP", "static": "Static"})],
+        {"YB_IP_ADDR_TYPE": ["dhcp"]})
+    assert "single value" in errs(out)
+    # A container is refused by the shared single-value check. The choice
+    # list is not also consulted, so this stays that check and not a
+    # "not a valid choice" on top of it.
+    assert "not a valid choice" not in errs(out)
+
+
+def test_a_label_shared_by_two_keys_names_both():
+    out = resolve_answers(
+        [q("P", "list", list={"a": "Same", "b": "Same"})],
+        {"P": "Same"})
+    msg = errs(out)
+    assert "label for keys" in msg
+    assert "'a'" in msg and "'b'" in msg
+
+
+def test_a_differently_cased_key_is_named_when_it_is_not_the_label():
+    out = resolve_answers(
+        [q("P", "list", list={"dhcp": "Automatic"})],
+        {"P": "DHCP"})
+    assert "matches key 'dhcp'" in errs(out)
+
+
+def test_table_backed_list_ignores_an_inline_mapping():
+    """WINDOWS_ISO is type list over a table. That table is the choice set."""
+    out = resolve_answers(
+        [q("WINDOWS_ISO", "list", table="files", list={"dhcp": "DHCP"})],
+        {"WINDOWS_ISO": "dhcp"},
+        options={"WINDOWS_ISO": [{"$key": "server.iso",
+                                  "$display": "server.iso"}]})
+    msg = errs(out)
+    assert "not a valid choice" in msg
+    assert "dhcp=DHCP" not in msg
+    assert "server.iso" in msg
+
+
 # -- scan_simulate -----------------------------------------------------------
 
 def test_simulation_complete_with_a_failed_step_is_not_ok():

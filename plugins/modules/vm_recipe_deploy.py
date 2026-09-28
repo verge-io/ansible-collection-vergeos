@@ -63,6 +63,11 @@ options:
         because a number like C(50) is fifty bytes. The recipe then builds
         the OS drive at the image size and still reports success. 50 GB is
         C(53687091200).
+      - A C(list) question that carries its own choices (for example
+        C(YB_IP_ADDR_TYPE) with C(dhcp) and C(static)) is checked locally.
+        The value has to be the choice's key, not the label the UI shows.
+        C(DHCP) is refused, and the message names the key C(dhcp) and the
+        valid choices.
       - Not required does not mean safe to omit. Some stock recipes carry
         questions that are optional with an empty default whose empty value
         then fails mid-deploy; those are reported in RV(hints), and
@@ -490,8 +495,8 @@ def main():
                                              simulate=True)
             # The status is deliberately not treated as pass/fail. A clean
             # simulate answers HTTP 405 with err='Simulation complete' on
-            # 26.1.8; only a missing response document means the call itself
-            # failed.
+            # 26.1.8. A 4xx that names a reason is the platform refusing the
+            # answer set. Only a reply with no reason is a transport failure.
             transport = simulate_transport_error(status, document)
             if transport:
                 module.fail_json(msg=transport, **result)

@@ -324,14 +324,49 @@ def test_simulate_transport_error_accepts_any_2xx():
     assert simulate_transport_error(200, {}) == ''
 
 
-def test_simulate_transport_error_rejects_a_body_with_no_response():
+def test_simulate_4xx_with_a_reason_is_an_answer_refusal_not_transport():
+    """A 422 with a reason means the platform refused an answer.
+
+    The request arrived. Calling that a transport failure sends the operator
+    looking at the network.
+    """
+    msg = simulate_transport_error(
+        422, {'err': "'Select the IP Address Type' is invalid"})
+    assert 'HTTP 422' in msg
+    assert 'Select the IP Address Type' in msg
+    assert 'refused the answer set' in msg
+    assert 'transport' not in msg
+
+
+def test_simulate_401_with_a_reason_is_a_refusal_not_transport():
+    """Any 4xx that states a reason is a refusal, not a transport failure."""
     msg = simulate_transport_error(401, {'err': 'Login required'})
     assert 'HTTP 401' in msg
     assert 'Login required' in msg
+    assert 'refused the answer set' in msg
+    assert 'transport' not in msg
+
+
+def test_simulate_4xx_with_no_reason_stays_transport():
+    msg = simulate_transport_error(422, {})
+    assert 'transport' in msg
+    assert 'HTTP 422' in msg
+    assert 'refused the answer set' not in msg
+
+
+def test_simulate_5xx_with_a_reason_stays_transport():
+    """A reason on its own is not enough. Only a 4xx is an answer refusal."""
+    msg = simulate_transport_error(500, {'err': 'backend unavailable'})
+    assert 'transport' in msg
+    assert 'HTTP 500' in msg
+    assert 'backend unavailable' in msg
+    assert 'refused the answer set' not in msg
 
 
 def test_simulate_transport_error_rejects_an_empty_body():
-    assert 'HTTP 500' in simulate_transport_error(500, None)
+    msg = simulate_transport_error(500, None)
+    assert 'transport' in msg
+    assert 'HTTP 500' in msg
 
 
 def test_raw_request_keeps_a_non_json_body_as_err():

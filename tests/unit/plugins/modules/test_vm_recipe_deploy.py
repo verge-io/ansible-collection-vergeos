@@ -271,6 +271,47 @@ def test_implausible_disksize_fails_before_anything_is_posted(given):
     assert client.posts == []
 
 
+def test_a_list_label_is_refused_locally_and_names_the_key():
+    """DHCP is the label the UI shows. The key the recipe wants is dhcp.
+
+    Nothing is posted: the platform would 422 and name the question by its
+    display text, without the valid keys.
+    """
+    client = FakeClient(
+        recipes=[RECIPE],
+        questions=[question('YB_IP_ADDR_TYPE', 'list', default='dhcp',
+                            list={'dhcp': 'DHCP', 'static': 'Static'})])
+    module = run(client, answers={'YB_IP_ADDR_TYPE': 'DHCP'})
+    msg = failed(module)['msg']
+    assert 'not valid' in msg
+    assert 'valid: dhcp=DHCP, static=Static' in msg
+    assert "'DHCP' is the label for key 'dhcp'" in msg
+    assert client.posts == []
+
+
+def test_a_bogus_list_answer_is_refused_with_the_valid_choices():
+    client = FakeClient(
+        recipes=[RECIPE],
+        questions=[question('YB_IP_ADDR_TYPE', 'list', default='dhcp',
+                            list={'dhcp': 'DHCP', 'static': 'Static'})])
+    module = run(client, answers={'YB_IP_ADDR_TYPE': 'bogus'})
+    msg = failed(module)['msg']
+    assert 'valid: dhcp=DHCP, static=Static' in msg
+    assert 'label for key' not in msg
+    assert client.posts == []
+
+
+def test_a_list_choice_key_is_sent():
+    client = FakeClient(
+        recipes=[RECIPE],
+        questions=[question('YB_IP_ADDR_TYPE', 'list', default='dhcp',
+                            list={'dhcp': 'DHCP', 'static': 'Static'})],
+        responses=[SIMULATE_405, {'$key': 5, 'response': {'vm': 42}}])
+    exited(run(client, answers={'YB_IP_ADDR_TYPE': 'dhcp'}))
+    assert client.posts[0]['answers']['YB_IP_ADDR_TYPE'] == 'dhcp'
+    assert client.posts[1]['answers']['YB_IP_ADDR_TYPE'] == 'dhcp'
+
+
 @pytest.mark.parametrize('given', [0, 1048576, 21474836480])
 def test_disksize_byte_count_is_sent(given):
     """Zero and a real byte count are posted. Zero is the recipe default."""
@@ -425,6 +466,37 @@ def test_simulate_result_is_reported_on_success():
     assert result['simulate_result']['ok'] is True
     assert result['simulate_result']['step_count'] == 2
     assert result['simulate_result']['cloudinit_files'] == ['user-data']
+
+
+def test_simulate_422_with_a_reason_is_an_answer_refusal_not_transport():
+    """The request arrived and the platform refused an answer.
+
+    simulate is on by default, so this is the message most people see. It
+    must not say the POST failed at the transport level.
+    """
+    client = FakeClient(
+        recipes=[RECIPE], questions=[question('HOSTNAME')],
+        responses=[(422, {'err': "'Select the IP Address Type' is invalid"})])
+    module = run(client, answers={'HOSTNAME': 'web-01'})
+    msg = failed(module)['msg']
+    assert 'transport' not in msg
+    assert 'refused the answer set' in msg
+    assert 'HTTP 422' in msg
+    assert 'Select the IP Address Type' in msg
+    # The real deploy must not follow a refused simulate.
+    assert len(client.posts) == 1
+    assert client.posts[0]['simulate'] is True
+
+
+def test_simulate_with_no_reason_is_still_a_transport_failure():
+    client = FakeClient(
+        recipes=[RECIPE], questions=[question('HOSTNAME')],
+        responses=[(500, None)])
+    module = run(client, answers={'HOSTNAME': 'web-01'})
+    msg = failed(module)['msg']
+    assert 'transport' in msg
+    assert 'HTTP 500' in msg
+    assert len(client.posts) == 1
 
 
 def test_simulate_can_be_turned_off():

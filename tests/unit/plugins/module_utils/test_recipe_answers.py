@@ -326,6 +326,66 @@ def test_answer_in_the_option_set_is_accepted():
     assert out["answers"]["SELECT_OS_TIER"] == 1
 
 
+IP_CHOICES = {"dhcp": "DHCP", "static": "Static"}
+
+
+def test_list_answer_matching_a_choice_key_is_accepted():
+    """YB_IP_ADDR_TYPE wants the key dhcp, not the label the UI shows."""
+    out = resolve_answers(
+        [q("YB_IP_ADDR_TYPE", "list", default="dhcp", list=IP_CHOICES)],
+        {"YB_IP_ADDR_TYPE": "dhcp"})
+    assert out["errors"] == []
+    assert out["answers"]["YB_IP_ADDR_TYPE"] == "dhcp"
+
+
+def test_list_answer_that_is_the_display_label_names_the_key():
+    """DHCP is the label. The playbook has to send the key dhcp.
+
+    The platform's own 422 names the question by its display text and does
+    not list the keys, so the local refusal has to.
+    """
+    out = resolve_answers(
+        [q("YB_IP_ADDR_TYPE", "list", default="dhcp",
+           display="Select the IP Address Type", list=IP_CHOICES)],
+        {"YB_IP_ADDR_TYPE": "DHCP"})
+    assert out["errors"]
+    msg = " ".join(out["errors"])
+    assert "YB_IP_ADDR_TYPE" in msg
+    assert "valid: dhcp=DHCP, static=Static" in msg
+    assert "'DHCP' is the label for key 'dhcp'" in msg
+    assert "YB_IP_ADDR_TYPE" not in out["answers"]
+
+
+def test_bogus_list_answer_lists_the_choices_and_no_key_hint():
+    out = resolve_answers(
+        [q("YB_IP_ADDR_TYPE", "list", default="dhcp", list=IP_CHOICES)],
+        {"YB_IP_ADDR_TYPE": "bogus"})
+    assert out["errors"]
+    msg = " ".join(out["errors"])
+    assert "not a valid choice" in msg
+    assert "valid: dhcp=DHCP, static=Static" in msg
+    assert "label for key" not in msg
+    assert "YB_IP_ADDR_TYPE" not in out["answers"]
+
+
+def test_list_choices_given_as_a_json_string_are_checked():
+    """The question column can come back as a JSON string rather than a dict."""
+    out = resolve_answers(
+        [q("YB_IP_ADDR_TYPE", "list", default="dhcp",
+           list='{"dhcp": "DHCP", "static": "Static"}')],
+        {"YB_IP_ADDR_TYPE": "Static"})
+    msg = " ".join(out["errors"])
+    assert "valid: dhcp=DHCP, static=Static" in msg
+    assert "'Static' is the label for key 'static'" in msg
+
+
+def test_missing_required_list_answer_lists_the_choices():
+    out = resolve_answers(
+        [q("YB_IP_ADDR_TYPE", "list", required=True, default="",
+           list=IP_CHOICES)], {})
+    assert any("valid: dhcp=DHCP, static=Static" in e for e in out["errors"])
+
+
 def test_prune_unknown_moves_unknown_answers_out_of_errors():
     """One answer set across 32 recipes: a key this recipe lacks is expected."""
     out = resolve_answers([q("HOSTNAME")], {"HOSTNAME": "h", "VPNPASS": "x"},

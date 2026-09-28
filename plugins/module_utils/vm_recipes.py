@@ -182,14 +182,31 @@ def post_instance(client, recipe_key, name, answers,
     return raw_request(client, 'POST', 'vm_recipe_instances', json_data=body)
 
 
+def _stated_reason(document):
+    """The platform's reason for a reply, or '' when the body states none.
+
+    A reason is the ``err`` string (or a bare string body). A dict with no
+    ``err`` is not one: stringifying the whole document made every non-empty
+    body look explained, which is how a 422 refusal was filed as transport.
+    """
+    if isinstance(document, dict):
+        err = document.get('err')
+        if err:
+            return str(err)[:400]
+        return ''
+    if isinstance(document, str) and document.strip():
+        return document.strip()[:400]
+    return ''
+
+
 def simulate_transport_error(status, document):
-    """Why a simulate POST should be treated as a transport failure, or ''.
+    """Why a simulate POST should not be scanned, or ''.
 
     A simulate answering on HTTP 405 with a log document is the normal,
     measured behaviour -- so status alone cannot be the test, and neither can
-    "non-2xx means failure". What distinguishes a real failure is the absence
-    of a simulation document: an auth rejection or a bad recipe key comes back
-    with no ``response`` body to scan.
+    "non-2xx means failure". A 4xx that carries a reason is the platform
+    refusing the answer set: the request arrived. That is not a transport
+    failure. Transport is a reply with no reason at all.
 
     Returned as a message rather than raised so the caller can report the
     status it actually saw instead of a generic API error.
@@ -198,11 +215,16 @@ def simulate_transport_error(status, document):
         return ''
     if isinstance(document, dict) and isinstance(document.get('response'), dict):
         return ''
-    detail = ''
-    if isinstance(document, dict):
-        detail = str(document.get('err') or document)[:400]
-    elif document is not None:
-        detail = str(document)[:400]
+    reason = _stated_reason(document)
+    if reason and 400 <= status < 500:
+        return ('the simulate POST refused the answer set: HTTP %s -- %s'
+                % (status, reason))
+    detail = reason
+    if not detail:
+        if isinstance(document, dict) and document:
+            detail = str(document)[:400]
+        elif document is not None and not isinstance(document, dict):
+            detail = str(document)[:400]
     return ('the simulate POST failed at the transport level: HTTP %s%s'
             % (status, (' -- %s' % detail) if detail else ''))
 
