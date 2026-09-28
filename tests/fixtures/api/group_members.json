@@ -1,0 +1,38 @@
+{
+ "_call": "client.groups.members(1).list()",
+ "_meta": {
+  "captured": "2026-09-24",
+  "identities_substituted": [
+   "cluster1",
+   "operator",
+   "user2",
+   "user3",
+   "vergeos.example.com"
+  ],
+  "note": "Regenerate with tests/capture_api_fixtures.py. Do not hand-edit: the point of these files is that no human chose the field names.",
+  "platform": "26.1.8"
+ },
+ "rows": [
+  {
+   "$key": 1,
+   "creator": "",
+   "member": "users/1",
+   "member_display": "operator",
+   "parent_group": 1
+  },
+  {
+   "$key": 2,
+   "creator": "node1",
+   "member": "users/2",
+   "member_display": "user2",
+   "parent_group": 1
+  },
+  {
+   "$key": 3,
+   "creator": "operator",
+   "member": "users/3",
+   "member_display": "user3",
+   "parent_group": 1
+  }
+ ]
+}

@@ -1,0 +1,63 @@
+---
+- name: Preflight -- inputs are usable
+  ansible.builtin.assert:
+    that:
+      - node_drain_host | length > 0
+      - node_drain_node | length > 0
+    fail_msg: >-
+      node_drain needs node_drain_node and node_drain_host
+      (or VERGEOS_HOST).
+    quiet: true
+
+# YAML reads a bare `yes` as the boolean true, and the gate compares against
+# the STRING "yes". Written as `node_drain_confirm: yes` in a vars file,
+# consent would be true-the-boolean, every gated task would skip, and the run
+# would report a successful preflight while the operator believed they had
+# asked for the drain. Only `true` is refused -- `false` means what it says
+# and agrees with the default.
+- name: Preflight -- consent is not an accidental boolean
+  ansible.builtin.assert:
+    that: node_drain_confirm != true
+    fail_msg: >-
+      node_drain_confirm is the boolean true, not the string "yes". YAML
+      turns a bare yes into a boolean, and this gate wants the literal
+      string -- so nothing would have drained and the run would have looked
+      like it worked. Quote it: node_drain_confirm: "yes".
+    quiet: true
+
+# Reset per run. set_fact facts outlive the role, so a second include_role
+# call in the same play would inherit the first node's capacity verdict.
+- name: Start this run with no inherited state
+  ansible.builtin.set_fact:
+    node_drain_check: {}
+    node_drain_result:
+      drained: false
+      confirmed: false
+      node: "{{ node_drain_node }}"
+
+- name: Read node state
+  vergeio.vergeos.node_info:
+    host: "{{ node_drain_host }}"
+    username: "{{ node_drain_username }}"
+    password: "{{ node_drain_password }}"
+    insecure: "{{ node_drain_insecure }}"
+  register: node_drain_nodes
+  changed_when: false
+
+- name: Preflight -- the node exists
+  ansible.builtin.assert:
+    that: >-
+      node_drain_nodes.nodes
+      | selectattr('name', 'equalto', node_drain_node) | list | length == 1
+    fail_msg: >-
+      '{{ node_drain_node }}' is not a node on this system. Known nodes:
+      {{ node_drain_nodes.nodes | map(attribute='name') | list }}.
+    quiet: true
+
+- name: Include the drain path
+  ansible.builtin.include_tasks: drain.yml
+  when: node_drain_state == 'drained'
+
+- name: Include the restore path
+  ansible.builtin.include_tasks: restore.yml
+  when: node_drain_state == 'active'

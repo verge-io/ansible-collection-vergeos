@@ -1,0 +1,71 @@
+---
+argument_specs:
+  main:
+    short_description: Read-only green/amber/red health digest
+    description:
+      - Five read-only checks -- active alarms, node availability, per-tier
+        capacity, cloud-snapshot recency, and NAS services -- rolled into one
+        overall verdict and a one-line digest suitable for a webhook.
+      - Never mutates anything. A check whose data cannot be read reports RED
+        rather than silently green, because a watchdog that fails quiet is
+        worse than no watchdog.
+      - Intended to be scheduled. The doctrine is that silence is the alert -
+        set a webhook and the day the green digest stops arriving is itself
+        the signal.
+    author:
+      - VergeIO (@vergeio)
+    options:
+      health_report_host:
+        description: VergeOS hostname or IP. Defaults to C(VERGEOS_HOST).
+        type: str
+      health_report_username:
+        description: Username. Defaults to C(VERGEOS_USERNAME).
+        type: str
+      health_report_password:
+        description: Password. Defaults to C(VERGEOS_PASSWORD).
+        type: str
+      health_report_insecure:
+        description: Skip SSL validation. Defaults to C(VERGEOS_INSECURE).
+        type: bool
+      health_report_capacity_amber_pct:
+        description: Per-tier used-capacity percentage at which a tier goes amber.
+        type: int
+        default: 80
+      health_report_capacity_red_pct:
+        description: Per-tier used-capacity percentage at which a tier goes red.
+        type: int
+        default: 90
+      health_report_snapshot_amber_hours:
+        description:
+          - Age of the newest cloud snapshot, in hours, at which the snapshot
+            check goes amber. The default assumes a daily cadence plus slack.
+        type: int
+        default: 26
+      health_report_snapshot_red_hours:
+        description:
+          - Age of the newest cloud snapshot, in hours, at which the snapshot
+            check goes red. The default is roughly two missed dailies.
+        type: int
+        default: 50
+      health_report_webhook_url:
+        description:
+          - >-
+            Optional Discord-compatible webhook. Receives a JSON body whose
+            content field is the digest, after every run. Empty means no post.
+        type: str
+        default: ""
+      health_report_fail_on:
+        description:
+          - Turns the role into a CI or pre-change gate.
+          - C("") reports only, C(red) fails the play on red, C(amber) fails
+            on amber or red.
+        type: str
+        default: ""
+        choices: ["", "red", "amber"]
+      health_report_fixture:
+        description:
+          - Path to a saved state JSON. Runs the verdict logic offline instead
+            of reading the live API; the fixture carries its own C(now) so age
+            checks are deterministic. Used by the tests.
+        type: str
+        default: ""

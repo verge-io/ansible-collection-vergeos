@@ -1,0 +1,63 @@
+---
+argument_specs:
+  main:
+    short_description: One k3s node as a VM
+    description:
+      - Clones a golden template, renders a k3s server or agent cloud-init
+        document from a declarative spec, attaches a NIC and boots.
+      - Deploys ONE node per invocation. A cluster is a playbook that runs
+        this role once per node with a shared token.
+      - VergeOS has no Tanzu or NKE equivalent. This is Kubernetes you
+        operate - upgrades, etcd health and certificate rotation stay yours,
+        and running it under Ansible does not change that.
+      - The k3s install runs in-guest and needs internet access to
+        get.k3s.io.
+    author:
+      - VergeIO (@vergeio)
+    options:
+      k3s_node_host:
+        description: VergeOS hostname or IP. Defaults to C(VERGEOS_HOST).
+        type: str
+        required: true
+      k3s_node_username:
+        description: Username. Defaults to C(VERGEOS_USERNAME).
+        type: str
+      k3s_node_password:
+        description: Password. Defaults to C(VERGEOS_PASSWORD).
+        type: str
+      k3s_node_insecure:
+        description: Skip SSL validation. Defaults to C(VERGEOS_INSECURE).
+        type: bool
+      k3s_node_name:
+        description: Name of the node VM.
+        type: str
+        required: true
+      k3s_node_template:
+        description:
+          - Golden template VM to clone, as produced by C(image_pipeline).
+        type: str
+        required: true
+      k3s_node_snapshot:
+        description: Snapshot of the template to clone from.
+        type: str
+        default: golden
+      k3s_node_network:
+        description: Network the node's NIC attaches to.
+        type: str
+        default: External
+      k3s_node_cpu_cores:
+        description: CPU cores for the node.
+        type: int
+        default: 2
+      k3s_node_ram_mb:
+        description: RAM in MB for the node.
+        type: int
+        default: 2048
+      k3s_node_spec:
+        description:
+          - The node spec. C(role) is C(server) or C(agent); agents also need
+            C(server_url). Optionally C(token), C(hostname), C(version),
+            C(tls_sans), C(disable), C(ssh_authorized_keys) and
+            C(phone_home). The token should come from a vault.
+        type: dict
+        required: true

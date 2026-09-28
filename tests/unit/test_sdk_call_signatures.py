@@ -1,0 +1,293 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""Every SDK call this collection makes must exist, with the keywords used.
+
+Issue #92: `member` called ``client.users.get(username=...)``. No pyvergeos
+version has ever had a ``username`` parameter -- it is ``name``, on 1.2.6 and
+on 1.6.1 alike -- so the module raised TypeError before reaching any VergeOS
+logic. It shipped in v2.1.0 and in every release before it.
+
+Nothing caught it, and unit tests as normally written cannot: the client is a
+MagicMock, and a MagicMock accepts *any* keyword argument happily. The mock
+that was supposed to prove the module worked was the reason the bug was
+invisible.
+
+So this test does not mock. It reads the real SDK's signatures and checks the
+calls the modules actually write:
+
+    client.<manager>.<method>(<keywords>)
+
+Manager classes are resolved from VergeClient's property return annotations,
+which needs no connection -- VergeClient.__init__ connects eagerly, so
+instantiating one here is not an option.
+
+What it deliberately does NOT do: follow variables, or check argument types,
+or check anything that is not a direct two-dot call on a name called `client`.
+A narrow check that is always right beats a broad one that gets muted.
+"""
+
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
+import ast
+import glob
+import importlib
+import inspect
+import os
+import pkgutil
+
+import pytest
+
+
+def _root():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.abspath(os.path.join(here, '..', '..'))
+
+
+def _manager_classes():
+    """Every ``*Manager`` class in pyvergeos.resources, by name."""
+    from pyvergeos import resources
+    found = {}
+    for mod in pkgutil.iter_modules(resources.__path__):
+        module = importlib.import_module('pyvergeos.resources.%s' % mod.name)
+        for name, obj in vars(module).items():
+            if inspect.isclass(obj) and name.endswith('Manager'):
+                found.setdefault(name, obj)
+    return found
+
+
+def _client_managers():
+    """``{attribute: manager class}`` for VergeClient, without connecting.
+
+    Each manager is a property whose return annotation names its class. The
+    annotation is a string (the module uses postponed evaluation and imports
+    the classes under TYPE_CHECKING), so it is matched by name.
+    """
+    from pyvergeos.client import VergeClient
+    classes = _manager_classes()
+    resolved = {}
+    for attr, prop in vars(VergeClient).items():
+        if not isinstance(prop, property) or prop.fget is None:
+            continue
+        annotation = prop.fget.__annotations__.get('return')
+        if isinstance(annotation, str) and annotation in classes:
+            resolved[attr] = classes[annotation]
+    return resolved
+
+
+def _calls_in(path):
+    """``(lineno, manager, method, keywords)`` for each ``client.X.Y(...)``."""
+    with open(path) as handle:
+        tree = ast.parse(handle.read(), filename=path)
+
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            continue
+        owner = func.value
+        if not (isinstance(owner, ast.Attribute)
+                and isinstance(owner.value, ast.Name)
+                and owner.value.id == 'client'):
+            continue
+        keywords = sorted(kw.arg for kw in node.keywords if kw.arg)
+        found.append((node.lineno, owner.attr, func.attr, keywords))
+    return found
+
+
+_MODULE_FILES = sorted(
+    glob.glob(os.path.join(_root(), 'plugins', 'modules', '*.py'))
+    + glob.glob(os.path.join(_root(), 'plugins', 'module_utils', '*.py'))
+    + glob.glob(os.path.join(_root(), 'plugins', 'inventory', '*.py')))
+_MODULE_IDS = [os.path.relpath(p, _root()) for p in _MODULE_FILES]
+
+
+@pytest.mark.parametrize('path', _MODULE_FILES, ids=_MODULE_IDS)
+def test_every_client_call_exists_on_the_real_sdk(path):
+    managers = _client_managers()
+    assert managers, 'could not resolve any manager from VergeClient'
+
+    problems = []
+    for lineno, manager, method, keywords in _calls_in(path):
+        cls = managers.get(manager)
+        if cls is None:
+            problems.append(
+                'line %d: client.%s is not a VergeClient manager'
+                % (lineno, manager))
+            continue
+
+        attr = getattr(cls, method, None)
+        if attr is None:
+            problems.append(
+                'line %d: %s has no %r' % (lineno, cls.__name__, method))
+            continue
+        if not callable(attr):
+            continue
+
+        try:
+            signature = inspect.signature(attr)
+        except (TypeError, ValueError):       # C-implemented or wrapped
+            continue
+
+        accepts_any = any(p.kind is inspect.Parameter.VAR_KEYWORD
+                          for p in signature.parameters.values())
+        if accepts_any:
+            continue
+
+        allowed = {name for name, p in signature.parameters.items()
+                   if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                 inspect.Parameter.KEYWORD_ONLY)
+                   and name != 'self'}
+        unknown = sorted(set(keywords) - allowed)
+        if unknown:
+            problems.append(
+                'line %d: %s.%s() does not accept %s (it takes %s)'
+                % (lineno, cls.__name__, method, unknown, sorted(allowed)))
+
+    assert not problems, (
+        '%s makes SDK calls that do not exist:\n  %s\n\n'
+        'This is issue #92. A MagicMock accepts anything, so unit tests '
+        'cannot see it -- only the real signature can.'
+        % (os.path.relpath(path, _root()), '\n  '.join(problems)))
+
+
+# Modules whose update path passes a dict of keywords with ``**``.
+#
+# The AST walk above sees ``client.nas_volumes.update(key, **changes)`` and
+# finds no keywords at all, so it cannot check it. That blind spot is not
+# theoretical: it is how ``nas_volume`` came to send ``maxsize=`` to an
+# update() that has no such parameter, raising TypeError on every resize.
+#
+# Following ``**changes`` back through the code would be the broad fix, and
+# the broad fix is the one that gets muted. The narrow one that is always
+# right: a module that builds those keywords from a declared map must declare
+# it, and every value in it is checked against the real signature here.
+#
+#   module -> (VergeClient attribute, method, map attribute on the module)
+UPDATE_KWARG_MAPS = {
+    'nas_volume': ('nas_volumes', 'update', 'UPDATE_KWARG_MAP'),
+    'nas_nfs_share': ('nfs_shares', 'update', 'UPDATE_KWARG_MAP'),
+    'vm_export': ('volume_vm_exports', 'update', 'UPDATE_KWARG_MAP'),
+}
+
+
+@pytest.mark.parametrize('name', sorted(UPDATE_KWARG_MAPS))
+def test_declared_update_keywords_exist_on_the_real_sdk(name):
+    attribute, method, map_name = UPDATE_KWARG_MAPS[name]
+    mod = importlib.import_module(
+        'ansible_collections.vergeio.vergeos.plugins.modules.%s' % name)
+    managers = _client_managers()
+    signature = inspect.signature(getattr(managers[attribute], method))
+
+    unknown = sorted(keyword for keyword in getattr(mod, map_name).values()
+                     if keyword not in signature.parameters)
+    assert not unknown, (
+        '%s.%s maps parameters to %s keywords that %s.%s() does not accept: '
+        '%s (it takes %s)'
+        % (name, map_name, attribute, managers[attribute].__name__, method,
+           unknown, sorted(signature.parameters)))
+
+
+def test_every_module_with_a_kwarg_map_is_registered():
+    """A map nothing checks is a map that can drift back to the bug."""
+    unregistered = []
+    for path in _MODULE_FILES:
+        base = os.path.basename(path)[:-3]
+        if base.startswith('__') or 'modules' not in path:
+            continue
+        mod = importlib.import_module(
+            'ansible_collections.vergeio.vergeos.plugins.modules.%s' % base)
+        if hasattr(mod, 'UPDATE_KWARG_MAP') and base not in UPDATE_KWARG_MAPS:
+            unregistered.append(base)
+    assert not unregistered, (
+        'these modules declare UPDATE_KWARG_MAP but are not in '
+        'UPDATE_KWARG_MAPS, so nothing checks it: %s' % unregistered)
+
+
+def test_the_kwarg_guard_can_actually_fail():
+    """The exact call nas_volume used to make, against the real SDK."""
+    managers = _client_managers()
+    signature = inspect.signature(managers['nas_volumes'].update)
+    assert 'maxsize' not in signature.parameters, (
+        'pyvergeos has grown a maxsize parameter on NASVolumeManager.update; '
+        "nas_volume's resize path needs revisiting")
+    assert 'size_gb' in signature.parameters
+    assert 'preferred_tier' not in signature.parameters
+    assert 'tier' in signature.parameters
+
+
+def test_the_guard_can_actually_fail():
+    """A guard that cannot fail is decoration.
+
+    #92's exact call, checked against the real SDK.
+    """
+    managers = _client_managers()
+    signature = inspect.signature(managers['users'].get)
+    assert 'username' not in signature.parameters, (
+        'pyvergeos has grown a username parameter; #92 needs revisiting')
+    assert 'name' in signature.parameters
+
+
+def _physical_drive_node_filters(node_key=2):
+    """Filters the installed PhysicalDriveManager emits for node_key.
+
+    No mock. Released pyvergeos (1.2.7 through 1.6.1) appends
+    ``node eq <key>`` inside list(). pyVergeOS#143, released as of
+    pyVergeOS 1.7.1, walks nodes -> machine_drives and filters
+    ``parent_drive eq`` instead. Releases through 1.6.1 do not.
+    """
+    from pyvergeos.resources.physical_drives import PhysicalDriveManager
+
+    calls = []
+
+    class Client:
+        def _request(self, method, endpoint, params=None):
+            params = dict(params or {})
+            calls.append(params)
+            endpoint = str(endpoint)
+            if endpoint.startswith('nodes/'):
+                return {'$key': node_key, 'name': 'node2', 'machine': 20}
+            if endpoint == 'machine_drives':
+                return [{'$key': 77}]
+            return []
+
+    PhysicalDriveManager(Client(), node_key=node_key).list(fields=['$key'])
+    return [params.get('filter', '') for params in calls if params.get('filter')]
+
+
+def test_physical_drive_node_scope_matches_the_installed_query():
+    """#145. A MagicMock manager accepts node_key and returns whatever the
+    test planted, so unit tests of the module passed while the installed
+    SDK's query returned no rows.
+
+    The collection may call PhysicalDriveManager(node_key=...) only when
+    this install's list() scopes by parent_drive. When the query is still
+    ``node eq``, the module must refuse that path.
+    """
+    from ansible_collections.vergeio.vergeos.plugins.modules import (
+        physical_drive_info as mod,
+    )
+    from pyvergeos.resources.physical_drives import PhysicalDriveManager
+
+    filters = _physical_drive_node_filters()
+    emits_node_eq = any('node eq ' in f for f in filters)
+    emits_parent = any('parent_drive eq ' in f for f in filters)
+    assert emits_node_eq or emits_parent, (
+        'PhysicalDriveManager(node_key=).list() sent no recognisable '
+        'filter: %s' % filters)
+    assert not (emits_node_eq and emits_parent), filters
+
+    uses_sdk = mod.sdk_node_scope_uses_parent_drive(PhysicalDriveManager)
+    assert uses_sdk is emits_parent, (
+        'physical_drive_info node: scope decision (%s) does not match the '
+        'filter the installed SDK builds (%s)' % (uses_sdk, filters))
+    assert uses_sdk is not emits_node_eq
+
+    if emits_node_eq:
+        source = inspect.getsource(PhysicalDriveManager.list)
+        assert 'node eq ' in source
+        assert not inspect.isfunction(
+            getattr(PhysicalDriveManager, '_parent_drive_filter_for_node', None))

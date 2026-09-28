@@ -22,23 +22,43 @@ options:
       - The ID of the uploaded OVA file in VergeOS.
       - This file must be uploaded to VergeOS before calling this module.
       - Mutually exclusive with I(ova_file_name).
+      - Required when I(state=present) if neither I(ova_file_name) nor
+        I(file_id) is set.
+      - Not used when I(state=absent). The import record is removed by I(name).
     type: str
   ova_file_name:
     description:
       - The name of the OVA file to import (e.g., C(rhel8.ova)).
       - The module will look up the file ID automatically.
       - Mutually exclusive with I(ova_file_id).
+      - Required when I(state=present) if neither I(ova_file_id) nor
+        I(file_id) is set.
+      - Not used when I(state=absent). The import record is removed by I(name).
     type: str
   file_id:
     description:
       - Deprecated. Use I(ova_file_id) instead.
       - The ID of the uploaded OVA file in VergeOS.
+      - Required when I(state=present) if neither I(ova_file_id) nor
+        I(ova_file_name) is set.
+      - Not used when I(state=absent). The import record is removed by I(name).
     type: str
   name:
     description:
       - The name to assign to the imported virtual machine.
+      - When I(state=absent), every finished import record with this name
+        is removed. See O(import_key) to remove one record.
     type: str
     required: true
+  import_key:
+    description:
+      - Key of one VM import record to remove.
+      - Used only when I(state=absent). The record's name must be O(name).
+      - Without this, I(state=absent) removes every finished record named
+        O(name). With it, only this record is removed, even when other
+        records share the name or this one is still importing.
+    type: str
+    version_added: "2.2.0"
   preserve_macs:
     description:
       - Whether to preserve MAC addresses from the source VM.
@@ -83,8 +103,20 @@ options:
   state:
     description:
       - The desired state of the import.
-      - C(present) starts the import and waits for completion.
-      - C(absent) removes the import record (VM will remain if import completed).
+      - C(present) starts the import and waits for completion. If a VM
+        named O(name) already exists, the task succeeds with
+        C(changed=false) and does not post another import. The platform
+        rejects a duplicate name, so a second run used to fail instead of
+        converging.
+      - C(absent) removes import records named O(name). The VM remains if
+        the import completed. No OVA identifier is required.
+      - VergeOS keeps one C(vm_imports) row per import and does not require
+        those names to be unique, so the same name can be imported more
+        than once. C(absent) with only O(name) removes every finished
+        record of that name. It does not stop at the first match, and it
+        does not pick one. A record that is still importing blocks that
+        sweep, so a cleanup task cannot cancel a live import that happens
+        to share the name. Pass O(import_key) to remove one record.
     type: str
     choices: [ present, absent ]
     default: present
@@ -129,25 +161,52 @@ EXAMPLES = r'''
     poll_interval: 10
     poll_timeout: 1800
 
-- name: Remove import record
+- name: Remove every finished import record with this name
   vergeio.vergeos.vm_import:
     host: "192.168.1.100"
     username: "admin"
     password: "password"
-    file_id: "41"
     name: "imported-vm-01"
+    state: absent
+
+- name: Remove one import record by key
+  vergeio.vergeos.vm_import:
+    host: "192.168.1.100"
+    username: "admin"
+    password: "password"
+    name: "imported-vm-01"
+    import_key: "584a61c1f3e28aed114a3a30531a7703fb7959e0"
     state: absent
 '''
 
 RETURN = r'''
 import_key:
-  description: The key/ID of the VM import record
-  returned: when state is present
+  description:
+    - The key of the VM import record.
+    - When I(state=absent) removes exactly one record, this is that record.
+      A name that matches more than one record returns RV(import_keys)
+      instead, so a single key is not mistaken for the only row removed.
+  returned: when state is present, or when state is absent and exactly one record is removed
   type: str
   sample: "584a61c1f3e28aed114a3a30531a7703fb7959e0"
+import_keys:
+  description:
+    - Keys of the import records removed, or that would be removed in
+      check mode.
+    - A repeated name removes every finished record, so this list has one
+      entry per record.
+  returned: when state is absent and at least one record is removed
+  type: list
+  elements: str
+  version_added: "2.2.0"
+  sample:
+    - "584a61c1f3e28aed114a3a30531a7703fb7959e0"
+    - "9399f782aabbccddeeff00112233445566778899"
 vm_id:
-  description: The ID of the created/imported VM
-  returned: when state is present and import completes
+  description:
+    - The ID of the created/imported VM, or of the VM that already had
+      O(name) when the import was skipped.
+  returned: when state is present and a VM id is known
   type: str
   sample: "46"
 vm_name:
@@ -169,6 +228,7 @@ import_info:
 import time
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -250,16 +310,33 @@ def wait_for_import_completion(client, import_key, poll_interval, poll_timeout, 
         time.sleep(poll_interval)
 
 
-def get_file_by_name(client, file_name):
+def get_file_by_name(module, client, file_name):
     """Look up file by name using SDK."""
     try:
-        return client.files.get(name=file_name)
+        return resolve_one(module, client.files, file_name, 'file')
     except NotFoundError:
         return None
 
 
 def create_vm_import(client, module):
     """Create a new VM import and wait for completion using SDK."""
+    name = module.params['name']
+
+    # Converge instead of colliding. The platform rejects a second import
+    # of the same VM name with "This name is already in use", so re-running
+    # a play used to fail outright, and check mode said it would create a
+    # VM that already existed (#129). Same shape as vm_snapshot.
+    try:
+        existing = resolve_one(module, client.vms, name, 'VM')
+    except NotFoundError:
+        existing = None
+    if existing is not None:
+        module.exit_json(
+            changed=False,
+            vm_id=str(dict(existing).get('$key')),
+            msg="VM '%s' already exists" % name,
+        )
+
     # Determine file_id from ova_file_id, ova_file_name, or deprecated file_id
     ova_file_id = module.params.get('ova_file_id')
     ova_file_name = module.params.get('ova_file_name')
@@ -269,7 +346,7 @@ def create_vm_import(client, module):
     if ova_file_id:
         file_id = ova_file_id
     elif ova_file_name:
-        file_obj = get_file_by_name(client, ova_file_name)
+        file_obj = get_file_by_name(module, client, ova_file_name)
         if not file_obj:
             module.fail_json(msg=f"OVA file '{ova_file_name}' not found in VergeOS files")
         file_id = str(dict(file_obj).get('$key'))
@@ -278,8 +355,6 @@ def create_vm_import(client, module):
         module.warn("Parameter 'file_id' is deprecated, use 'ova_file_id' instead")
     else:
         module.fail_json(msg="Either 'ova_file_id' or 'ova_file_name' must be specified")
-
-    name = module.params['name']
 
     # Build import payload - use raw API format matching the VergeOS REST API.
     # The 'importing' field tells the API to start importing immediately.
@@ -366,24 +441,133 @@ def create_vm_import(client, module):
     module.exit_json(**result)
 
 
+# A live import reports one of these. Anything else on the row, including a
+# missing status, is finished history: `complete` after a successful import,
+# `aborted` after a failure, or a list projection that only carried the name.
+# Missing status must stay deletable. The single-record path has always
+# deleted such a row, and a cleanup that refused it could not remove the
+# records this module itself created.
+_IN_PROGRESS_STATUSES = frozenset((
+    'importing',
+    'pending',
+    'queued',
+    'running',
+    'in_progress',
+    'processing',
+    'new',
+))
+
+
+def _truthy(value):
+    if value is True or value == 1:
+        return True
+    return str(value).strip().lower() in ('true', 'yes', '1')
+
+
+def _import_in_progress(obj):
+    """True when this row is an import that has not finished.
+
+    Positive evidence only. A row with no status is not treated as live,
+    because name-only ``state=absent`` has always deleted that row.
+    """
+    data = dict(obj)
+    if _truthy(data.get('aborted')):
+        return False
+    status = str(data.get('status') or '').strip().lower()
+    if status in _IN_PROGRESS_STATUSES:
+        return True
+    vm = data.get('vm')
+    if isinstance(vm, dict):
+        vm_status = str(vm.get('status') or '').strip().lower()
+        if vm_status == 'importing':
+            return True
+    return False
+
+
+def _exit_deleted(module, name, keys):
+    """Report a delete of one or more import records."""
+    check = module.check_mode
+    if len(keys) == 1:
+        result = {
+            'changed': True,
+            'import_key': keys[0],
+            'import_keys': keys,
+        }
+        if check:
+            result['msg'] = "Would delete import (check mode)"
+        else:
+            result['msg'] = "Import deleted"
+        module.exit_json(**result)
+
+    if check:
+        msg = "Would delete %d VM import records named '%s' (check mode)" % (
+            len(keys), name)
+    else:
+        msg = "Deleted %d VM import records named '%s'" % (len(keys), name)
+    # import_key is omitted on purpose. Returning one of several keys reads
+    # as if the others were left behind.
+    module.exit_json(changed=True, msg=msg, import_keys=keys)
+
+
 def delete_vm_import(client, module):
-    """Delete a VM import record using SDK."""
-    # We need to find the import by name since we don't have the key
+    """Remove import records named by the task.
+
+    ``resolve_one`` is the wrong lookup here (#162). It refuses when two
+    rows share a name, and VergeOS neither unique-constrains ``vm_imports``
+    nor deletes the row when the VM is deleted. A name that has been
+    imported twice can never be removed. The previous SDK ``get(name=)``
+    failed the other way: it returned the first row and left the rest, so
+    the delete targeted one object and orphaned the other.
+
+    By name, every finished record is removed. A record that is still
+    importing blocks that sweep, so cleanup cannot cancel a live import
+    that shares the name. ``import_key`` removes exactly one row.
+    """
     name = module.params['name']
+    import_key = module.params.get('import_key') or None
+    # One list. Client-side equality, same as resolve_one: the SDK's
+    # get(name=) stops at the first row and cannot see the second.
+    listed = list(client.vm_imports.list())
 
-    try:
-        import_obj = client.vm_imports.get(name=name)
-    except NotFoundError:
-        module.exit_json(changed=False, msg="Import not found")
+    if import_key:
+        wanted = str(import_key)
+        match = None
+        for obj in listed:
+            if str(dict(obj).get('$key')) == wanted:
+                match = obj
+                break
+        if match is None:
+            module.exit_json(
+                changed=False, msg="Import '%s' not found" % import_key)
+        actual = dict(match).get('name')
+        if actual != name:
+            module.fail_json(
+                msg="VM import '%s' is named '%s', not '%s'."
+                % (import_key, actual, name))
+        targets = [match]
+    else:
+        targets = [obj for obj in listed if dict(obj).get('name') == name]
+        if not targets:
+            module.exit_json(changed=False, msg="Import not found")
+        if len(targets) > 1:
+            live = [obj for obj in targets if _import_in_progress(obj)]
+            if live:
+                live_keys = [str(dict(obj).get('$key')) for obj in live]
+                module.fail_json(
+                    msg="Found %d VM import records named '%s', and %d %s "
+                        "still importing (keys: %s). Refusing to delete the "
+                        "set while an import is in progress. Wait for it to "
+                        "finish, or pass import_key to delete one record."
+                        % (len(targets), name, len(live),
+                           'is' if len(live) == 1 else 'are',
+                           ', '.join(live_keys)))
 
-    import_key = str(dict(import_obj).get('$key'))
-
-    if module.check_mode:
-        module.exit_json(changed=True, msg="Would delete import (check mode)")
-
-    # Delete the import
-    import_obj.delete()
-    module.exit_json(changed=True, msg="Import deleted", import_key=import_key)
+    keys = []
+    for obj in targets:
+        keys.append(str(dict(obj).get('$key')))
+        if not module.check_mode:
+            obj.delete()
+    _exit_deleted(module, name, keys)
 
 
 def main():
@@ -393,6 +577,12 @@ def main():
         ova_file_name=dict(type='str'),
         file_id=dict(type='str'),  # Deprecated, kept for backward compatibility
         name=dict(type='str', required=True),
+        # no_log=False is deliberate and required. ansible-core warns on any
+        # option whose name contains "key" -- "Module did not set no_log for
+        # import_key" on every run -- and this value is the import record's
+        # id, the same identifier the module already returns. It is not a
+        # secret.
+        import_key=dict(type='str', no_log=False),
         preserve_macs=dict(type='bool', default=False),
         preserve_drive_format=dict(type='bool', default=False),
         preferred_tier=dict(type='str'),
@@ -418,8 +608,11 @@ def main():
         mutually_exclusive=[
             ('ova_file_id', 'ova_file_name'),
         ],
-        required_one_of=[
-            ('ova_file_id', 'ova_file_name', 'file_id'),
+        # An OVA identifier is only used when creating an import.
+        # state=absent deletes by name, so requiring one there rejects a
+        # valid task (#154). The fourth element means any one of the three.
+        required_if=[
+            ('state', 'present', ('ova_file_id', 'ova_file_name', 'file_id'), True),
         ],
     )
 

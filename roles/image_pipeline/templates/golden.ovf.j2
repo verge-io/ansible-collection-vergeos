@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rendered by the image_pipeline role. Every interpolation is XML escaped.
+     A VM name is free text, and R&D-golden is an ordinary name and an
+     invalid XML document. The escaping is only in the markup; the packed
+     file on disk keeps the real name, and a consumer unescapes ovf:href
+     back to it. Same family as issue #32, apostrophes and braces in
+     catalog names. -->
+<Envelope xmlns="http://schemas.dmtf.org/ovf/envelope/1"
+          xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/1"
+          xmlns:rasd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ResourceAllocationSettingData"
+          xmlns:vssd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_VirtualSystemSettingData"
+          ovf:version="1.0">
+  <References>
+    <File ovf:id="file1" ovf:href="{{ template_name | e }}.qcow2" ovf:size="{{ _image_bytes }}"/>
+  </References>
+  <DiskSection>
+    <Info>Golden image disk</Info>
+    <Disk ovf:diskId="vmdisk1" ovf:fileRef="file1"
+          ovf:capacity="{{ _image_virtual_bytes }}" ovf:capacityAllocationUnits="byte"
+          ovf:format="http://www.qemu.org/formats/qcow2"/>
+  </DiskSection>
+  <VirtualSystem ovf:id="{{ template_name | e }}">
+    <Info>{{ template_name | e }} — golden image template (no NICs; consumers attach networks)</Info>
+    <Name>{{ template_name | e }}</Name>
+    <OperatingSystemSection ovf:id="1">
+      <Info>Guest operating system</Info>
+      <Description>{{ template_os_family | e }}</Description>
+    </OperatingSystemSection>
+    <VirtualHardwareSection>
+      <Info>{{ template_cores }} CPU, {{ template_ram_mb }} MB RAM</Info>
+      <System>
+        <vssd:ElementName>Virtual Hardware Family</vssd:ElementName>
+        <vssd:InstanceID>0</vssd:InstanceID>
+        <vssd:VirtualSystemIdentifier>{{ template_name | e }}</vssd:VirtualSystemIdentifier>
+        <vssd:VirtualSystemType>qemu</vssd:VirtualSystemType>
+      </System>
+      <Item>
+        <rasd:Description>Number of Virtual CPUs</rasd:Description>
+        <rasd:ElementName>{{ template_cores }} virtual CPU(s)</rasd:ElementName>
+        <rasd:InstanceID>1</rasd:InstanceID>
+        <rasd:ResourceType>3</rasd:ResourceType>
+        <rasd:VirtualQuantity>{{ template_cores }}</rasd:VirtualQuantity>
+      </Item>
+      <Item>
+        <rasd:AllocationUnits>byte * 2^20</rasd:AllocationUnits>
+        <rasd:Description>Memory Size</rasd:Description>
+        <rasd:ElementName>{{ template_ram_mb }} MB of memory</rasd:ElementName>
+        <rasd:InstanceID>2</rasd:InstanceID>
+        <rasd:ResourceType>4</rasd:ResourceType>
+        <rasd:VirtualQuantity>{{ template_ram_mb }}</rasd:VirtualQuantity>
+      </Item>
+      <Item>
+        <rasd:Address>0</rasd:Address>
+        <rasd:Description>SATA Controller</rasd:Description>
+        <rasd:ElementName>sataController0</rasd:ElementName>
+        <rasd:InstanceID>3</rasd:InstanceID>
+        <rasd:ResourceSubType>AHCI</rasd:ResourceSubType>
+        <rasd:ResourceType>20</rasd:ResourceType>
+      </Item>
+      <Item>
+        <rasd:AddressOnParent>0</rasd:AddressOnParent>
+        <rasd:ElementName>Hard disk 1 ({{ template_name | e }}.qcow2)</rasd:ElementName>
+        <rasd:HostResource>ovf:/disk/vmdisk1</rasd:HostResource>
+        <rasd:InstanceID>11</rasd:InstanceID>
+        <rasd:Parent>3</rasd:Parent>
+        <rasd:ResourceType>17</rasd:ResourceType>
+      </Item>
+    </VirtualHardwareSection>
+  </VirtualSystem>
+</Envelope>

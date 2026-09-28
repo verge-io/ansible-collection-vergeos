@@ -1,0 +1,83 @@
+---
+# drive_health -- report which drives are failing, wearing out, or unsafe to
+# pull right now.
+#
+# Read-only by design. Every other decision here is reversible; pulling a
+# drive is not, so this role produces a replacement list and stops.
+
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that: drive_health_host | length > 0
+    fail_msg: "drive_health needs drive_health_host (or VERGEOS_HOST)."
+    quiet: true
+
+- name: Read drive health
+  vergeio.vergeos.physical_drive_info:
+    host: "{{ drive_health_host }}"
+    username: "{{ drive_health_username }}"
+    password: "{{ drive_health_password }}"
+    insecure: "{{ drive_health_insecure }}"
+    node: "{{ drive_health_node | default(omit, true) }}"
+    critical_flags: "{{ drive_health_critical_flags }}"
+    warning_flags: "{{ drive_health_warning_flags }}"
+  register: drive_health_scan
+  changed_when: false
+
+- name: Report the fleet
+  ansible.builtin.debug:
+    msg:
+      counts: "{{ drive_health_scan.counts }}"
+      replace_now: >-
+        {{ drive_health_scan.critical
+           | map(attribute='node_name') | zip(
+               drive_health_scan.critical | map(attribute='serial'))
+           | list }}
+      watch: >-
+        {{ drive_health_scan.warning
+           | map(attribute='node_name') | zip(
+               drive_health_scan.warning | map(attribute='serial'))
+           | list }}
+      # Surfaced on its own because it changes what is SAFE to do, not what is
+      # wrong. Pulling a second drive while vSAN is rebuilding onto this one is
+      # how a rebuild becomes a data-loss event.
+      rebuilding_do_not_pull: >-
+        {{ drive_health_scan.repairing
+           | map(attribute='serial') | list }}
+
+# node_name first, then the slot. `location` is the slot on its node
+# ("nvme0") and it repeats across nodes, so on identical hardware it does not
+# on its own tell anyone which machine to walk to.
+- name: Explain each drive that needs attention
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.severity | upper }}: {{ item.serial }}
+      on {{ item.node_name | default('unknown node') }}
+      at {{ item.location | default('unknown slot') }}
+      -- {{ item.reasons | join('; ') }}
+  loop: "{{ drive_health_scan.critical + drive_health_scan.warning }}"
+  loop_control:
+    label: "{{ item.serial | default('?') }}"
+
+- name: No drive may be failing
+  ansible.builtin.assert:
+    that: drive_health_scan.critical | length == 0
+    fail_msg: >-
+      {{ drive_health_scan.critical | length }} drive(s) need replacing:
+      {{ drive_health_scan.critical
+         | map(attribute='serial') | list }}.
+      {{ ("Note that vSAN is currently rebuilding onto "
+          ~ (drive_health_scan.repairing | map(attribute='serial') | list)
+          ~ " -- let that finish before pulling anything else.")
+         if drive_health_scan.repairing | length > 0 else "" }}
+    quiet: true
+  when: drive_health_fail_on_critical | bool
+
+- name: No drive may be warning
+  ansible.builtin.assert:
+    that: drive_health_scan.warning | length == 0
+    fail_msg: >-
+      {{ drive_health_scan.warning | length }} drive(s) are wearing out or
+      running hot: {{ drive_health_scan.warning
+                      | map(attribute='serial') | list }}
+    quiet: true
+  when: drive_health_fail_on_warning | bool

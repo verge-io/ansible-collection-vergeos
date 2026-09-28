@@ -59,3 +59,21 @@
     - name: Display cluster info
       ansible.builtin.debug:
         var: cluster_info.clusters
+
+    - name: Discover tiers, version, and node capacity
+      vergeio.vergeos.site_info:
+        host: "{{ vergeos_host }}"
+        username: "{{ vergeos_username }}"
+        password: "{{ vergeos_password }}"
+        insecure: "{{ vergeos_insecure }}"
+      register: site
+
+    - name: Display the site preflight
+      ansible.builtin.debug:
+        msg: >-
+          {{ site.cloud_name }} {{ site.os_version }}:
+          tiers {{ site.storage_tiers }},
+          {{ site.counts.networks }} networks,
+          {{ site.counts.vm_recipes }} recipes,
+          {{ site.counts.nas_services }} NAS services,
+          largest node {{ site.largest_node_vm_ram_mb }} MB

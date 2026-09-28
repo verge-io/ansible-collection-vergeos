@@ -1,0 +1,104 @@
+---
+# Tenant-per-customer as code.
+#
+# Auth comes from the standard environment variables:
+#   VERGEOS_HOST, VERGEOS_USERNAME, VERGEOS_PASSWORD, VERGEOS_INSECURE
+#
+# Run:  ansible-playbook examples/manage_tenants.yml
+#
+# The sizes below are deliberately small and overridable, for the reason
+# issue #22 was opened: the version of this example that shipped before asked
+# for tier 3 storage and 8-core/32 GB nodes. Tier numbering is per system and
+# a single-tier system is perfectly normal, so `tier: 3` failed outright on
+# most of them; and a node that large may be more than the cluster can place,
+# which is issue #24 -- a tenant that cannot be placed simply never starts.
+#
+# The tier now comes from site_info (issue #20): the lowest tier number the
+# storage_tiers table reports. Pin one with -e tenant_storage_tier=2.
+# site.largest_node_vm_ram_mb is the biggest online physical node's vm_ram,
+# which is the ceiling a single tenant node has to fit inside.
+#
+# Override for a real fleet:
+#   ansible-playbook examples/manage_tenants.yml \
+#     -e '{"customers":[{"name":"acme","description":"ACME","nodes":[...]}]}'
+
+- name: Manage tenants declaratively
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    tenant_node_cores: 2
+    tenant_node_ram_gb: 4
+    tenant_storage_gb: 50
+    customers:
+      - name: acme
+        description: ACME Corp production tenant
+      - name: globex
+        description: Globex staging tenant
+
+  tasks:
+    - name: Discover tiers and node capacity on this system
+      vergeio.vergeos.site_info:
+      register: site
+
+    - name: This system reported no storage tier
+      ansible.builtin.fail:
+        msg: >-
+          site_info returned no storage tiers. A tenant drive needs a tier
+          that exists here. Set -e tenant_storage_tier=N to name one.
+      when:
+        - tenant_storage_tier is not defined
+        - site.storage_tiers | length == 0
+
+    - name: Use the lowest storage tier present
+      ansible.builtin.set_fact:
+        tenant_storage_tier: "{{ site.storage_tiers | min }}"
+      when: tenant_storage_tier is not defined
+
+    - name: Show what this system reported
+      ansible.builtin.debug:
+        msg: >-
+          {{ site.cloud_name }} {{ site.os_version }}:
+          tiers {{ site.storage_tiers }},
+          using tier {{ tenant_storage_tier }},
+          {{ site.ram_headroom_mb }} MB VM RAM headroom,
+          largest node {{ site.largest_node_vm_ram_mb }} MB
+
+    - name: Ensure each customer tenant exists and is running
+      vergeio.vergeos.tenant:
+        name: "{{ item.name }}"
+        description: "{{ item.description }}"
+        nodes:
+          - name: "{{ item.name }}-node1"
+            cpu_cores: "{{ item.cpu_cores | default(tenant_node_cores) }}"
+            ram_gb: "{{ item.ram_gb | default(tenant_node_ram_gb) }}"
+        storage:
+          - tier: "{{ item.tier | default(tenant_storage_tier) }}"
+            provisioned_gb: "{{ item.provisioned_gb
+                                | default(tenant_storage_gb) }}"
+        state: running
+      loop: "{{ customers }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # A tenant that cannot be placed does not fail -- it returns to stopped
+    # and the platform reports no reason (#24). When the task above times
+    # out, its `placement` return says which nodes were never given a
+    # physical host, the cluster's N-1 headroom (same arithmetic as a
+    # cluster_info drain check of the largest node), and what RAM was
+    # already committed. The headroom figure is not itself a verdict.
+
+    - name: Report the tenant fleet
+      vergeio.vergeos.tenant_info:
+      register: fleet
+
+    - name: Show fleet summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.name }}: {{ 'running' if item.running else 'stopped' }},
+          {{ item.nodes | length }} node(s),
+          {{ item.storage | map(attribute='provisioned_gb') | sum }} GB
+          provisioned
+      loop: "{{ fleet.tenants }}"
+      loop_control:
+        label: "{{ item.name }}"

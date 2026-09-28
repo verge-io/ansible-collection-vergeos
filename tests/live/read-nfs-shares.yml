@@ -1,0 +1,29 @@
+---
+# Read the NFS shares straight from the platform, independently of the
+# module under test. There is no nas_nfs_share_info module, and the whole
+# point of these rungs is to not take the role's word for it.
+- name: Read nfs_shares from the API
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "-c"
+      - |
+        import json, os, urllib3
+        urllib3.disable_warnings()
+        from pyvergeos import VergeClient
+        c = VergeClient(host=os.environ['VERGEOS_HOST'],
+                        username=os.environ['VERGEOS_USERNAME'],
+                        password=os.environ['VERGEOS_PASSWORD'],
+                        verify_ssl=False)
+        print(json.dumps([
+            {k: dict(s).get(k)
+             for k in ('name', 'allowed_hosts', 'allow_all', 'data_access')}
+            for s in c.nfs_shares.list()]))
+  register: nfs_shares_raw
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Parse them
+  ansible.builtin.set_fact:
+    nfs_shares: "{{ nfs_shares_raw.stdout | from_json }}"

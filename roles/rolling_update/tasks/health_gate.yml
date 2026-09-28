@@ -1,0 +1,63 @@
+---
+# The cluster must look the way it did before the roll.
+#
+# The platform's apply action reports that it started the roll. It does not
+# report that the cluster came out of it intact, and a node that rebooted into
+# a broken state still counts as "rolled". Without this gate the play reports
+# success on a cluster that has lost a node.
+#
+# Run once, after the whole roll, rather than between nodes -- the platform
+# owns the sequencing now, so there is no between-nodes to hook into.
+#
+# What this gate deliberately does NOT check: whether replication caught up.
+# An earlier version asked site_sync_info for that, and site_sync_info does
+# not exist in this collection -- site replication (#38) is deferred, not
+# shipped. The task was gated behind a threshold defaulting to 0, so it never
+# ran, and the reference would have surfaced as "couldn't resolve module" on
+# the first site that set the threshold. Ansible only rejects a module name
+# when the task actually runs, which is why the collection now has a unit
+# guard that resolves every vergeio.vergeos.* reference in every role.
+
+# A node reports online before it is carrying anything. Settling first means
+# the gate measures a cluster that has actually re-absorbed its nodes, not one
+# that has merely acknowledged them.
+- name: Let the cluster settle
+  ansible.builtin.pause:
+    seconds: "{{ rolling_update_settle_seconds | int }}"
+  when: rolling_update_settle_seconds | int > 0
+
+- name: Re-survey the cluster
+  vergeio.vergeos.node_info:
+    host: "{{ rolling_update_host }}"
+    username: "{{ rolling_update_username }}"
+    password: "{{ rolling_update_password }}"
+    insecure: "{{ rolling_update_insecure }}"
+  register: rolling_update_health
+  changed_when: false
+
+- name: Work out what is missing
+  ansible.builtin.set_fact:
+    # Compared against the baseline captured BEFORE the run, not against the
+    # previous iteration. Comparing to the previous iteration lets the
+    # expected count drift down one node at a time, so each lost node quietly
+    # becomes the new normal and the gate never fires.
+    rolling_update_missing: >-
+      {{ rolling_update_baseline_online
+         | difference(rolling_update_health.online | map(attribute='name') | list) }}
+
+- name: Every node that was online must be online again
+  ansible.builtin.assert:
+    that: rolling_update_missing | length == 0
+    fail_msg: >-
+      the roll finished but these nodes are no longer online -
+      {{ rolling_update_missing }} - and they were online before it started.
+      Check them before treating the update as complete.
+    quiet: true
+  when: rolling_update_require_all_online | bool
+
+- name: Health gate passed
+  ansible.builtin.debug:
+    msg: >-
+      cluster healthy after the roll -
+      {{ rolling_update_health.online | map(attribute='name') | list | sort }}
+      online, matching the pre-update baseline

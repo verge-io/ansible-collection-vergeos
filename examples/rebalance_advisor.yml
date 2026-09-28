@@ -1,0 +1,38 @@
+---
+# Propose -- never apply -- live-migration moves to relieve node hotspots.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/rebalance_advisor.yml
+#
+# This role deliberately stops at a proposal. Live-migrating a VM is a
+# judgement call about a running workload, and a proposal a human cannot
+# evaluate is one they will either rubber-stamp or ignore -- so each move is
+# printed with the reason it was suggested.
+#
+# Tune the thresholds and the move budget:
+#   -e rebalance_advisor_cpu_threshold=90
+#   -e rebalance_advisor_ram_threshold=90
+#   -e rebalance_advisor_max_moves=4
+#
+# Sampling: it takes rebalance_advisor_samples readings
+# rebalance_advisor_interval seconds apart, so a single spike does not read
+# as a hotspot.
+#
+# A VM tagged `no-balance` is never proposed for a move. If that tag cannot be
+# READ, the run reports its hotspots and withholds every proposal rather than
+# guessing which VMs are pinned -- read the notes in the summary.
+#
+# To capture the cluster state as a replayable fixture:
+#
+#   - ansible.builtin.include_role:
+#       name: vergeio.vergeos.rebalance_advisor
+#       tasks_from: capture
+#
+# which sets rebalance_advisor_state to the {nodes, vms} document that
+# rebalance_advisor_fixture reads back.
+- name: Rebalance advisor
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: vergeio.vergeos.rebalance_advisor

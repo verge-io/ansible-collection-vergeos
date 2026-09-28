@@ -1,0 +1,350 @@
+---
+# Live ladder for cloud_init and windows_unattend (#125).
+#
+# Both modules used to report changed=true on every state=present run,
+# including an identical re-apply and check mode, because they never compared
+# stored state. This ladder is the re-apply assertion for both. It touches
+# only zz-verify-cloudinit and zz-verify-unattend, both stopped.
+#
+#   set -a; . ~/.config/vergeos/env; set +a
+#   ansible-playbook verify-cloudinit.yml
+#
+- name: Cloud-init and unattend live ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    ci_vm: zz-verify-cloudinit
+    un_vm: zz-verify-unattend
+    user_data: |
+      #cloud-config
+      hostname: zz-verify-cloudinit
+      manage_etc_hosts: true
+    user_data_next: |
+      #cloud-config
+      hostname: zz-verify-cloudinit
+      manage_etc_hosts: true
+      packages:
+        - htop
+    meta_data: |
+      instance-id: zz-verify-cloudinit
+      local-hostname: zz-verify-cloudinit
+    unattend_xml: |
+      <?xml version="1.0" encoding="utf-8"?>
+      <unattend>
+        <ComputerName>ZZ-VERIFY</ComputerName>
+      </unattend>
+    unattend_xml_next: |
+      <?xml version="1.0" encoding="utf-8"?>
+      <unattend>
+        <ComputerName>ZZ-VERIFY-2</ComputerName>
+      </unattend>
+
+  tasks:
+    - name: Cloud-init ladder (cleanup runs even on failure)
+      block:
+        - name: Cleanup first, a previous run may have died
+          vergeio.vergeos.vm:
+            name: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ ci_vm }}"
+            - "{{ un_vm }}"
+
+        - name: Create the cloud-init VM (stopped, tiny)
+          vergeio.vergeos.vm:
+            name: "{{ ci_vm }}"
+            cpu_cores: 1
+            ram: 512
+            state: present
+
+        - name: Apply cloud-init
+          vergeio.vergeos.cloud_init:
+            vm_name: "{{ ci_vm }}"
+            datasource: nocloud
+            user_data: "{{ user_data }}"
+            meta_data: "{{ meta_data }}"
+            state: present
+          register: ci_applied
+
+        - name: Read the user-data back
+          ansible.builtin.include_tasks: read-cloudinit-file.yml
+          vars:
+            ci_filename: /user-data
+
+        - name: The first apply wrote nocloud and the document
+          ansible.builtin.assert:
+            that:
+              - ci_applied is changed
+              - ci_datasource == 'nocloud'
+              - ci_file_body == user_data
+            fail_msg: >-
+              cloud-init did not land. changed={{ ci_applied.changed }}
+              datasource={{ ci_datasource }}
+              body_len={{ ci_file_body | length }}
+              wanted_len={{ user_data | length }}
+
+        - name: Re-apply the same cloud-init
+          vergeio.vergeos.cloud_init:
+            vm_name: "{{ ci_vm }}"
+            datasource: nocloud
+            user_data: "{{ user_data }}"
+            meta_data: "{{ meta_data }}"
+            state: present
+          register: ci_again
+
+        - name: An identical cloud-init re-apply changes nothing
+          ansible.builtin.assert:
+            that: [ci_again is not changed]
+            fail_msg: >-
+              cloud_init reported changed on an identical re-apply (#125).
+              {{ ci_again.changed }}
+
+        - name: Check mode on the identical cloud-init
+          vergeio.vergeos.cloud_init:
+            vm_name: "{{ ci_vm }}"
+            datasource: nocloud
+            user_data: "{{ user_data }}"
+            meta_data: "{{ meta_data }}"
+            state: present
+          check_mode: true
+          register: ci_check_same
+
+        - name: Check mode reports nothing when cloud-init is already there
+          ansible.builtin.assert:
+            that: [ci_check_same is not changed]
+            fail_msg: >-
+              check mode reported changed for an identical cloud-init.
+              {{ ci_check_same.changed }}
+
+        - name: Check mode with different user-data
+          vergeio.vergeos.cloud_init:
+            vm_name: "{{ ci_vm }}"
+            datasource: nocloud
+            user_data: "{{ user_data_next }}"
+            meta_data: "{{ meta_data }}"
+            state: present
+          check_mode: true
+          register: ci_check_diff
+
+        - name: Read user-data again after the check-mode preview
+          ansible.builtin.include_tasks: read-cloudinit-file.yml
+          vars:
+            ci_filename: /user-data
+
+        - name: Check mode reports the pending cloud-init write and does not make it
+          ansible.builtin.assert:
+            that:
+              - ci_check_diff is changed
+              - ci_file_body == user_data
+            fail_msg: >-
+              check mode should report a cloud-init change and leave the
+              stored document alone. changed={{ ci_check_diff.changed }}
+              body_len={{ ci_file_body | length }}
+
+        - name: Apply the different user-data
+          vergeio.vergeos.cloud_init:
+            vm_name: "{{ ci_vm }}"
+            datasource: nocloud
+            user_data: "{{ user_data_next }}"
+            meta_data: "{{ meta_data }}"
+            state: present
+          register: ci_updated
+
+        - name: Re-apply the updated user-data
+          vergeio.vergeos.cloud_init:
+            vm_name: "{{ ci_vm }}"
+            datasource: nocloud
+            user_data: "{{ user_data_next }}"
+            meta_data: "{{ meta_data }}"
+            state: present
+          register: ci_updated_again
+
+        - name: Read the updated user-data back
+          ansible.builtin.include_tasks: read-cloudinit-file.yml
+          vars:
+            ci_filename: /user-data
+
+        - name: A real cloud-init edit changes once, then converges
+          ansible.builtin.assert:
+            that:
+              - ci_updated is changed
+              - ci_updated_again is not changed
+              - ci_file_body == user_data_next
+            fail_msg: >-
+              cloud-init edit did not converge.
+              updated={{ ci_updated.changed }}
+              again={{ ci_updated_again.changed }}
+              body_len={{ ci_file_body | length }}
+
+        - name: Create the unattend VM (stopped, tiny)
+          vergeio.vergeos.vm:
+            name: "{{ un_vm }}"
+            cpu_cores: 1
+            ram: 512
+            state: present
+
+        - name: Apply unattend.xml
+          vergeio.vergeos.windows_unattend:
+            vm_name: "{{ un_vm }}"
+            unattend_xml: "{{ unattend_xml }}"
+            state: present
+          register: un_applied
+
+        - name: Read the unattend.xml back
+          ansible.builtin.include_tasks: read-cloudinit-file.yml
+          vars:
+            ci_vm: "{{ un_vm }}"
+            ci_filename: /unattend.xml
+
+        - name: The first unattend apply wrote nocloud and the document
+          ansible.builtin.assert:
+            that:
+              - un_applied is changed
+              - ci_datasource == 'nocloud'
+              - ci_file_body == unattend_xml
+            fail_msg: >-
+              unattend did not land. changed={{ un_applied.changed }}
+              datasource={{ ci_datasource }}
+              body_len={{ ci_file_body | length }}
+              wanted_len={{ unattend_xml | length }}
+
+        - name: Re-apply the same unattend.xml
+          vergeio.vergeos.windows_unattend:
+            vm_name: "{{ un_vm }}"
+            unattend_xml: "{{ unattend_xml }}"
+            state: present
+          register: un_again
+
+        - name: An identical unattend re-apply changes nothing
+          ansible.builtin.assert:
+            that: [un_again is not changed]
+            fail_msg: >-
+              windows_unattend reported changed on an identical re-apply (#125).
+              {{ un_again.changed }}
+
+        - name: Check mode on the identical unattend
+          vergeio.vergeos.windows_unattend:
+            vm_name: "{{ un_vm }}"
+            unattend_xml: "{{ unattend_xml }}"
+            state: present
+          check_mode: true
+          register: un_check_same
+
+        - name: Check mode reports nothing when unattend.xml is already there
+          ansible.builtin.assert:
+            that: [un_check_same is not changed]
+            fail_msg: >-
+              check mode reported changed for an identical unattend.
+              {{ un_check_same.changed }}
+
+        - name: Check mode with different unattend.xml
+          vergeio.vergeos.windows_unattend:
+            vm_name: "{{ un_vm }}"
+            unattend_xml: "{{ unattend_xml_next }}"
+            state: present
+          check_mode: true
+          register: un_check_diff
+
+        - name: Read unattend.xml again after the check-mode preview
+          ansible.builtin.include_tasks: read-cloudinit-file.yml
+          vars:
+            ci_vm: "{{ un_vm }}"
+            ci_filename: /unattend.xml
+
+        - name: Check mode reports the pending unattend write and does not make it
+          ansible.builtin.assert:
+            that:
+              - un_check_diff is changed
+              - ci_file_body == unattend_xml
+            fail_msg: >-
+              check mode should report an unattend change and leave the
+              stored document alone. changed={{ un_check_diff.changed }}
+              body_len={{ ci_file_body | length }}
+
+        - name: Apply the different unattend.xml
+          vergeio.vergeos.windows_unattend:
+            vm_name: "{{ un_vm }}"
+            unattend_xml: "{{ unattend_xml_next }}"
+            state: present
+          register: un_updated
+
+        - name: Re-apply the updated unattend.xml
+          vergeio.vergeos.windows_unattend:
+            vm_name: "{{ un_vm }}"
+            unattend_xml: "{{ unattend_xml_next }}"
+            state: present
+          register: un_updated_again
+
+        - name: Read the updated unattend.xml back
+          ansible.builtin.include_tasks: read-cloudinit-file.yml
+          vars:
+            ci_vm: "{{ un_vm }}"
+            ci_filename: /unattend.xml
+
+        - name: A real unattend edit changes once, then converges
+          ansible.builtin.assert:
+            that:
+              - un_updated is changed
+              - un_updated_again is not changed
+              - ci_file_body == unattend_xml_next
+            fail_msg: >-
+              unattend edit did not converge.
+              updated={{ un_updated.changed }}
+              again={{ un_updated_again.changed }}
+              body_len={{ ci_file_body | length }}
+
+        - name: Remove unattend.xml
+          vergeio.vergeos.windows_unattend:
+            vm_name: "{{ un_vm }}"
+            state: absent
+          register: un_removed
+
+        - name: Remove unattend.xml again
+          vergeio.vergeos.windows_unattend:
+            vm_name: "{{ un_vm }}"
+            state: absent
+          register: un_removed_again
+
+        - name: Removing unattend.xml changes once
+          ansible.builtin.assert:
+            that:
+              - un_removed is changed
+              - un_removed_again is not changed
+            fail_msg: >-
+              absent did not converge.
+              removed={{ un_removed.changed }}
+              again={{ un_removed_again.changed }}
+
+      rescue:
+        - name: Record that the ladder failed
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+      always:
+        - name: Delete the scratch VMs
+          vergeio.vergeos.vm:
+            name: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ ci_vm }}"
+            - "{{ un_vm }}"
+
+        - name: Confirm zero leftovers
+          vergeio.vergeos.vm_info:
+            name: "{{ item }}"
+          loop:
+            - "{{ ci_vm }}"
+            - "{{ un_vm }}"
+          register: leftovers
+
+        - name: Fail the run if the ladder failed before cleanup
+          ansible.builtin.fail:
+            msg: "ladder FAILED. See the task above. Cleanup still ran."
+          when: ladder_failed | default(false)
+
+        - name: No scratch VMs left behind
+          ansible.builtin.assert:
+            that:
+              - leftovers.results | map(attribute='vms') | map('length') | sum == 0
+            fail_msg: "objects left behind: {{ leftovers.results | map(attribute='vms') | list }}"

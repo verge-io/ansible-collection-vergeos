@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  author: VergeIO
+  description: >-
+    Golden images as code for VergeOS. Takes a local qcow2, packs a
+    minimal no-NIC OVA, uploads it, imports it as a stopped template
+    VM, enforces its specs and takes a golden snapshot. An existing
+    template is never rebuilt.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.15"
+  galaxy_tags:
+    - vergeos
+    - images
+    - provisioning
+dependencies: []

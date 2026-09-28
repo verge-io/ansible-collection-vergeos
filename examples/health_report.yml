@@ -1,0 +1,26 @@
+---
+# Daily-green health watchdog: five read-only checks (alarms, nodes,
+# capacity, snapshots, NAS) rolled into one digest.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true          # self-signed certificates
+#   ansible-playbook examples/health_report.yml
+#
+# Or authenticate with an API key instead of a password:
+#   export VERGEOS_API_KEY=...            # takes precedence, bypasses 2FA
+#
+# Schedule it with a webhook and the day the green digest STOPS arriving is
+# itself the alert -- a watchdog that only speaks up when things are broken
+# cannot be distinguished from one that has died.
+#
+#   ansible-playbook examples/health_report.yml \
+#     -e health_report_webhook_url=https://discord.com/api/webhooks/...
+#
+# Gate CI or cron on the verdict. Nothing fails the play by default:
+#   -e health_report_fail_on=red      fail only on red
+#   -e health_report_fail_on=amber    fail on amber or red
+- name: VergeOS health report
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: vergeio.vergeos.health_report

@@ -1,0 +1,47 @@
+---
+# Read one cloud-init file and the VM datasource, straight from the platform.
+#
+# Set `ci_vm` and `ci_filename` (for example /user-data or /unattend.xml)
+# before including. Sets `ci_datasource` and `ci_file_body`.
+#
+# GET of the file row does not include contents. get_content() does, which
+# is the comparison cloud_init and windows_unattend use (#125).
+- name: Read a cloud-init file back from the platform
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "-c"
+      - |
+        import json, os, sys, urllib3
+        urllib3.disable_warnings()
+        from pyvergeos import VergeClient
+        c = VergeClient(host=os.environ['VERGEOS_HOST'],
+                        username=os.environ['VERGEOS_USERNAME'],
+                        password=os.environ['VERGEOS_PASSWORD'],
+                        verify_ssl=False)
+        name = sys.argv[1]
+        wanted = sys.argv[2]
+        rows = c._request('GET', 'vms',
+                          params={'fields': '$key,name,cloudinit_datasource'})
+        vm = [r for r in rows if r.get('name') == name]
+        if not vm:
+            raise SystemExit('no VM named %r' % name)
+        key = int(vm[0]['$key'])
+        body = ''
+        for row in (dict(f) for f in c.cloudinit_files.list_for_vm(key)):
+            if row.get('name') == wanted:
+                body = c.cloudinit_files.get_content(int(row['$key']))
+        print(json.dumps({'datasource': vm[0].get('cloudinit_datasource'),
+                          'body': body,
+                          'name': wanted}))
+      - "{{ ci_vm }}"
+      - "{{ ci_filename }}"
+  register: ci_file_raw
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Parse the cloud-init file read
+  ansible.builtin.set_fact:
+    ci_datasource: "{{ (ci_file_raw.stdout | from_json).datasource }}"
+    ci_file_body: "{{ (ci_file_raw.stdout | from_json).body }}"

@@ -1,0 +1,105 @@
+{# Scale-out seed: node 3 joins the existing nested system as a vSAN       #}
+{# scale-out node. Sourced as bash by yb-install. No #cloud-config line.   #}
+# Detect NICs in PCI-bus order (machine-type agnostic; creation order
+# External -> Core 1 -> Core 2 == PCI order == this order).
+_NICLIST=$(for _D in /sys/class/net/*; do
+	_B=${_D##*/}
+	[ "$_B" = lo ] && continue
+	[ -e "$_D/device" ] || continue
+	echo "$(basename "$(readlink -f "$_D/device")") $_B"
+done | sort | awk '{print $2}')
+set -- $_NICLIST
+NIC1=$1
+NIC2=$2
+NIC3=$3
+
+YC_INSTALL=basic
+YC_INSTALL_TYPE=scale-out
+YC_VSAN_NEW=0
+# Existing system's admin. The join authenticates yb-api calls to node 1
+# via the core-DNS name yb-api. The core address is static: nested vxlan
+# does not deliver the core-network DHCP lease a physical scale-out uses.
+YC_USER_NAME={{ vlab_admin_username }}
+YC_USER_PASSWORD={{ vlab_admin_password }}
+
+# 0020-timezone runs dpkg-reconfigure if /etc/timezone is empty
+echo '{{ vlab_timezone }}' > /etc/timezone
+
+YC_NET_CORE_DNS='100.96.0.1'
+YC_NET_CORE_ADDR='100.96.0.1/24'
+YC_NET_CORE_ADVMSS=1460
+YC_NET_CORE_GATEWAY='100.96.0.1'
+YC_NET_CORE_MTU=9000
+YC_NET_CORE_MULTICAST='239.0.0.1'
+YC_NET_CORE_NODE_ADDR='100.96.0.4/24'
+YC_NET_CORE_NICS="$NIC2 $NIC3"
+YC_NET_CORE_SWITCHES=2
+YC_NET_DMZ_NICS="$NIC2 $NIC3"
+YC_NET_DMZ_SWITCHES=2
+YC_NET_DMZ_MTU=9000
+YC_NET_DMZ_MULTICAST=239.0.0.1
+
+YC_NET_NIC1_NAME="$NIC1"
+YC_NET_NIC1_SWITCH='External Switch'
+YC_NET_NIC1_VLAN=0
+YC_NET_NIC1_MTU=1500
+YC_NET_NIC1_MULTICAST=
+
+YC_NET_NIC2_NAME="$NIC2"
+YC_NET_NIC2_SWITCH='Core 1'
+YC_NET_NIC2_VLAN=0
+YC_NET_NIC2_MTU=9142
+YC_NET_NIC2_MULTICAST=239.0.0.1
+YC_NET_NIC2_ADDR=172.16.1.3/24
+
+YC_NET_NIC3_NAME="$NIC3"
+YC_NET_NIC3_SWITCH='Core 2'
+YC_NET_NIC3_VLAN=0
+YC_NET_NIC3_MTU=9142
+YC_NET_NIC3_MULTICAST=239.0.0.1
+YC_NET_NIC3_ADDR=172.16.2.3/24
+
+YC_NET_SWITCH1_NAME=External
+YC_NET_SWITCH1_NICS="$NIC1"
+YC_NET_SWITCH1_VLAN=0
+YC_NET_SWITCH1_DONE=1
+YC_NET_SWITCH1_MTU=1500
+YC_NET_SWITCH1_MULTICAST=
+
+YC_NET_SWITCH2_NAME='Core 1'
+YC_NET_SWITCH2_NICS="$NIC2"
+YC_NET_SWITCH2_VLAN=0
+YC_NET_SWITCH2_DONE=1
+YC_NET_SWITCH2_MTU=9142
+YC_NET_SWITCH2_MULTICAST=239.0.0.1
+
+YC_NET_SWITCH3_NAME='Core 2'
+YC_NET_SWITCH3_NICS="$NIC3"
+YC_NET_SWITCH3_VLAN=0
+YC_NET_SWITCH3_DONE=1
+YC_NET_SWITCH3_MTU=9142
+YC_NET_SWITCH3_MULTICAST=239.0.0.1
+
+YC_NET_SWITCH_COUNT=3
+
+YC_VSAN_ENCRYPTION=0
+YC_DRIVE_LIST='{{ vlab_drive_list }}'
+YC_VSAN_TIER_LIST='{{ vlab_tier_list }}'
+YC_CLUSTER_SWAP_PER_DRIVE=0
+YC_CLUSTER_SWAP_TIER=-1
+
+YC_INSTALL_EFI_BOOT=1
+YC_NO_TIME=1
+YC_SKIP_IPMI_CONFIG=1
+YC_SPLIT_LOCK_DETECTION=0
+
+# Deterministic cluster selection on the existing system
+YC_CLUSTER=1
+
+touch /etc/yottabyte/reboot
+# shorten the final reboot pause
+sed -i 's/within 10 seconds." 15 60 10/within 3 seconds." 15 60 3/g' /usr/lib/ybos/install/9999-finish
+# joining nodes skip the quick-install NIC preflight (same as the node-2 join)
+truncate -s 0 /usr/lib/ybos/install/0040-quick-install
+# time comes from the cluster on join; skip the installer's ntpd sync
+sed -i 's_ntpd -g -c /tmp/ntp.conf_return 0_' /usr/lib/ybos/install/0050-network

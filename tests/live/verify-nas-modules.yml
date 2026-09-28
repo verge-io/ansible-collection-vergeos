@@ -1,0 +1,459 @@
+---
+# Live ladder for nas_volume + nas_nfs_share.
+#
+# Touches ONLY zz-* objects on the NAS service given by -e nas_service=.
+# Cleans up in an always: block so a mid-ladder failure leaves nothing behind.
+#
+#   set -a; . ~/.config/vergeos/env; set +a
+#   ansible-playbook verify-nas-modules.yml -e nas_service=<name>
+#
+# nas_service cannot be discovered: every NAS service is a row in vm_services,
+# and so is the system's own Services VM, with no column that separates them.
+# Guessing would mean a chance of creating a scratch volume on the appliance
+# that runs the cluster's services, so the ladder asks instead -- and prints
+# the candidates when it has to.
+#
+# Two rungs here exist because the previous version of this ladder did not
+# have them, and two bugs shipped through it reporting PASS:
+#
+#   4  size_gb drift. The module sent `maxsize=` to an SDK update() that has
+#      no such parameter, so every resize raised TypeError. The old ladder
+#      drifted the description and nothing else.
+#   9  async_mode. The column is `async`; the module read `async_mode`, got
+#      None, and never converged. The old ladder never set it, so it never
+#      saw it: the default (false) converges by accident.
+- name: NAS volume and NFS share live ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    api: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    vol: zz-nas-vol
+    share: zz-nas-share
+    # Every column the two modules diff, kept in step with the modules by
+    # tests/unit/plugins/modules/test_field_contracts.py.
+    volume_api_fields:
+      - description
+      - enabled
+      - maxsize
+      - preferred_tier
+      - read_only
+      - snapshot_profile
+    share_api_fields:
+      - allow_all
+      - allowed_hosts
+      - async
+      - data_access
+      - description
+      - enabled
+      - insecure
+      - no_acl
+      - squash
+
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+      return_content: true
+
+  tasks:
+    - name: "0. Which NAS services exist?"
+      ansible.builtin.uri:
+        url: "{{ api }}/vm_services?fields=$key,name"
+      register: services
+      changed_when: false
+
+    - name: "0a. A NAS service must be named"
+      ansible.builtin.assert:
+        that: ["nas_service is defined"]
+        fail_msg: >-
+          Pass -e nas_service=<name>. Candidates on this system:
+          {{ services.json | map(attribute='name') | list }} -- note that one
+          of them is the cluster's own Services VM, which is not a NAS.
+
+    - name: "0b. And it must be one of them"
+      ansible.builtin.assert:
+        that: ["nas_service in (services.json | map(attribute='name') | list)"]
+        fail_msg: >-
+          No service named '{{ nas_service }}'. Candidates:
+          {{ services.json | map(attribute='name') | list }}
+
+    # A previous run may have died. Clean up at the start as well as the end.
+    - name: "0c. Clear leftovers from an earlier run"
+      block:
+        - name: "0c-i. Share"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            state: absent
+          failed_when: false
+        - name: "0c-ii. Volume"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            state: absent
+          failed_when: false
+
+    - name: "NAS ladder (cleanup runs even on failure)"
+      block:
+        # --- Property 1: every field the modules send is a real column ----
+        - name: "1. Create the scratch volume"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            service: "{{ nas_service }}"
+            size_gb: 10
+            tier: 1
+            description: "scratch, ladder"
+            state: present
+          register: vol_create
+
+        - name: "Verify: create reported changed"
+          ansible.builtin.assert:
+            that: [vol_create.changed]
+            fail_msg: "volume create did not report changed"
+
+        - name: "1b. Read the row back over plain REST"
+          ansible.builtin.uri:
+            url: "{{ api }}/volumes?fields=$key,name,{{ volume_api_fields | join(',') }}"
+          register: vol_row
+          changed_when: false
+
+        - name: "1c. Every column the module diffs exists on the row"
+          vars:
+            row: "{{ vol_row.json | selectattr('name', 'equalto', vol) | first }}"
+          ansible.builtin.assert:
+            that: >-
+              volume_api_fields | difference(row.keys() | list) | length == 0
+            fail_msg: >-
+              these are not columns on a volume:
+              {{ volume_api_fields | difference(row.keys() | list) }}
+              -- the API accepts unknown names with HTTP 200 and discards
+              them, which is issue #75's whole class.
+
+        # --- Property 2: what was set is what landed ----------------------
+        - name: "2. Every parameter round-tripped"
+          vars:
+            row: "{{ vol_row.json | selectattr('name', 'equalto', vol) | first }}"
+          ansible.builtin.assert:
+            that:
+              - row.maxsize | int == 10 * 1073741824
+              - row.preferred_tier | int == 1
+              - row.description == 'scratch, ladder'
+              - not (row.read_only | bool)
+              - row.enabled | bool
+            fail_msg: >-
+              the volume does not hold what was asked for: {{ row }}
+              (VergeOS defaults preferred_tier to '4' when no tier is
+              given, so tier 1 here means the value really landed)
+
+        # --- Property 3: a second apply is a no-op ------------------------
+        - name: "3. Re-run unchanged"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            service: "{{ nas_service }}"
+            size_gb: 10
+            tier: 1
+            description: "scratch, ladder"
+            state: present
+          register: vol_again
+
+        - name: "Verify: re-run is idempotent"
+          ansible.builtin.assert:
+            that: [not vol_again.changed]
+            fail_msg: "volume is not idempotent: {{ vol_again }}"
+
+        # --- the resize bug ----------------------------------------------
+        - name: "4. Grow it to 20 GB"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            size_gb: 20
+            state: present
+          register: vol_grow
+
+        - name: "4b. Read the byte count back independently"
+          ansible.builtin.uri:
+            url: "{{ api }}/volumes?fields=name,maxsize"
+          register: grown_row
+          changed_when: false
+
+        - name: "Verify: the resize actually happened"
+          vars:
+            row: "{{ grown_row.json | selectattr('name', 'equalto', vol) | first }}"
+          ansible.builtin.assert:
+            that:
+              - vol_grow.changed
+              - row.maxsize | int == 20 * 1073741824
+            fail_msg: >-
+              resize did not land: maxsize={{ row.maxsize }}, wanted
+              {{ 20 * 1073741824 }}. Before this ladder rung existed, the
+              module sent maxsize= to an SDK update() that takes size_gb=,
+              so every resize raised TypeError and was reported as
+              "Unexpected error".
+
+        - name: "5. Re-apply the new size -- still a no-op"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            size_gb: 20
+            state: present
+          register: vol_grow_again
+
+        - name: "Verify: resize converges"
+          ansible.builtin.assert:
+            that: [not vol_grow_again.changed]
+            fail_msg: "resize did not converge: {{ vol_grow_again }}"
+
+        - name: "6. Move it to tier 2"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            tier: 2
+            state: present
+          register: vol_tier
+
+        - name: "6b. Re-apply tier 2"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            tier: 2
+            state: present
+          register: vol_tier_again
+
+        - name: "Verify: tier drift is corrected once and then settles"
+          ansible.builtin.assert:
+            that:
+              - vol_tier.changed
+              - not vol_tier_again.changed
+            fail_msg: >-
+              preferred_tier is stored as the STRING '2'; comparing it to the
+              int 2 without coercion is how a module reports changed forever.
+
+        # --- the share ----------------------------------------------------
+        - name: "7. Export it read-only over NFS"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allowed_hosts: [192.0.2.10]
+            data_access: ro
+            squash: root_squash
+            state: present
+          register: share_create
+
+        - name: "7b. Read the share row back over plain REST"
+          ansible.builtin.uri:
+            url: "{{ api }}/volume_nfs_shares?fields=$key,name,{{ share_api_fields | join(',') }}"
+          register: share_row
+          changed_when: false
+
+        - name: "7c. Every column the module diffs exists on the row"
+          vars:
+            row: "{{ share_row.json | selectattr('name', 'equalto', share) | first }}"
+          ansible.builtin.assert:
+            that:
+              - share_create.changed
+              - share_api_fields | difference(row.keys() | list) | length == 0
+            fail_msg: >-
+              these are not columns on an NFS share:
+              {{ share_api_fields | difference(row.keys() | list) }}
+
+        - name: "7d. And async_mode is NOT one of them"
+          vars:
+            row: "{{ share_row.json | selectattr('name', 'equalto', share) | first }}"
+          ansible.builtin.assert:
+            that: "'async_mode' not in (row.keys() | list)"
+            fail_msg: >-
+              a column called async_mode has appeared; the rename in
+              nas_nfs_share.UPDATE_FIELD_MAP needs revisiting
+
+        - name: "8. Re-run the share unchanged"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allowed_hosts: [192.0.2.10]
+            data_access: ro
+            squash: root_squash
+            state: present
+          register: share_again
+
+        - name: "Verify: share is idempotent"
+          ansible.builtin.assert:
+            that: [not share_again.changed]
+            fail_msg: "share is not idempotent: {{ share_again }}"
+
+        # --- the async_mode bug ------------------------------------------
+        - name: "9. Turn async on"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allowed_hosts: [192.0.2.10]
+            async_mode: true
+            state: present
+          register: async_on
+
+        - name: "9b. Apply the same thing again"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allowed_hosts: [192.0.2.10]
+            async_mode: true
+            state: present
+          register: async_settled
+
+        - name: "9c. And read the column back independently"
+          ansible.builtin.uri:
+            url: "{{ api }}/volume_nfs_shares?fields=name,async"
+          register: async_row
+          changed_when: false
+
+        - name: "Verify: async_mode lands and then converges"
+          vars:
+            row: "{{ async_row.json | selectattr('name', 'equalto', share) | first }}"
+          ansible.builtin.assert:
+            that:
+              - async_on.changed
+              - not async_settled.changed
+              - row.async | bool
+            fail_msg: >-
+              async_mode does not converge. The column is `async` -- the
+              module used to read `async_mode`, get None, and compare
+              bool(None) to the parameter, so this rung reported changed
+              forever while PUTting the same value on every run.
+
+        - name: "10. Add a second allowed host"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allowed_hosts: [192.0.2.10, 192.0.2.11]
+            async_mode: true
+            state: present
+          register: hosts_added
+
+        - name: "10b. The same two, written the other way round"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allowed_hosts: [192.0.2.11, 192.0.2.10]
+            async_mode: true
+            state: present
+          register: hosts_reordered
+
+        - name: "10c. Now really drop one"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allowed_hosts: [192.0.2.10]
+            async_mode: true
+            state: present
+          register: hosts_removed
+
+        - name: "Verify: reordering is not drift, adding and removing are"
+          ansible.builtin.assert:
+            that:
+              - hosts_added.changed
+              - not hosts_reordered.changed
+              - hosts_removed.changed
+            fail_msg: >-
+              allowed_hosts is one comma-separated string on the API side;
+              comparing it as a string makes reordering look like drift.
+              added={{ hosts_added.changed }}
+              reordered={{ hosts_reordered.changed }}
+              removed={{ hosts_removed.changed }}
+
+        - name: "11. Check mode reports the change without making it"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            allowed_hosts: [192.0.2.10]
+            data_access: rw
+            async_mode: true
+            state: present
+          check_mode: true
+          register: share_check
+
+        - name: "11b. ...and it really did not happen"
+          ansible.builtin.uri:
+            url: "{{ api }}/volume_nfs_shares?fields=name,data_access"
+          register: check_row
+          changed_when: false
+
+        - name: "Verify: check mode wrote nothing"
+          vars:
+            row: "{{ check_row.json | selectattr('name', 'equalto', share) | first }}"
+          ansible.builtin.assert:
+            that:
+              - share_check.changed
+              - row.data_access == 'ro'
+            fail_msg: >-
+              check mode wrote through: data_access is {{ row.data_access }}
+
+      rescue:
+        - name: "Record that the ladder failed, so cleanup can still run"
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+      always:
+        - name: "12. Delete the share"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            state: absent
+          failed_when: false
+
+        - name: "13. Delete the share again -- absent is idempotent"
+          vergeio.vergeos.nas_nfs_share:
+            name: "{{ share }}"
+            volume: "{{ vol }}"
+            state: absent
+          register: share_gone
+          failed_when: false
+
+        # Strict on purpose. A mounted volume refuses deletion ("Unable to
+        # delete online drive"); the module disables it and retries. If that
+        # retry ever regresses, this rung is where a leaked scratch volume
+        # gets caught rather than discovered weeks later.
+        - name: "14. Delete the volume"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            state: absent
+
+        - name: "15. Delete the volume again -- absent is idempotent"
+          vergeio.vergeos.nas_volume:
+            name: "{{ vol }}"
+            state: absent
+          register: vol_gone
+
+        - name: "16. Re-read both tables"
+          ansible.builtin.uri:
+            url: "{{ api }}/{{ item }}?fields=name"
+          register: leftovers
+          changed_when: false
+          loop:
+            - volumes
+            - volume_nfs_shares
+
+        - name: "17. Zero leftovers"
+          vars:
+            names: "{{ leftovers.results | map(attribute='json')
+                       | map('map', attribute='name') | map('list') | list }}"
+          ansible.builtin.assert:
+            that:
+              - not share_gone.changed
+              - not vol_gone.changed
+              - vol not in names[0]
+              - share not in names[1]
+            fail_msg: >-
+              leftovers: volumes={{ names[0] }}, shares={{ names[1] }}
+              (absent idempotent: share={{ not share_gone.changed }}
+              volume={{ not vol_gone.changed }})
+
+        - name: "18. Fail the run if the ladder failed before cleanup"
+          ansible.builtin.fail:
+            msg: "ladder FAILED -- see the first failed task above; cleanup ran"
+          when: ladder_failed | default(false)
+
+        - name: PASSED
+          ansible.builtin.debug:
+            msg: >-
+              nas ladder PASSED: volume create -> every diffed column is real
+              -> parameters round-trip -> idempotent -> resize lands and
+              converges -> tier drift settles -> NFS share -> idempotent ->
+              async_mode lands and converges -> host lists compare as sets ->
+              check mode writes nothing -> delete x2, zero leftovers

@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  author: VergeIO
+  description: >-
+    Storage-tier placement policy for VergeOS. Declares which tier each
+    VM's drives belong on, audits the configured preferred_tier against
+    that, and optionally corrects drift and re-audits to prove it.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.15"
+  galaxy_tags:
+    - vergeos
+    - storage
+    - policy
+dependencies: []

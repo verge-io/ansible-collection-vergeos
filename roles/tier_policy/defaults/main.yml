@@ -1,0 +1,50 @@
+---
+# tier_policy -- SPBM-style storage-tier placement policy.
+#
+# Declares which tier each VM's drives belong on, audits the configured
+# preferred_tier against that, and (in enforce mode) corrects drift and
+# re-audits to prove it converged.
+
+# Connection.
+tier_policy_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+tier_policy_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+tier_policy_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+tier_policy_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(false, true) | bool }}"
+
+# Placement rules, evaluated first-match-wins per drive:
+#
+#   tier_policy_rules:
+#     - {match: "db-*",  tier: 1}                 # every drive of db-*
+#     - {match: "app-*", drive: "data*", tier: 1} # just its data drives
+#     - {match: "app-*", tier: 4}                 # everything else on app-*
+tier_policy_rules: []
+
+# WARNING. This makes EVERY unmatched drive on the system subject to
+# policy. Combined with enforce, it retiers VMs you never named.
+# Leave it null unless that is exactly what you want; null reports
+# unmatched drives as 'unclassified' -- visible, and untouched.
+tier_policy_default_tier: null
+
+# Refuse to enforce a tier this system has no storage tier for.
+#
+# The platform range-checks preferred_tier (1-5) and does not check that the
+# tier exists. Measured on 26.1.8, on a system whose only tier was tier 1:
+# writing 2, 3, 4 or 5 succeeded and read back cleanly. Enforce proves itself
+# by reading the value back, so such a policy converges, reports green, and
+# cannot have moved a byte. Set this false only if you are staging a policy
+# ahead of adding the tier.
+tier_policy_require_tiers_exist: true
+
+# report  = audit only, read-only.
+# enforce = correct drift through the drive module, then re-audit and
+#           fail if anything still drifts.
+tier_policy_mode: report
+
+# Report-mode CI gate: fail the play when any drive is off policy.
+tier_policy_fail_on_drift: false
+
+# Optional: audit a saved {drives: [...]} JSON instead of the live API.
+# An optional {tiers: [...]} in the same file says which tiers the recorded
+# system had; without it the unsatisfiable-tier check is skipped rather than
+# guessed. Enforce is refused against a fixture -- there is nothing to retier.
+tier_policy_fixture: ""

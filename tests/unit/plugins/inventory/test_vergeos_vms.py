@@ -157,12 +157,19 @@ class TestMatchesFilters:
         assert inventory_module._matches_filters({'name': 'webserver'}) is False
 
     def test_generic_field_filter(self, inventory_module):
-        """Test generic field filtering"""
-        inventory_module._options['filters'] = {'tenant': 'acme', 'cluster': 'prod-cluster'}
-        vm = {'name': 'vm1', 'tenant': 'acme', 'cluster': 'prod-cluster'}
+        """Test generic field filtering.
+
+        The cluster dimension on a VM row is cluster_name / cluster_key.
+        A hand-written `cluster` key is not what VMManager.list() returns.
+        """
+        inventory_module._options['filters'] = {
+            'tenant': 'acme', 'cluster_name': 'example-lab'}
+        vm = {'name': 'vm1', 'tenant': 'acme', 'cluster_name': 'example-lab',
+              'cluster_key': 1, 'cluster': None}
         assert inventory_module._matches_filters(vm) is True
 
-        vm_wrong_tenant = {'name': 'vm2', 'tenant': 'other', 'cluster': 'prod-cluster'}
+        vm_wrong_tenant = {'name': 'vm2', 'tenant': 'other',
+                           'cluster_name': 'example-lab', 'cluster_key': 1}
         assert inventory_module._matches_filters(vm_wrong_tenant) is False
 
     def test_multiple_filters_all_must_match(self, inventory_module):
@@ -341,13 +348,63 @@ class TestCreateGroups:
         assert 'tag_prod' in group_names
 
     def test_skips_empty_optional_fields(self, inventory_module):
-        """Test that empty optional fields don't create groups"""
+        """Empty optional fields do not create groups.
+
+        A populated `cluster` key must not create a group either: that key
+        is not on a VMManager.list() row. The name is cluster_name (#130).
+        """
         inventory_module._options['group_by'] = ['tenant', 'cluster', 'os_family']
-        vm = {'name': 'vm1', 'tenant': None, 'cluster': None, 'os_family': None}
+        vm = {
+            'name': 'vm1',
+            'tenant': None,
+            'cluster': 'not-a-real-field',
+            'cluster_name': None,
+            'cluster_key': 1,
+            'os_family': None,
+        }
         inventory_module._create_groups('host1', vm, 'site1')
 
-        # Should not create any groups for None values
         inventory_module.inventory.add_group.assert_not_called()
+
+    def test_cluster_group_uses_sdk_cluster_name(self, inventory_module):
+        """group_by cluster follows cluster_name, even when cluster is null.
+
+        Measured SDK row: cluster is null, cluster_key and cluster_name are
+        set. A hyphenated name becomes cluster_<name_with_underscores>,
+        e.g. example-lab -> cluster_example_lab. No vms.list() capture
+        exists under tests/fixtures/api/, so this is that measured shape.
+        """
+        inventory_module._options['group_by'] = ['cluster']
+        vm = {
+            '$key': 7,
+            'name': 'lab-dr-test',
+            'status': 'running',
+            'cluster': None,
+            'cluster_key': 1,
+            'cluster_name': 'example-lab',
+            'node_name': 'node1',
+        }
+        inventory_module._create_groups('lab_lab-dr-test', vm, 'lab')
+
+        inventory_module.inventory.add_group.assert_called_once_with(
+            'cluster_example_lab')
+        inventory_module.inventory.add_child.assert_called_once_with(
+            'cluster_example_lab', 'lab_lab-dr-test')
+
+    def test_vm_list_projection_has_no_cluster_field(self):
+        """The keys above are the ones VMManager.list() actually requests."""
+        pytest.importorskip('pyvergeos.resources.vms')
+        from pyvergeos.resources.vms import VM_DEFAULT_FIELDS
+
+        aliases = []
+        for field in VM_DEFAULT_FIELDS:
+            if ' as ' in field:
+                aliases.append(field.split(' as ', 1)[1].strip())
+            else:
+                aliases.append(field)
+        assert 'cluster_name' in aliases
+        assert 'cluster_key' in aliases
+        assert 'cluster' not in aliases
 
 
 class TestSetHostvars:
@@ -445,6 +502,26 @@ class TestSetHostvars:
         assert '_tags' not in vm_data
         assert '_internal' not in vm_data
         assert 'name' in vm_data
+
+    def test_cluster_hostvars_use_sdk_keys(self, inventory_module):
+        """vergeos_cluster is the name; the null `cluster` key is ignored."""
+        inventory_module._options['hostvar_prefix'] = 'vergeos_'
+        vm = {
+            '$key': 7,
+            'name': 'lab-dr-test',
+            'cluster': None,
+            'cluster_key': 1,
+            'cluster_name': 'example-lab',
+            'node_name': 'node1',
+            '_nics': [],
+            '_tags': [],
+        }
+        inventory_module._set_hostvars('host1', vm, 'lab', 'https://lab.example')
+
+        calls = {call[0][1]: call[0][2]
+                 for call in inventory_module.inventory.set_variable.call_args_list}
+        assert calls['vergeos_cluster'] == 'example-lab'
+        assert calls['vergeos_cluster_key'] == 1
 
 
 class TestCacheOperations:

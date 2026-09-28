@@ -1,0 +1,45 @@
+{
+ "_call": "client.clusters.list()",
+ "_meta": {
+  "captured": "2026-09-24",
+  "identities_substituted": [
+   "cluster1",
+   "operator",
+   "user2",
+   "user3",
+   "vergeos.example.com"
+  ],
+  "note": "Regenerate with tests/capture_api_fixtures.py. Do not hand-edit: the point of these files is that no human chose the field names.",
+  "platform": "26.1.8"
+ },
+ "rows": [
+  {
+   "$key": 1,
+   "compute": true,
+   "cores_per_unit": 1,
+   "created": 1787560229,
+   "default_cpu": "EPYC-Rome",
+   "description": "",
+   "enabled": true,
+   "kvm_nested": true,
+   "max_cores_per_vm": 16,
+   "max_ram_per_vm": 65536,
+   "name": "cluster1",
+   "online_cores": 64,
+   "online_nodes": 2,
+   "online_ram": 137472,
+   "ram_overcommit_pct": 0,
+   "ram_per_unit": 4096,
+   "recommended_cpu_type": "EPYC-Rome",
+   "running_machines": 2,
+   "status_state": "online",
+   "storage": true,
+   "target_ram_pct": 80,
+   "total_cores": 64,
+   "total_nodes": 2,
+   "total_ram": 137472,
+   "used_cores": 5,
+   "used_ram": 9216
+  }
+ ]
+}

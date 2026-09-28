@@ -22,6 +22,7 @@
 
           Node: {{ vergeos_node_name | default('N/A (stopped)') }}
           Cluster: {{ vergeos_cluster | default('N/A') }}
+          Cluster key: {{ vergeos_cluster_key | default('N/A') }}
           Tenant: {{ vergeos_tenant | default('N/A') }}
 
           IP Address: {{ vergeos_ip | default('N/A') }}

@@ -1,0 +1,174 @@
+---
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that: vm_backup_host | length > 0
+    fail_msg: "vm_backup needs vm_backup_host (or VERGEOS_HOST)."
+    quiet: true
+
+- name: Preflight -- a NAS service and a volume are named
+  ansible.builtin.assert:
+    that:
+      - vm_backup_nas_service | length > 0
+      - vm_backup_volume | length > 0
+    fail_msg: >-
+      vm_backup needs vm_backup_nas_service and vm_backup_volume. The
+      export volume is the one layer that is not optional -- there is
+      nowhere to put an export without it.
+    quiet: true
+
+- name: Ensure the snapshot schedule
+  vergeio.vergeos.snapshot_profile:
+    host: "{{ vm_backup_host }}"
+    username: "{{ vm_backup_username }}"
+    password: "{{ vm_backup_password }}"
+    insecure: "{{ vm_backup_insecure }}"
+    name: "{{ vm_backup_snapshot_profile.name }}"
+    periods: "{{ vm_backup_snapshot_profile.periods }}"
+    state: present
+  when: vm_backup_snapshot_profile is not none
+  register: vm_backup_profile_result
+
+- name: Ensure the export volume on the NAS service
+  vergeio.vergeos.nas_volume:
+    host: "{{ vm_backup_host }}"
+    username: "{{ vm_backup_username }}"
+    password: "{{ vm_backup_password }}"
+    insecure: "{{ vm_backup_insecure }}"
+    name: "{{ vm_backup_volume }}"
+    service: "{{ vm_backup_nas_service }}"
+    size_gb: "{{ vm_backup_volume_size_gb }}"
+    tier: "{{ vm_backup_volume_tier | default(omit) }}"
+    description: "VM export target (managed by the vm_backup role)"
+    state: present
+  register: vm_backup_volume_result
+
+# A declaration check, not a platform interaction, so it sits outside the
+# block below: its refusal is about what the caller wrote and should not be
+# rewrapped in an explanation about volumes.
+- name: Refuse to leave exposure undeclared and unmentioned
+  ansible.builtin.assert:
+    that: vm_backup_nfs_share.state is defined
+    fail_msg: >-
+      vm_backup_nfs_share.allowed_hosts is empty, which skips the share
+      task -- and skipping does not revoke a share that already exists.
+      Say which you mean: state 'absent' to revoke it, or list the hosts
+      that should reach it. (Leaving it at 'present' with no hosts is
+      accepted and means "this run does not manage the share".)
+    quiet: true
+  when:
+    - vm_backup_nfs_share is not none
+    - vm_backup_nfs_share.allowed_hosts | default([]) | length == 0
+
+# The share and the export configuration are both defined in terms of the
+# volume, so neither can be evaluated until it exists. Under --check on a
+# system that does not have it yet, nas_volume reports the create it would
+# have made and makes none -- and the next layer failed with a bare
+#
+#   NAS volume 'backups' not found
+#
+# which reads like the operator got the name wrong. It is not wrong; it is
+# check mode meeting a dependency chain. Keep the failure, because nothing
+# downstream was verified, and say which of the two it is.
+- name: Layers that depend on the export volume
+  block:
+    # No share unless somebody is named. An export volume exposed to
+    # everything on the network is not a backup target.
+    #
+    # What an EMPTY allowed_hosts does and does not do, measured on 26.1.8:
+    # it skips this task, and skipping does not revoke anything. Apply the
+    # policy with a host listed, then re-apply with the list emptied, and the
+    # platform still reports
+    #
+    #   zz-probe-share  allowed_hosts "192.0.2.10"  data_access ro
+    #
+    # while the role's summary said "NFS (no share)". The volume was still
+    # exported to that host and the run said it was not. An empty list means
+    # "this run does not manage the share", not "there is no share" -- so
+    # revocation needs saying out loud, which is what state: absent is for.
+    - name: Ensure NFS exposure for the backup tooling
+      vergeio.vergeos.nas_nfs_share:
+        host: "{{ vm_backup_host }}"
+        username: "{{ vm_backup_username }}"
+        password: "{{ vm_backup_password }}"
+        insecure: "{{ vm_backup_insecure }}"
+        name: "{{ vm_backup_nfs_share.name }}"
+        volume: "{{ vm_backup_volume }}"
+        allowed_hosts: "{{ vm_backup_nfs_share.allowed_hosts | default([]) }}"
+        data_access: "{{ vm_backup_nfs_share.data_access | default('ro') }}"
+        state: present
+      when:
+        - vm_backup_nfs_share is not none
+        - vm_backup_nfs_share.state | default('present') != 'absent'
+        - vm_backup_nfs_share.allowed_hosts | default([]) | length > 0
+      register: vm_backup_share_result
+
+    # The revocation path. Idempotent: removing a share that is not there is a
+    # no-op, so this is safe to leave declared once the exposure is gone.
+    - name: Revoke NFS exposure
+      vergeio.vergeos.nas_nfs_share:
+        host: "{{ vm_backup_host }}"
+        username: "{{ vm_backup_username }}"
+        password: "{{ vm_backup_password }}"
+        insecure: "{{ vm_backup_insecure }}"
+        name: "{{ vm_backup_nfs_share.name }}"
+        volume: "{{ vm_backup_volume }}"
+        state: absent
+      when:
+        - vm_backup_nfs_share is not none
+        - vm_backup_nfs_share.state | default('present') == 'absent'
+      register: vm_backup_share_revoked
+
+    - name: Ensure the export configuration
+      vergeio.vergeos.vm_export:
+        host: "{{ vm_backup_host }}"
+        username: "{{ vm_backup_username }}"
+        password: "{{ vm_backup_password }}"
+        insecure: "{{ vm_backup_insecure }}"
+        volume: "{{ vm_backup_volume }}"
+        max_exports: "{{ vm_backup_export.max_exports | default(3) }}"
+        quiesced: "{{ vm_backup_export.quiesced | default(true) }}"
+        start: "{{ vm_backup_export.run_now | default(false) }}"
+        vms: >-
+          {{ vm_backup_export.vms
+             if (vm_backup_export.vms | default([]) | length > 0)
+             else omit }}
+        state: present
+      register: vm_backup_export_result
+
+  rescue:
+    - name: Explain what could not be evaluated
+      ansible.builtin.fail:
+        msg: >-
+          {{ ansible_failed_result.msg | default('the dependent layers
+          failed') }} -- the NFS share and the export configuration are
+          both defined in terms of volume '{{ vm_backup_volume }}'. If this
+          is a --check run against a system where that volume does not
+          exist yet, that is expected: check mode cannot create it, so
+          nothing that depends on it can be evaluated either. Run without
+          --check, or point the role at a volume that is already there.
+
+- name: Backup policy summary
+  ansible.builtin.debug:
+    msg: >-
+      volume '{{ vm_backup_volume }}' on '{{ vm_backup_nas_service }}',
+      keeping {{ vm_backup_export.max_exports | default(3) }} generation(s);
+      snapshots
+      {{ vm_backup_snapshot_profile.name
+         if vm_backup_snapshot_profile is not none else '(unmanaged)' }};
+      NFS {{ nfs_state }}
+  vars:
+    # Reports what this run DID, not what was declared. The old wording read
+    # "(no share)" for an empty allowed_hosts, which was a statement about
+    # the platform that the role had not checked and that was false whenever
+    # a share already existed.
+    nfs_state: >-
+      {{ 'exposed to ' ~ (vm_backup_nfs_share.allowed_hosts | join(', '))
+         if (vm_backup_nfs_share is not none
+             and vm_backup_nfs_share.allowed_hosts | default([]) | length > 0)
+         else ('revoked'
+               if (vm_backup_nfs_share is not none
+                   and vm_backup_nfs_share.state | default('present')
+                       == 'absent')
+               else 'not managed by this run; an existing share is left as '
+                    'it is -- set vm_backup_nfs_share.state to absent to '
+                    'revoke one') }}

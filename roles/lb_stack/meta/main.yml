@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  author: VergeIO
+  description: >-
+    Deploy and configure an haproxy (optionally keepalived) load
+    balancer VM as code. VergeOS has no fabric load-balancer service;
+    this is a VM you operate, labelled as such.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.15"
+  galaxy_tags:
+    - vergeos
+    - loadbalancer
+    - haproxy
+    - networking
+dependencies: []

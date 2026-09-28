@@ -1,0 +1,139 @@
+---
+# Explore the recipes on a VergeOS system. Read only, creates nothing.
+#
+# Recipe question names like YB_RAM or SELECT_OS_TIER are not guessable, and
+# a few of them only have valid values in the context of one particular
+# system. So the honest first step before automating a recipe deploy is to
+# ask the system what it has and what each recipe wants to know.
+#
+#   ansible-playbook examples/recipe_discover.yml
+#       Lists every recipe, then drills into the one named in recipe_name.
+#
+#   ansible-playbook examples/recipe_discover.yml -e recipe_name="Docker"
+#       Same, for a different recipe.
+#
+#   ansible-playbook examples/recipe_discover.yml -e show_all_questions=true
+#       Also dumps the full question definitions, which is a lot of output
+#       but is the fastest way to see min, max, regex and help text.
+- name: Explore the recipes on this system
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    recipe_name: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+    show_all_questions: false
+
+  tasks:
+    # === Step one: what is on this system at all ===
+    #
+    # With no name given, vm_recipe_info returns the whole catalog. Useful on
+    # its own, because recipe names have to be matched exactly, punctuation
+    # and all, and "Rocky Linux 9 (Latest)" is not something you want to be
+    # typing from memory.
+    - name: Fetch every recipe on the system
+      vergeio.vergeos.vm_recipe_info:
+      register: catalog
+
+    - name: Show every recipe, grouped by the catalog it came from
+      ansible.builtin.debug:
+        msg: >-
+          {{ catalog.recipes
+             | groupby('catalog_display')
+             | map('last') | map('map', attribute='name') | list }}
+
+    - name: Show the exact names, which is what you paste into a playbook
+      ansible.builtin.debug:
+        msg: "{{ catalog.recipes | map(attribute='name') | list | sort }}"
+
+    # === Step two: what does one recipe want to know ===
+    #
+    # questions asks for the question set. resolve_options is the flag that
+    # makes the result portable: some questions are backed by a table on the
+    # system rather than a fixed list of choices, and without this you get
+    # the table name instead of the values that are actually valid here.
+    - name: Ask one recipe for its questions, with table backed values resolved
+      vergeio.vergeos.vm_recipe_info:
+        name: "{{ recipe_name }}"
+        questions: true
+        resolve_options: true
+      register: recipe
+
+    - name: Summarise the question set
+      ansible.builtin.debug:
+        msg:
+          recipe: "{{ recipe.recipes[0].name }}"
+          total_questions: "{{ recipe.questions | length }}"
+
+          # Answer these or the deploy refuses outright.
+          required: >-
+            {{ recipe.questions | selectattr('required')
+               | map(attribute='name') | list }}
+
+          # The ones to actually think about. Nothing forces you to answer
+          # them, but their default is empty, and for some of them an empty
+          # value fails partway through building the VM rather than at
+          # validation time. SELECT_OS_TIER is the classic case.
+          optional_but_empty_by_default: >-
+            {{ recipe.questions | rejectattr('required')
+               | selectattr('default', 'in', ['', none])
+               | map(attribute='name') | list }}
+
+          # These have a real default, so the deploy will not complain.
+          # That is not the same as safe to leave alone, though. See the
+          # network question check below for the one that bites.
+          optional_with_a_default: >-
+            {{ recipe.questions | rejectattr('required')
+               | rejectattr('default', 'in', ['', none])
+               | map(attribute='name') | list }}
+
+          # Ansible scrubs every value in the answers mapping when any of
+          # them is secret, so expect to see asterisks in task output.
+          credentials: "{{ recipe.secret_questions }}"
+
+    # === A default is not the same thing as a safe default ===
+    #
+    # Network questions are the exception worth knowing about. They usually
+    # default to the literal __new_internal__, which means "build me a brand
+    # new internal network". The deploy accepts that happily, and what you
+    # get is a VM whose NIC is attached to a network nothing else is on.
+    # Every other check still passes, so it is easy to miss.
+    #
+    # Answer these with the name of a network you meant.
+    - name: Show network questions and what they default to
+      ansible.builtin.debug:
+        msg: >-
+          {{ dict(recipe.questions | selectattr('type', 'equalto', 'network')
+                  | map(attribute='name') | list
+                  | zip(recipe.questions
+                        | selectattr('type', 'equalto', 'network')
+                        | map(attribute='default') | list)) }}
+
+    # === Step three: the values that are valid on this system ===
+    #
+    # This is the part that does not travel between systems. Storage tier
+    # numbering in particular is per system, so a tier number copied out of
+    # someone else's playbook is a coin flip.
+    - name: Show the valid values for table backed questions
+      ansible.builtin.debug:
+        msg: >-
+          {{ dict(recipe.options.keys()
+                  | zip(recipe.options.values()
+                        | map('map', attribute='$key') | map('list'))) }}
+
+    - name: Point out the tier answer specifically
+      ansible.builtin.debug:
+        msg: >-
+          SELECT_OS_TIER must be one of
+          {{ recipe.options.SELECT_OS_TIER | map(attribute='$key') | list }}
+          on this system. Read it at run time rather than hardcoding it, and
+          the same playbook will work on a system with different tiers.
+      when: "'SELECT_OS_TIER' in recipe.options"
+
+    # === Optional: the raw question definitions ===
+    #
+    # Worth a look when a value is being rejected and you want to see the
+    # min, max or regex the platform is checking it against.
+    - name: Dump the full question definitions
+      ansible.builtin.debug:
+        var: recipe.questions
+      when: show_all_questions | bool

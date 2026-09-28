@@ -1,0 +1,24 @@
+{
+  "now": 1787750000,
+  "errors": {},
+  "alarms": [
+    {"level": "error", "alarm_type": "vsan_offline", "snooze": 0},
+    {"level": "warning", "alarm_type": "smtp_notconfigured", "snooze": 0},
+    {"level": "sparkle", "alarm_type": "unknown_severity", "snooze": 0}
+  ],
+  "nodes": [
+    {"name": "node1", "running": true, "maintenance": false},
+    {"name": "node2", "running": false, "maintenance": false}
+  ],
+  "tiers": [
+    {"tier": 0, "capacity": 0, "used": 0},
+    {"tier": 1, "capacity": 1000000000, "used": 950000000}
+  ],
+  "snapshots": [
+    {"name": "stale-daily", "created": 1787642000, "expires": 0}
+  ],
+  "nas": [
+    {"name": "Services 26.1.8-0", "vm_running": false, "vm_status": "stopped", "volume_count": 0},
+    {"name": "nas1", "vm_running": false, "vm_status": "stopped", "volume_count": 1}
+  ]
+}

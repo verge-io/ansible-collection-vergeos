@@ -1,0 +1,265 @@
+---
+# Live-verify ladder for the member module (VergeOS 26.1.8), issue #92.
+#
+# The module shipped broken in every release up to v2.1.0: it could not add a
+# member, could not remove one, and could not report on one. This ladder is
+# the proof that it now can, and the regression guard for the three defects.
+#
+# Scratch only: a zz- group and two zz- users, all removed at the end.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook verify-member.yml
+
+- name: Member module live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    grp: zz-member-group
+    usr: zz-member-user
+    other: zz-member-other
+    api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    api_auth: &api_auth
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+
+  tasks:
+    - name: Ladder body
+      block:
+        # The group is created over plain REST because the module that would
+        # do it does not exist yet -- it arrives with #34. Reading the
+        # membership back over REST too is deliberate regardless: a read that
+        # went through the same reference-parsing code as the write could not
+        # prove the write was right.
+        - name: "0a. Read the existing groups"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/groups?fields=name"
+            <<: *api_auth
+            return_content: true
+          register: groups_before
+          changed_when: false
+
+        - name: "0b. Refuse to run if the scratch names are taken"
+          ansible.builtin.assert:
+            that: grp not in (groups_before.json | map(attribute='name') | list)
+            fail_msg: >-
+              '{{ grp }}' already exists. A previous run died without cleaning
+              up; remove it by hand before re-running.
+
+        - name: "0c. Create the scratch group"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/groups"
+            <<: *api_auth
+            method: POST
+            body_format: json
+            body:
+              name: "{{ grp }}"
+              description: member ladder scratch (zz- disposable)
+            status_code: [200, 201]
+          register: group_created
+
+        - name: "0d. Create two scratch users"
+          vergeio.vergeos.user:
+            name: "{{ item }}"
+            user_password: "Zz-Ladder-9931!"
+            state: present
+          loop: ["{{ usr }}", "{{ other }}"]
+
+        - name: "0e. Read the scratch users' keys"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/users?fields=all"
+            <<: *api_auth
+            return_content: true
+          register: users_rest
+          changed_when: false
+
+        - name: "0f. Note them"
+          ansible.builtin.set_fact:
+            usr_key: "{{ (users_rest.json | selectattr('name', 'equalto', usr)
+                          | first)['$key'] }}"
+            other_key: "{{ (users_rest.json | selectattr('name', 'equalto', other)
+                            | first)['$key'] }}"
+
+        - name: "1. Add the user to the group"
+          vergeio.vergeos.member:
+            group: "{{ grp }}"
+            name: "{{ usr }}"
+            state: present
+          register: add1
+
+        - name: "2. Add again — this is the defect that shipped"
+          vergeio.vergeos.member:
+            group: "{{ grp }}"
+            name: "{{ usr }}"
+            state: present
+          register: add2
+
+        - name: "3. And a third time"
+          vergeio.vergeos.member:
+            group: "{{ grp }}"
+            name: "{{ usr }}"
+            state: present
+          register: add3
+
+        - name: "4. Read the membership back over plain REST"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/members?fields=all"
+            <<: *api_auth
+            return_content: true
+          register: rows
+          changed_when: false
+
+        - name: "5. Exactly one row, pointing at this user by reference"
+          vars:
+            mine: "{{ rows.json | selectattr('parent_group', 'equalto',
+                      group_created.json['$key'] | int) | list }}"
+          ansible.builtin.assert:
+            that:
+              - add1 is changed
+              - add2 is not changed
+              - add3 is not changed
+              - mine | length == 1
+              # Both reference forms are real, and BOTH live in this one
+              # table at the same time. Measured here: the rows that predate
+              # this ladder read 'users/1', and the row pyvergeos just created
+              # reads '/v4/users/4'. A parser that handles one and not the
+              # other works until it meets a row of the other kind -- which is
+              # why split_member_ref() takes the last two segments and ignores
+              # whatever came before them.
+              - mine[0].member.split('/')[-2:] == ['users', usr_key | string]
+            fail_msg: >-
+              expected one membership row and two converged re-runs.
+              add1={{ add1.changed }} add2={{ add2.changed }}
+              add3={{ add3.changed }} rows={{ mine }}
+
+        - name: "6. check mode on a converged membership reports nothing"
+          vergeio.vergeos.member:
+            group: "{{ grp }}"
+            name: "{{ usr }}"
+            state: present
+          check_mode: true
+          register: preview
+
+        - name: "7. A DIFFERENT user is not already a member"
+          vergeio.vergeos.member:
+            group: "{{ grp }}"
+            name: "{{ other }}"
+            state: present
+          register: add_other
+
+        - name: "8. Neither is mistaken for the other"
+          ansible.builtin.assert:
+            that:
+              - preview is not changed
+              - add_other is changed
+            fail_msg: >-
+              preview={{ preview.changed }} add_other={{ add_other.changed }}
+
+        - name: "9. Remove the first user"
+          vergeio.vergeos.member:
+            group: "{{ grp }}"
+            name: "{{ usr }}"
+            state: absent
+          register: rm1
+
+        - name: "10. Remove again — converged"
+          vergeio.vergeos.member:
+            group: "{{ grp }}"
+            name: "{{ usr }}"
+            state: absent
+          register: rm2
+
+        - name: "11. Read back: the other user survived"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/members?fields=all"
+            <<: *api_auth
+            return_content: true
+          register: rows_after
+          changed_when: false
+
+        - name: "12. Removal took exactly the row it was told to"
+          vars:
+            mine: "{{ rows_after.json | selectattr('parent_group', 'equalto',
+                      group_created.json['$key'] | int) | list }}"
+          ansible.builtin.assert:
+            that:
+              - rm1 is changed
+              - rm2 is not changed
+              - mine | length == 1
+              - mine[0].member.split('/')[-2:] == ['users', other_key | string]
+            fail_msg: >-
+              rm1={{ rm1.changed }} rm2={{ rm2.changed }} remaining={{ mine }}
+
+        - name: "13. An unknown user is a named failure, not a silent no-op"
+          vergeio.vergeos.member:
+            group: "{{ grp }}"
+            name: zz-no-such-user
+            state: present
+          register: bad_user
+          ignore_errors: true   # noqa: ignore-errors -- the failure IS the assertion
+
+        - name: "14. An unknown group likewise"
+          vergeio.vergeos.member:
+            group: zz-no-such-group
+            name: "{{ usr }}"
+            state: present
+          register: bad_group
+          ignore_errors: true   # noqa: ignore-errors -- the failure IS the assertion
+
+        - name: "15. Both refusals name what was missing"
+          ansible.builtin.assert:
+            that:
+              - bad_user.failed | default(false)
+              - "'zz-no-such-user' in bad_user.msg"
+              - bad_group.failed | default(false)
+              - "'zz-no-such-group' in bad_group.msg"
+            fail_msg: "bad_user={{ bad_user }} bad_group={{ bad_group }}"
+
+        - name: PASSED
+          ansible.builtin.debug:
+            msg: >-
+              member ladder PASSED: add → converge ×2 → reference read back
+              over REST → check mode → a second user added without disturbing
+              the first → remove → converge → the right row removed → unknown
+              user and unknown group both refused by name
+
+      always:
+        - name: "Teardown: memberships, users, group"
+          vergeio.vergeos.member:
+            group: "{{ grp }}"
+            name: "{{ item }}"
+            state: absent
+          loop: ["{{ usr }}", "{{ other }}"]
+          failed_when: false
+
+        - name: "Teardown: users"
+          vergeio.vergeos.user:
+            name: "{{ item }}"
+            state: absent
+          loop: ["{{ usr }}", "{{ other }}"]
+          failed_when: false
+
+        - name: "Teardown: group"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/groups/{{ group_created.json['$key'] }}"
+            <<: *api_auth
+            method: DELETE
+            status_code: [200, 204, 404]
+          when: group_created.json is defined
+          failed_when: false
+
+        - name: "Teardown: prove zero leftovers"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/groups?fields=name"
+            <<: *api_auth
+            return_content: true
+          register: groups_after
+          changed_when: false
+
+        - name: "Teardown: assert clean"
+          ansible.builtin.assert:
+            that: grp not in (groups_after.json | map(attribute='name') | list)
+            fail_msg: "the scratch group survived teardown"

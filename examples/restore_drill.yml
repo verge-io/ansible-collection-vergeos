@@ -1,0 +1,38 @@
+---
+# Prove a backup restores: snapshot a VM, clone it, boot the clone with its
+# NICs disabled, confirm it came up, then destroy the clone.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/restore_drill.yml -e restore_drill_vm=app-01
+#
+# A backup nobody has restored is a hypothesis. This runs the restore on a
+# schedule so the answer is measured rather than assumed.
+#
+# The NICs you NAME are disabled before the clone boots. A restored clone of
+# a live production VM coming up on the production network with the same
+# identity is its own outage.
+#
+# Every network in the list must be one the clone actually has a NIC on, and
+# the role refuses to boot otherwise. That is deliberate: a typo'd or stale
+# network name used to isolate nothing at all while reporting success, and
+# an isolation list that matches nothing is the exact condition under which
+# the collision happens. Run once without the list to see what the clone has.
+#
+# Everything is torn down in an always: block, so a clone that fails to boot
+# -- the case this role exists to detect -- does not leave itself behind.
+# Keep the evidence with -e restore_drill_keep_clone=true.
+- name: Restore drill
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # Networks whose NICs must be disabled on the clone before boot. Set this
+    # to the networks the VM you are drilling is actually attached to; the
+    # role refuses to boot if a name here matches no NIC on the clone.
+    restore_drill_isolate_networks:
+      - External
+    restore_drill_boot_seconds: 60
+
+  roles:
+    - role: vergeio.vergeos.restore_drill

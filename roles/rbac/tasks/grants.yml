@@ -1,0 +1,17 @@
+---
+# The permissions declared for one group.
+
+- name: "Grant: {{ rbac_group.name }}"
+  vergeio.vergeos.permission:
+    host: "{{ rbac_host }}"
+    username: "{{ rbac_username }}"
+    password: "{{ rbac_password }}"
+    insecure: "{{ rbac_insecure }}"
+    group: "{{ rbac_group.name }}"
+    table: "{{ item.table }}"
+    row: "{{ item.row | default(0) }}"
+    rights: "{{ item.rights | default(['list']) }}"
+    full_control: "{{ item.full_control | default(false) }}"
+  loop: "{{ rbac_group.permissions | default([]) }}"
+  loop_control:
+    label: "{{ rbac_group.name }} -> {{ item.table }}{{ ('#' ~ item.row) if item.row | default(0) else '' }}"

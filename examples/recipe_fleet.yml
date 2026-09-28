@@ -1,0 +1,147 @@
+---
+# Build several VMs from one recipe, each with its own size and name.
+#
+# This is the shape most real work takes. You have one golden recipe and you
+# want three of them, not identical, and you want the run to be safe to
+# repeat. The pattern below is a loop over include_role, because the role is
+# what knows how to wait for a VM that can actually boot.
+#
+#   ansible-playbook examples/recipe_fleet.yml --check   # preflight them all
+#   ansible-playbook examples/recipe_fleet.yml           # build them
+#
+# It is safe to re-run. The deploy module treats the VM name as its
+# idempotence key, so a second run reports already_existed on each VM and
+# changes nothing. The role still re-checks each VM rather than taking the
+# name as proof it is healthy, which is the point of running it again.
+#
+# A note on time. This loop is serial on purpose. Each first time deploy of a
+# distro pulls that distro's cloud image over the network, so budget several
+# minutes per VM for the first one and much less for the rest, since the
+# image is then already on the system.
+- name: Build a small fleet from one recipe
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    recipe_name: "Ubuntu Server 22.04 (Jammy Jellyfish)"
+
+    # The network every VM in this fleet lands on, by name. Answer it
+    # deliberately. The recipe's own default builds a new internal network
+    # per VM, which would leave you with a fleet that cannot talk to anything
+    # or to each other.
+    fleet_network: "External"
+
+    guest_user: "ops"
+    guest_password: "{{ vault_guest_password | default('change-me') }}"
+
+    # The fleet itself. Anything you leave out of an entry falls back to the
+    # defaults applied in the loop below, so entries stay short.
+    fleet:
+      - name: "app-01"
+        cores: 2
+        ram_mb: 4096
+      - name: "app-02"
+        cores: 2
+        ram_mb: 4096
+      - name: "db-01"
+        cores: 4
+        ram_mb: 8192
+        disk_bytes: 107374182400   # 100 GB, this one carries the data
+
+  tasks:
+    # Look the tiers up once rather than once per VM. Tier numbering is per
+    # system, so reading it at run time is what lets this same playbook run
+    # against a lab with one tier and a production system with four.
+    - name: Find the tiers that are valid on this system
+      vergeio.vergeos.vm_recipe_info:
+        name: "{{ recipe_name }}"
+        questions: true
+        resolve_options: true
+      register: recipe
+
+    - name: Choose a storage tier
+      ansible.builtin.set_fact:
+        storage_tier: >-
+          {{ storage_tier
+             | default(recipe.options.SELECT_OS_TIER
+                       | map(attribute='$key') | first) }}
+
+    # Check the whole fleet before building any of it. Without this, a typo
+    # in the third entry is something you find out about after two VMs are
+    # already on disk. The deploy module in check mode validates and
+    # simulates each answer set and creates nothing.
+    - name: Preflight every VM in the fleet first
+      vergeio.vergeos.vm_recipe_deploy:
+        name: "{{ item.name }}"
+        recipe: "{{ recipe_name }}"
+        answers:
+          HOSTNAME: "{{ item.name }}"
+          USER: "{{ guest_user }}"
+          PASSWORD: "{{ guest_password }}"
+          YB_CPU_CORES: "{{ item.cores | default(2) }}"
+          YB_RAM: "{{ item.ram_mb | default(4096) }}"
+          YB_DRIVE_OS_SIZE: "{{ item.disk_bytes | default(53687091200) }}"
+          YB_IP_ADDR_TYPE: dhcp
+          YB_NIC_ETH0: "{{ fleet_network }}"
+          SELECT_OS_TIER: "{{ storage_tier }}"
+      check_mode: true
+      loop: "{{ fleet }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Now build them. include_role rather than a roles: block, because a
+    # roles: block cannot loop.
+    - name: Deploy each VM and wait for it to be usable
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.vm_from_recipe
+      vars:
+        vm_from_recipe_name: "{{ item.name }}"
+        vm_from_recipe_recipe: "{{ recipe_name }}"
+        vm_from_recipe_answers:
+          HOSTNAME: "{{ item.name }}"
+          USER: "{{ guest_user }}"
+          PASSWORD: "{{ guest_password }}"
+          YB_CPU_CORES: "{{ item.cores | default(2) }}"
+          YB_RAM: "{{ item.ram_mb | default(4096) }}"
+          YB_DRIVE_OS_SIZE: "{{ item.disk_bytes | default(53687091200) }}"
+          YB_IP_ADDR_TYPE: dhcp
+          YB_NIC_ETH0: "{{ fleet_network }}"
+          SELECT_OS_TIER: "{{ storage_tier }}"
+        vm_from_recipe_power_on: true
+        vm_from_recipe_verify_boot: true
+        vm_from_recipe_wait_timeout: 1800
+      loop: "{{ fleet }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Read the fleet back from the platform rather than from what we just
+    # said we did. This is the part that tells you the VMs are really there
+    # and really running, which is a different claim from "the deploy was
+    # accepted".
+    #
+    # Skipped under --check, because in check mode nothing was built and
+    # there is nothing to read back.
+    - name: Read the fleet back
+      vergeio.vergeos.vm_info:
+        name: "{{ item.name }}"
+      register: fleet_state
+      loop: "{{ fleet }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: not ansible_check_mode
+
+    - name: Report the fleet
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.item.name }} is {{ vm.status | default('not found') }}
+          with {{ vm.cpu_cores | default('?') }} core(s)
+          and {{ vm.ram | default('?') }} MB RAM
+      vars:
+        # vm_info returns a list, empty when the VM is not there. Taking
+        # element zero off an empty list would be an error, so fall back to
+        # an empty mapping and let the defaults above do the talking.
+        vm: "{{ (item.vms | default([]) + [{}]) | first }}"
+      loop: "{{ fleet_state.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: not ansible_check_mode

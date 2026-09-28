@@ -1,0 +1,16 @@
+{
+  "nodes": [
+    {"name": "hot", "cpu_usage": 95, "ram": 96000, "ram_used": 40000,
+     "maintenance": false, "running": true},
+    {"name": "cold", "cpu_usage": 12, "ram": 96000, "ram_used": 16000,
+     "maintenance": false, "running": true}
+  ],
+  "vms": [
+    {"name": "small-web", "node_name": "hot", "ram": 2048, "cpu_cores": 2,
+     "running": true, "ha_group": "", "is_snapshot": false,
+     "excluded": false, "vm_cpu": 41},
+    {"name": "big-db", "node_name": "hot", "ram": 32768, "cpu_cores": 8,
+     "running": true, "ha_group": "", "is_snapshot": false,
+     "excluded": false, "vm_cpu": 55}
+  ]
+}

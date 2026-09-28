@@ -1,0 +1,535 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""A role that parses command output must still run that command in check mode.
+
+Issue #28. Six roles aborted under ``--check`` with a stack trace instead of
+skipping cleanly -- and all six are read-only reporters, which is precisely
+when an operator reaches for ``--check``::
+
+    TASK [health_report : Run the health scan]
+    skipping: [localhost]
+
+    TASK [health_report : Parse the report]
+    [ERROR]: The filter plugin 'ansible.builtin.from_json' failed:
+    Expecting value: line 1 column 1 (char 0)
+
+The shape is always the same. A ``command`` task is read-only and says so with
+``changed_when: false``, but does not say ``check_mode: false``. Under
+``--check`` Ansible skips it, ``<var>.stdout`` is empty, and the next task
+pipes ``''`` into ``from_json``.
+
+``changed_when: false`` and ``check_mode: false`` look like they mean the same
+thing and do not. The first is a claim about the report; the second is
+permission to run anyway. A read-only task needs both.
+
+There are two valid answers, not one, and the difference is whether the
+command WRITES anything:
+
+  read-only  ``check_mode: false`` on the producer. It runs, the parse works,
+             and --check reports real findings -- which is the whole point of
+             running a reporting role in check mode.
+
+  writes     leave the producer skipped, and make the PARSE survive an empty
+             stdout: ``| default('{}', true) | from_json``. billing_export is
+             this case -- it writes CSVs to the controller, and a --check run
+             that quietly produced an invoicing artifact would be worse than
+             one that crashed.
+
+Forcing the first answer everywhere would make check mode write files. The
+guard accepts either.
+
+What it does NOT accept, because it does not work: ``when: not
+ansible_check_mode`` on the parse. ``set_fact`` finalizes its arguments before
+the condition is evaluated, so ``from_json`` still runs on the empty string
+and the play still aborts with the same trace. That looked obviously correct,
+passed review in this file's own first draft, and cost a live ladder run to
+disprove -- which is why it is named here rather than left as an omission.
+
+Why this is a test and not a lint rule: nothing in CI runs a playbook at all,
+in check mode or otherwise -- the ladders need a live cluster. This check
+needs neither. It reads the role task files and every playbook under
+tests/live/, finds every variable that is parsed as JSON, and insists the
+task that produced it is allowed to run. The live files are the same shape
+-- read-nfs-shares.yml, read-cloudinit.yml, and the tier probe in
+verify-tier-policy.yml all parse command stdout -- and a guard that only
+opened roles/ would report them covered while they rotted.
+"""
+
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
+import glob
+import os
+import re
+
+import pytest
+import yaml
+
+
+def _root():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.abspath(os.path.join(here, '..', '..'))
+
+
+def _task_files():
+    """Role tasks, plus the live harness playbooks that shell out the same way.
+
+    tests/live/*.yml are plays (``hosts:`` / ``tasks:``), not bare task lists.
+    ``_flatten`` walks both. Skipping the plays is how this guard would miss
+    the harness half of #28.
+    """
+    patterns = (
+        os.path.join(_root(), 'roles', '*', 'tasks', '*.yml'),
+        os.path.join(_root(), 'tests', 'live', '*.yml'),
+    )
+    found = []
+    for pattern in patterns:
+        found.extend(glob.glob(pattern))
+    return sorted(found)
+
+
+_IDS = [os.path.relpath(p, _root()) for p in _task_files()]
+
+# `foo_raw.stdout | from_json`, and the same through a `json_query`/`trim`
+# chain -- the variable name is what matters, not the filters after it.
+_PARSED = re.compile(r'(\w+)\s*\.\s*stdout\b[^}]*\|\s*from_json')
+
+# Same shape, but capturing the variable, for the "defended" case.
+_DEFENDED_VAR = re.compile(
+    r'(\w+)\s*\.\s*stdout\b[^}]*\|\s*default\([^)]*\)[^}]*\|\s*from_json')
+
+# Task keys that produce stdout worth parsing. `uri` and the vergeos modules
+# are unaffected: they run in check mode, or return structured data already.
+_PRODUCERS = ('ansible.builtin.command', 'ansible.builtin.shell',
+              'ansible.builtin.script', 'command', 'shell', 'script')
+
+# The second remedy, for a producer that writes: make the parse survive an
+# empty stdout. It must be in the expression -- see the module docstring for
+# why a `when:` on the same task is not enough.
+_PARSE_DEFENDED = re.compile(
+    r'\.\s*stdout\b[^}]*\|\s*default\([^)]*\)[^}]*\|\s*from_json')
+
+
+# A play is not a task. These are the sections a play hides its tasks in.
+# Role task files and included task lists (read-nfs-shares.yml) have none of
+# them, so they fall through and are yielded as tasks.
+_PLAY_SECTIONS = ('tasks', 'pre_tasks', 'post_tasks', 'handlers')
+
+
+def _flatten(node):
+    """Every task in a file, including plays and block/rescue/always.
+
+    A list of plays must be descended into. Yielding the play dict itself
+    finds no ``register:`` and the guard then skips the variable as "defined
+    in another file" -- a silent pass, which is the failure mode this walk
+    exists to not have.
+    """
+    if isinstance(node, list):
+        for item in node:
+            yield from _flatten(item)
+        return
+    if not isinstance(node, dict):
+        return
+    if 'hosts' in node or any(key in node for key in _PLAY_SECTIONS):
+        for key in _PLAY_SECTIONS:
+            yield from _flatten(node.get(key))
+        return
+    yield node
+    for key in ('block', 'rescue', 'always'):
+        yield from _flatten(node.get(key))
+
+
+def _load(path):
+    with open(path) as handle:
+        return list(_flatten(yaml.safe_load(handle)))
+
+
+@pytest.mark.parametrize('path', _task_files(), ids=_IDS)
+def test_every_parsed_command_runs_in_check_mode(path):
+    with open(path) as handle:
+        body = handle.read()
+
+    parsed = set(_PARSED.findall(body))
+    if not parsed:
+        return
+
+    registered = {task['register']: task
+                  for task in _load(path)
+                  if isinstance(task.get('register'), str)}
+
+    # The other remedy: the parse itself tolerates an empty stdout.
+    defended = set(_DEFENDED_VAR.findall(body))
+
+    offenders = []
+    for name in sorted(parsed):
+        task = registered.get(name)
+        if task is None:
+            continue                      # registered in another file
+        if not any(key in task for key in _PRODUCERS):
+            continue                      # not a command; check mode is fine
+        if task.get('check_mode') is False:
+            continue
+        if name in defended:
+            continue
+        offenders.append('%r (registered by %r)'
+                         % (name, task.get('name', '<unnamed>')))
+
+    assert not offenders, (
+        "%s parses these as JSON, but the task that produces them is skipped "
+        "under --check, so from_json is handed an empty string and the play "
+        "aborts with a stack trace: %s.\n\n"
+        "Two ways out, and which one depends on whether the command WRITES:\n"
+        "  read-only -> `check_mode: false` on the producing task. Note that "
+        "`changed_when: false` is not the same claim: it says the task "
+        "changes nothing, not that it is safe to run anyway.\n"
+        "  writes    -> `| default(\'{}\', true) | from_json` on the parse, so "
+        "check mode produces nothing instead of crashing. A `when:` on that "
+        "task does NOT work: set_fact finalizes its args before the condition "
+        "is evaluated.\n"
+        "This is issue #28."
+        % (os.path.relpath(path, _root()), ', '.join(offenders)))
+
+
+def _write_temp(body):
+    import tempfile
+    handle = tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False)
+    try:
+        handle.write(body)
+    finally:
+        handle.close()
+    return handle.name
+
+
+def test_the_guard_can_actually_fail():
+    """A guard that cannot fail is decoration.
+
+    #28's exact shape, assembled here rather than left to a role to
+    reintroduce.
+    """
+    body = (
+        "- name: Run the scan\n"
+        "  ansible.builtin.command:\n"
+        "    cmd: /bin/true\n"
+        "  register: probe_raw\n"
+        "  changed_when: false\n"
+        "\n"
+        "- name: Parse it\n"
+        "  ansible.builtin.set_fact:\n"
+        "    probe: \"{{ probe_raw.stdout | from_json }}\"\n"
+    )
+    path = _write_temp(body)
+    try:
+        with pytest.raises(AssertionError) as caught:
+            test_every_parsed_command_runs_in_check_mode(path)
+        assert 'probe_raw' in str(caught.value)
+    finally:
+        os.unlink(path)
+
+
+def test_a_playbook_hides_the_same_shape():
+    """tests/live files are plays. A walker that only iterates the top list
+    yields the play, finds no register, and skips the variable.
+
+    That is a pass. This is the file shape the live harness actually has.
+    """
+    body = (
+        "- name: Ladder\n"
+        "  hosts: localhost\n"
+        "  tasks:\n"
+        "    - name: Run the scan\n"
+        "      ansible.builtin.command:\n"
+        "        cmd: /bin/true\n"
+        "      register: probe_raw\n"
+        "      changed_when: false\n"
+        "\n"
+        "    - name: Parse it\n"
+        "      ansible.builtin.set_fact:\n"
+        "        probe: \"{{ probe_raw.stdout | from_json }}\"\n"
+    )
+    path = _write_temp(body)
+    try:
+        with pytest.raises(AssertionError) as caught:
+            test_every_parsed_command_runs_in_check_mode(path)
+        assert 'probe_raw' in str(caught.value)
+    finally:
+        os.unlink(path)
+
+
+def test_a_defended_parse_is_also_accepted():
+    """The remedy for a producer that writes.
+
+    Demanding `check_mode: false` everywhere would make a --check run of
+    billing_export actually write an invoicing CSV.
+    """
+    import tempfile
+    body = (
+        "- name: Run the export\n"
+        "  ansible.builtin.command:\n"
+        "    cmd: /bin/true\n"
+        "  register: probe_raw\n"
+        "  changed_when: true\n"
+        "\n"
+        "- name: Parse it\n"
+        "  ansible.builtin.set_fact:\n"
+        "    probe: \"{{ probe_raw.stdout | default('{}', true) "
+        "| from_json }}\"\n"
+    )
+    with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        test_every_parsed_command_runs_in_check_mode(path)   # must not raise
+    finally:
+        os.unlink(path)
+
+
+def test_a_bare_when_is_not_accepted():
+    """The remedy that looks right and is not.
+
+    set_fact finalizes its arguments before evaluating `when`, so from_json
+    runs on the empty string anyway. Measured: it aborted a live ladder run
+    with the identical trace the condition was added to prevent.
+    """
+    import tempfile
+    body = (
+        "- name: Run the export\n"
+        "  ansible.builtin.command:\n"
+        "    cmd: /bin/true\n"
+        "  register: probe_raw\n"
+        "  changed_when: true\n"
+        "\n"
+        "- name: Parse it\n"
+        "  ansible.builtin.set_fact:\n"
+        "    probe: \"{{ probe_raw.stdout | from_json }}\"\n"
+        "  when: not ansible_check_mode\n"
+    )
+    with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        with pytest.raises(AssertionError):
+            test_every_parsed_command_runs_in_check_mode(path)
+    finally:
+        os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# The second half of the same lesson: `ansible_check_mode` is not the question
+# a role wants answered.
+# ---------------------------------------------------------------------------
+
+_ANSIBLE_CHECK_MODE = re.compile(r'\bansible_check_mode\b')
+
+
+@pytest.mark.parametrize('path', _task_files(), ids=_IDS)
+def test_no_role_gates_on_ansible_check_mode(path):
+    """A role cannot ask Ansible whether IT is in check mode.
+
+    ``ansible_check_mode`` reports the ``--check`` flag on the command line,
+    and nothing else. A caller who wraps a role in a ``check_mode: true``
+    block gets tasks that are skipped and a variable that still reads
+    ``false``::
+
+        - name: blk
+          check_mode: true
+          block:
+            - debug: msg="{{ ansible_check_mode }}"   # -> False
+            - file: path=/tmp/probe state=touch       # -> not written
+
+    Measured on ansible-core 2.21. The file was not created and the variable
+    said check mode was off.
+
+    What that cost: tier_policy's enforce path gated its convergence assert on
+    ``not ansible_check_mode``. Under a block-level ``check_mode: true`` the
+    ``drive`` module wrote nothing, the drift was still there by design, the
+    variable read false, and the assert fired -- failing a run that had done
+    exactly what it was told. The live ladder found it; nothing else could
+    have, because no unit test runs a playbook.
+
+    The remedy is to gate on evidence the run itself produced. A ``command``
+    task does not support check mode, so ``<var> is skipped`` answers "did
+    this run write anything" correctly from all three directions: the CLI
+    flag, a caller's block, and a ``when:`` that simply did not apply. Roles
+    here use that, or a key the module reports back (vm_from_recipe), and
+    both were already documented before this guard existed.
+    """
+    with open(path) as handle:
+        body = handle.read()
+
+    hits = [line.strip() for line in body.splitlines()
+            if _ANSIBLE_CHECK_MODE.search(line)
+            and not line.lstrip().startswith('#')]
+
+    assert not hits, (
+        "%s gates on ansible_check_mode: %s.\n\n"
+        "That variable reports the --check FLAG, not whether this task is "
+        "running in check mode. A caller wrapping the role in a "
+        "`check_mode: true` block skips the writes and leaves "
+        "ansible_check_mode reading false, so the role takes the branch for "
+        "a run that changed things -- while nothing changed.\n"
+        "Gate on what the run reported instead: `<registered> is skipped` "
+        "for a command (command does not support check mode, so it is "
+        "skipped whenever check mode is in effect), or a key the module "
+        "hands back."
+        % (os.path.relpath(path, _root()), ', '.join(hits)))
+
+
+def test_that_guard_can_fail_too():
+    """The shape it is there to catch, so the guard is not decoration."""
+    import tempfile
+    body = (
+        "- name: Report\n"
+        "  ansible.builtin.debug:\n"
+        "    msg: done\n"
+        "  when: not ansible_check_mode\n"
+    )
+    with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        with pytest.raises(AssertionError) as caught:
+            test_no_role_gates_on_ansible_check_mode(path)
+        assert 'ansible_check_mode' in str(caught.value)
+    finally:
+        os.unlink(path)
+
+
+def test_a_comment_explaining_the_trap_is_not_a_violation():
+    """Every role that got this wrong now carries a comment saying why.
+
+    A guard that forbade the word outright would delete its own explanation.
+    """
+    import tempfile
+    body = (
+        "# ansible_check_mode reports the --check flag and nothing else,\n"
+        "# which is why this gates on the registered result instead.\n"
+        "- name: Report\n"
+        "  ansible.builtin.debug:\n"
+        "    msg: done\n"
+        "  when: probe_raw is not skipped\n"
+    )
+    with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        test_no_role_gates_on_ansible_check_mode(path)   # must not raise
+    finally:
+        os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# The same defect, spelled without from_json.
+#
+# The guard above matches `<var>.stdout | from_json`, because that is the
+# spelling that crashes. k3s_node and lb_stack used the other one: a renderer
+# whose stdout is a cloud-init document, consumed raw.
+#
+# That does not crash. Measured on ansible-core 2.21, a skipped command
+# registers an EMPTY stdout rather than no stdout at all:
+#
+#     TASK [Render something]      skipping: [localhost]
+#     TASK [Consume its stdout]    ok: [localhost] => "user_data is "
+#
+# So the role carried on and attached an empty cloud-init document, and every
+# task reported success. A VM that boots with no configuration looks exactly
+# like a VM that booted.
+#
+# A guard that catches one spelling of a defect and not the other reads as
+# coverage -- which is the lesson #44 already cost this repository once.
+# ---------------------------------------------------------------------------
+
+_STDOUT_REF = re.compile(r'(\w+)\s*\.\s*stdout\b')
+
+
+@pytest.mark.parametrize('path', _task_files(), ids=_IDS)
+def test_every_consumed_stdout_runs_in_check_mode(path):
+    with open(path) as handle:
+        body = handle.read()
+
+    referenced = set(_STDOUT_REF.findall(body))
+    if not referenced:
+        return
+
+    tasks = _load(path)
+    registered = {task['register']: task
+                  for task in tasks
+                  if isinstance(task.get('register'), str)}
+
+    # A reference that already tolerates an empty stdout is the second
+    # remedy, the same one billing_export uses.
+    defended = set(re.findall(
+        r'(\w+)\s*\.\s*stdout\b[^}]*\|\s*default\(', body))
+
+    offenders = []
+    for name in sorted(referenced):
+        task = registered.get(name)
+        if task is None:
+            continue
+        if not any(key in task for key in _PRODUCERS):
+            continue
+        if task.get('check_mode') is False:
+            continue
+        if name in defended:
+            continue
+        offenders.append('%r (registered by %r)'
+                         % (name, task.get('name', '<unnamed>')))
+
+    assert not offenders, (
+        "%s consumes these as stdout, but the task that produces them is "
+        "skipped under --check: %s.\n\n"
+        "A skipped command still registers an EMPTY stdout, so this does "
+        "not crash -- it quietly hands the next task an empty string. When "
+        "that string is a configuration document, the run reports success "
+        "and produces a machine with no configuration on it.\n"
+        "Same two remedies as #28: `check_mode: false` on the producer when "
+        "it only reads, or `| default(...)` on every reference when it "
+        "writes."
+        % (os.path.relpath(path, _root()), ', '.join(offenders)))
+
+
+def test_the_raw_stdout_guard_can_fail():
+    import tempfile
+    body = (
+        "- name: Render the config\n"
+        "  ansible.builtin.command:\n"
+        "    cmd: /bin/true\n"
+        "  register: render_raw\n"
+        "  changed_when: false\n"
+        "\n"
+        "- name: Attach it\n"
+        "  ansible.builtin.debug:\n"
+        "    msg: \"{{ render_raw.stdout }}\"\n"
+    )
+    with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        with pytest.raises(AssertionError) as caught:
+            test_every_consumed_stdout_runs_in_check_mode(path)
+        assert 'render_raw' in str(caught.value)
+    finally:
+        os.unlink(path)
+
+
+def test_check_mode_false_satisfies_the_raw_guard():
+    import tempfile
+    body = (
+        "- name: Render the config\n"
+        "  ansible.builtin.command:\n"
+        "    cmd: /bin/true\n"
+        "  register: render_raw\n"
+        "  changed_when: false\n"
+        "  check_mode: false\n"
+        "\n"
+        "- name: Attach it\n"
+        "  ansible.builtin.debug:\n"
+        "    msg: \"{{ render_raw.stdout }}\"\n"
+    )
+    with tempfile.NamedTemporaryFile('w', suffix='.yml', delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        test_every_consumed_stdout_runs_in_check_mode(path)   # must not raise
+    finally:
+        os.unlink(path)

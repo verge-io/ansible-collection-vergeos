@@ -1,0 +1,51 @@
+---
+# Poll for the VM row the deploy is building.
+#
+# The deploy POST returns before the row exists, so this is a genuine wait
+# rather than a formality. It is short in practice -- the row appears in
+# seconds; it is the DRIVE that takes minutes (see wait_drives.yml).
+
+- name: Poll until the VM exists
+  vergeio.vergeos.vm_info:
+    host: "{{ vm_from_recipe_host }}"
+    username: "{{ vm_from_recipe_username }}"
+    password: "{{ vm_from_recipe_password }}"
+    insecure: "{{ vm_from_recipe_insecure }}"
+    name: "{{ vm_from_recipe_name }}"
+  register: vm_from_recipe_row
+  # Not the verdict. The assert below is, so that a VM which never appears is
+  # reported in words rather than as a poll's bare {"attempts": 12}.
+  failed_when: false
+  changed_when: false
+  retries: "{{ (vm_from_recipe_wait_timeout | int // (vm_from_recipe_poll_interval | int)) | int }}"
+  delay: "{{ vm_from_recipe_poll_interval | int }}"
+  until: vm_from_recipe_row.vms | default([]) | length > 0
+
+- name: The deploy must have produced a VM
+  ansible.builtin.assert:
+    that: vm_from_recipe_row.vms | default([]) | length > 0
+    fail_msg: >-
+      the deploy of '{{ vm_from_recipe_recipe }}' was accepted and reported VM
+      key {{ vm_from_recipe_deploy.vm_key }}, but no VM named
+      '{{ vm_from_recipe_name }}' appeared within
+      {{ vm_from_recipe_wait_timeout }}s.
+    quiet: true
+
+# The POST handed back the key of the VM it built, and the name lookup found a
+# VM. They must be the same VM, because every check after this point -- the
+# drives, the NICs, the boot proof -- is about whichever one this resolves to.
+#
+# VM names are unique on this platform, so this cannot fire from a plain
+# duplicate. What it catches is a rename landing mid-deploy, or the name
+# resolving to something the deploy did not create.
+- name: The VM found by name must be the VM the deploy created
+  ansible.builtin.assert:
+    that:
+      - (vm_from_recipe_row.vms | first)['$key'] | string
+        == vm_from_recipe_deploy.vm_key | string
+    fail_msg: >-
+      the deploy created VM key {{ vm_from_recipe_deploy.vm_key }} but the name
+      '{{ vm_from_recipe_name }}' now resolves to key
+      {{ (vm_from_recipe_row.vms | first)['$key'] }}. Refusing to report on a
+      VM this run did not create.
+    quiet: true

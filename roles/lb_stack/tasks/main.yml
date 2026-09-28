@@ -1,0 +1,180 @@
+---
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that: lb_stack_host | length > 0
+    fail_msg: "lb_stack needs lb_stack_host (or VERGEOS_HOST)."
+    quiet: true
+
+- name: Preflight -- name, template and a usable spec
+  ansible.builtin.assert:
+    that:
+      - lb_stack_name | length > 0
+      - lb_stack_template | length > 0
+      - lb_stack_spec.frontends | default([]) | length > 0
+    fail_msg: >-
+      lb_stack needs lb_stack_name, lb_stack_template, and an
+      lb_stack_spec with at least one frontend.
+    quiet: true
+
+# Rendered before anything is created. A spec that cannot render should not
+# leave a half-built VM behind.
+#
+# check_mode: false because this is a pure function on the CONTROLLER -- it
+# reads no API and writes no file -- and a --check run of a deploy role is
+# most useful when it shows you the configuration it would apply. Skipped, it
+# does not merely produce nothing: a skipped command still registers an
+# EMPTY stdout, so the role went on to attach an empty cloud-init document
+# and report success. Measured.
+#
+# `changed_when: false` is the other claim, that the task changes nothing,
+# and it is not permission to run (#28).
+#
+# failed_when: false and a separate reporting task because no_log censors the
+# whole result -- a spec the renderer refuses would otherwise reach the
+# operator as {"censored": "..."} and an exit code.
+#
+# no_log, and the spec on stdin rather than argv, because an HA spec carries
+# keepalived's VRRP auth_pass -- which travels in clear on the wire and is
+# therefore worth not also printing. k3s_node did both four files away; this
+# role did neither.
+- name: Render the cloud-init document from the spec
+  ansible.builtin.command:
+    argv: ["{{ ansible_playbook_python }}",
+           "{{ role_path }}/files/lb_render.py",
+           '--spec', '-', '--artifact', userdata]
+    stdin: "{{ lb_stack_spec | to_json }}"
+  register: lb_stack_userdata
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
+
+- name: The spec must have rendered
+  ansible.builtin.fail:
+    msg: >-
+      lb_render.py exited {{ lb_stack_userdata.rc }}:
+      {{ lb_stack_userdata.stderr | default('') | trim }}
+  when: lb_stack_userdata.rc != 0
+
+- name: Refuse to deploy an empty cloud-init document
+  ansible.builtin.assert:
+    that: lb_stack_userdata.stdout | trim | length > 0
+    fail_msg: >-
+      the renderer produced nothing. Attaching that would boot a load
+      balancer with no haproxy configuration, which looks exactly like a
+      load balancer that booted fine.
+    quiet: true
+
+- name: Does the LB VM already exist?
+  vergeio.vergeos.vm_info:
+    host: "{{ lb_stack_host }}"
+    username: "{{ lb_stack_username }}"
+    password: "{{ lb_stack_password }}"
+    insecure: "{{ lb_stack_insecure }}"
+    name: "{{ lb_stack_name }}"
+  register: lb_stack_existing
+  changed_when: false
+
+- name: Clone the golden template
+  vergeio.vergeos.vm_clone:
+    host: "{{ lb_stack_host }}"
+    username: "{{ lb_stack_username }}"
+    password: "{{ lb_stack_password }}"
+    insecure: "{{ lb_stack_insecure }}"
+    name: "{{ lb_stack_name }}"
+    source: "{{ lb_stack_template }}"
+    snapshot: "{{ lb_stack_snapshot }}"
+  when: lb_stack_existing.vms | default([]) | length == 0
+  register: lb_stack_cloned
+
+# Read back rather than trust the clone's `changed`. vm_clone supports check
+# mode, so under --check it reports the clone it WOULD make and makes none --
+# and everything below is addressed to a VM by name. Without this the role
+# went on to configure a VM that does not exist, and the failure arrived as
+#
+#     fatal: FAILED! => {"censored": "the output has been hidden due to the
+#     fact that 'no_log: true' was specified for this result"}
+#
+# because the cloud-init task carries the spec's secret. An existence check
+# is one read, and it names the cause before the censored task can fire.
+- name: Is the VM there to configure?
+  vergeio.vergeos.vm_info:
+    host: "{{ lb_stack_host }}"
+    username: "{{ lb_stack_username }}"
+    password: "{{ lb_stack_password }}"
+    insecure: "{{ lb_stack_insecure }}"
+    name: "{{ lb_stack_name }}"
+  register: lb_stack_present
+  changed_when: false
+
+- name: What this run would deploy (nothing was created)
+  ansible.builtin.debug:
+    msg: >-
+      check mode: would clone '{{ lb_stack_template }}' to
+      '{{ lb_stack_name }}', attach the rendered cloud-init, add a NIC on
+      {{ lb_stack_network }} and boot it. Nothing was created.
+  when: lb_stack_present.vms | default([]) | length == 0
+
+- name: Configure the VM
+  when: lb_stack_present.vms | default([]) | length > 0
+  block:
+    # no_log because the rendered document carries the VRRP auth_pass.
+    - name: Attach the rendered cloud-init configuration
+      vergeio.vergeos.cloud_init:
+        host: "{{ lb_stack_host }}"
+        username: "{{ lb_stack_username }}"
+        password: "{{ lb_stack_password }}"
+        insecure: "{{ lb_stack_insecure }}"
+        vm_name: "{{ lb_stack_name }}"
+        datasource: nocloud
+        user_data: "{{ lb_stack_userdata.stdout }}"
+      no_log: true
+
+    - name: NIC on the service network
+      vergeio.vergeos.nic:
+        host: "{{ lb_stack_host }}"
+        username: "{{ lb_stack_username }}"
+        password: "{{ lb_stack_password }}"
+        insecure: "{{ lb_stack_insecure }}"
+        vm_name: "{{ lb_stack_name }}"
+        network: "{{ lb_stack_network }}"
+        state: present
+
+    - name: Specs and power
+      vergeio.vergeos.vm:
+        host: "{{ lb_stack_host }}"
+        username: "{{ lb_stack_username }}"
+        password: "{{ lb_stack_password }}"
+        insecure: "{{ lb_stack_insecure }}"
+        name: "{{ lb_stack_name }}"
+        cpu_cores: "{{ lb_stack_cpu_cores }}"
+        ram: "{{ lb_stack_ram_mb }}"
+        state: "{{ 'running' if lb_stack_power else 'present' }}"
+
+  # `cloned` and `deployed` describe what this RUN did, not what the cluster
+  # contains. vm_clone reports a clone it would have made under check mode, so
+  # keying only off that said "cloned" for a VM nobody created -- and a caller
+  # that branches on it would go on to configure something that is not there.
+- name: Deployment summary
+  ansible.builtin.set_fact:
+    lb_stack_result:
+      vm: "{{ lb_stack_name }}"
+      deployed: "{{ lb_stack_present.vms | default([]) | length > 0 }}"
+      cloned: "{{ lb_stack_cloned is not skipped
+                  and (lb_stack_present.vms | default([]) | length > 0) }}"
+      already_existed: "{{ lb_stack_existing.vms | default([]) | length > 0 }}"
+      network: "{{ lb_stack_network }}"
+      frontends: "{{ lb_stack_spec.frontends | map(attribute='bind_port') | list }}"
+      ha: "{{ lb_stack_spec.ha is defined }}"
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: >-
+      LB '{{ lb_stack_name }}'
+      {{ 'cloned from ' ~ lb_stack_template if lb_stack_result.cloned
+         else ('already existed'
+               if lb_stack_result.already_existed
+               else 'not deployed -- check mode') }};
+      port(s) {{ lb_stack_result.frontends | join(', ') }} on
+      {{ lb_stack_network }}{{ ' with a keepalived VIP'
+                               if lb_stack_result.ha else '' }}.

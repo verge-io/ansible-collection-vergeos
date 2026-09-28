@@ -170,7 +170,7 @@ def no_sleep(monkeypatch):
 # that meant "the VM is missing" was silently testing "the VM exists and is a
 # MagicMock", which is how three of them asserted the wrong thing for months.
 #
-# pyvergeos is a hard requirement (requirements.txt: pyvergeos>=1.0.1), so when
+# pyvergeos is a hard requirement (requirements.txt: pyvergeos>=1.2.8), so when
 # it is importable we leave it completely alone and tests exercise the real
 # exception classes. Only when it is genuinely absent do we install a stub --
 # and that stub's exceptions are real Exception subclasses, so `raise` and

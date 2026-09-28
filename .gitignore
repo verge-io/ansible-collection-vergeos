@@ -23,3 +23,9 @@ tests/integration/test_*.yml
 # Local inventory with credentials
 inventory/vergeos_vms.yml
 inventory/demo.vergeos_vms.yml
+
+# Local collection install target and scratch probe output. Both are build
+# artifacts, and .ansible/ holds a full copy of the installed collection,
+# which is an easy way to commit a stale duplicate of the tree by accident.
+.ansible/
+.probe/

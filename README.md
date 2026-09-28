@@ -5,8 +5,8 @@ Ansible collection for managing VergeOS virtualization infrastructure via the Ve
 ## Requirements
 
 - **Python**: >= 3.9
-- **Ansible**: >= 2.14.0
-- **pyvergeos**: >= 1.0.1 (VergeOS Python SDK)
+- **Ansible**: >= 2.15.0
+- **pyvergeos**: >= 1.2.8 (VergeOS Python SDK). The brace-escaping fix is in 1.2.8; the first release PyPI actually publishes at or above that is 1.6.1. See [docs/SDK-COMPATIBILITY.md](docs/SDK-COMPATIBILITY.md).
 
 ## Installation
 
@@ -33,7 +33,7 @@ ansible-galaxy collection install vergeio-vergeos-*.tar.gz --force
 
 Add to your `requirements.txt`:
 ```
-pyvergeos>=1.0.1
+pyvergeos>=1.2.8
 ```
 
 ## Basic Setup
@@ -67,6 +67,185 @@ ansible-playbook examples/import_and_configure_vm.yml
 Configure and Run Playbook
 ```bash
 ansible-playbook examples/snapshot_workflow.yml
+```
+
+### 4. Unattended install and nested lab
+
+A silent VergeOS install (new system, controller join, scale-out), a nested
+lab that builds that install as VMs, discovery of the new system's DHCP
+address, and a post-install tag baseline. See
+[docs/UNATTENDED-INSTALL.md](docs/UNATTENDED-INSTALL.md) and
+[`examples/unattended_install/`](examples/unattended_install/).
+
+## Modules
+
+Every module in `plugins/modules/`. A read-only module only gathers facts.
+
+<!-- module-index: begin -->
+| Module | Purpose | Read-only |
+|---|---|---|
+| `api_key` | Manage user API keys in VergeOS | no |
+| `api_key_info` | Gather information about user API keys in VergeOS | yes |
+| `auth_source` | Manage authentication sources (SSO/OIDC) in VergeOS | no |
+| `auth_source_info` | Gather information about VergeOS authentication sources | yes |
+| `catalog` | Manage recipe catalogs and their publication in VergeOS | no |
+| `cloud_init` | Manage cloud-init configuration for VMs in VergeOS | no |
+| `cluster_info` | Gather information about clusters in VergeOS | yes |
+| `drive` | Manage storage drives for VMs in VergeOS | no |
+| `file` | Upload and remove files in VergeOS | no |
+| `file_info` | Gather information about files in VergeOS | yes |
+| `group` | Manage VergeOS groups and their membership | no |
+| `group_info` | Gather information about VergeOS groups and permissions | yes |
+| `member` | Manage group members in VergeOS | no |
+| `nas_nfs_share` | Manage NFS shares on VergeOS NAS volumes | no |
+| `nas_volume` | Manage NAS volumes in VergeOS | no |
+| `network` | Manage networks in VergeOS | no |
+| `network_info` | Gather information about networks in VergeOS | yes |
+| `nic` | Manage network interfaces for VMs in VergeOS | no |
+| `node_info` | Gather information about VergeOS nodes | yes |
+| `node_maintenance` | Put a VergeOS node into or out of maintenance mode | no |
+| `permission` | Manage VergeOS permissions for a user or group | no |
+| `physical_drive_info` | Gather SMART and vSAN health for VergeOS physical drives | yes |
+| `site_info` | Gather site preflight facts for a VergeOS system | yes |
+| `snapshot_profile` | Manage snapshot profiles in VergeOS | no |
+| `tag` | Manage tags and VM tag assignments in VergeOS | no |
+| `tag_category` | Manage tag categories in VergeOS | no |
+| `tenant` | Manage tenants in VergeOS | no |
+| `tenant_external_ip` | Assign external IPs to VergeOS tenants | no |
+| `tenant_info` | Gather information about VergeOS tenants | yes |
+| `tenant_network_block` | Assign network blocks (CIDRs) to VergeOS tenants | no |
+| `update` | Drive the VergeOS platform update lifecycle | no |
+| `update_info` | Gather information about VergeOS platform updates | yes |
+| `user` | Manage users in VergeOS | no |
+| `vm` | Manage virtual machines in VergeOS | no |
+| `vm_clone` | Clone a VM from one of its snapshots | no |
+| `vm_drive_info` | Gather information about a VM's drives in VergeOS | yes |
+| `vm_export` | Manage VM exports to a VergeOS NAS volume | no |
+| `vm_import` | Import virtual machines from OVA files in VergeOS | no |
+| `vm_info` | Gather information about VMs in VergeOS | yes |
+| `vm_nic_info` | Gather information about a VM's NICs in VergeOS | yes |
+| `vm_recipe_deploy` | Deploy a VM from a VergeOS recipe | no |
+| `vm_recipe_info` | Gather information about VM recipes in VergeOS | yes |
+| `vm_snapshot` | Manage VM snapshots in VergeOS | no |
+| `vnet_apply` | Apply pending firewall rule changes on a VergeOS network | no |
+| `vnet_rule` | Manage firewall rules on a VergeOS network | no |
+| `vnet_rule_info` | Gather information about firewall rules on a VergeOS network | yes |
+| `windows_unattend` | Manage Windows unattend.xml configuration for VMs in VergeOS | no |
+<!-- module-index: end -->
+
+## Roles
+
+| Role | What it does |
+|---|---|
+| `api_key_rotation` | Rotates an API key, proving the new secret works before revoking the old one |
+| `billing_export` | Read-only usage export for invoicing and chargeback |
+| `drive_health` | SMART and vSAN triage for physical drives; reports, does not pull a drive |
+| `health_report` | Read-only green/amber/red digest of alarms, nodes, capacity, snapshots and NAS |
+| `image_pipeline` | Turns a local qcow2 into a versioned golden template VM |
+| `k3s_node` | Builds one k3s node as a VM |
+| `lb_stack` | Deploys an haproxy VM (optionally with keepalived) from a declarative spec |
+| `network_policy` | Enforces per-network firewall rules from a YAML policy |
+| `node_drain` | Evacuates a node into maintenance mode, or brings it back |
+| `protect` | Enrolls a VM in a snapshot profile from a `protect/<class>` tag |
+| `rbac` | Groups, membership and permissions from one declarative document |
+| `rebalance_advisor` | Proposes live migrations for sustained CPU/RAM hotspots; never migrates |
+| `restore_drill` | Clones a snapshot, boots it, and reports whether it stayed running |
+| `rolling_update` | Prepares a platform update and hands the reboots to the platform's rolling apply |
+| `tier_policy` | Declares which storage tier each VM's drives belong on |
+| `vm_backup` | Snapshot schedule, NAS export target, NFS exposure and export config from one policy |
+| `vm_from_recipe` | Deploys a VM from a recipe and waits until it is usable |
+
+## Example playbooks
+
+Every playbook under [`examples/`](examples). Recipe deploys are also walked
+through under [Deploying VMs from recipes](#deploying-vms-from-recipes). The
+silent-install lab is
+[`examples/unattended_install/`](examples/unattended_install/).
+
+| Playbook | What it shows |
+|---|---|
+| `api_key_rotation.yml` | Rotates a bearer key and proves the new secret before revoking the old one |
+| `apply_tags.yml` | Applies tags from VM name patterns via the dynamic inventory |
+| `billing_export.yml` | Read-only per-tenant usage export for invoicing and chargeback |
+| `create_vm.yml` | Creates a VM with a network and storage |
+| `delete_snapshot.yml` | Deletes one snapshot by id |
+| `deploy_from_recipe.yml` | Deploys one VM from a recipe, driving the modules directly |
+| `drive_health.yml` | SMART and vSAN triage for physical drives |
+| `gather_info.yml` | Read-only sweep of VMs and other infrastructure |
+| `health_report.yml` | Read-only green/amber/red digest of alarms, nodes, capacity, snapshots, and NAS |
+| `image_pipeline.yml` | Turns a local qcow2 into a versioned golden template VM |
+| `import_and_configure_vm.yml` | Imports an OVA and configures it with cloud-init |
+| `import_and_configure_winvm.yml` | Imports a Windows OVA and configures it with unattend |
+| `k3s_node.yml` | Builds k3s nodes as VMs |
+| `lb_stack.yml` | Deploys an HAProxy load balancer from a declarative spec |
+| `manage_api_keys.yml` | Manages per-user API keys as code |
+| `manage_tenants.yml` | Tenant, external IP, and network block layout as code |
+| `manage_users.yml` | Users, group membership, and permissions |
+| `network_policy.yml` | Per-network firewall rules from a YAML policy |
+| `node_drain.yml` | Evacuates a node into maintenance mode, or brings it back |
+| `protect.yml` | Enrolls a VM in a snapshot profile from a `protect/<class>` tag |
+| `rbac.yml` | Groups, membership, and permissions from one document |
+| `rebalance_advisor.yml` | Proposes live migrations for CPU/RAM hotspots and leaves the VMs in place |
+| `recipe_discover.yml` | Read-only listing of recipes and the questions each one asks |
+| `recipe_fleet.yml` | Several VMs from one recipe, each with its own size |
+| `recipe_preflight.yml` | Validates answers and runs the platform simulation without creating a VM |
+| `restore_drill.yml` | Clones a snapshot, boots the clone, and reports whether it stayed running |
+| `rolling_update.yml` | Prepares a platform update and hands the reboots to the platform's rolling apply |
+| `setup_tags.yml` | Creates the tag categories and tags other examples apply |
+| `snapshot_by_tag.yml` | Snapshots VMs selected by inventory tag, site, or status groups |
+| `snapshot_workflow.yml` | Snapshot, update, and restore workflow |
+| `test_inventory.yml` | Prints hostvars from the dynamic inventory |
+| `tier_policy.yml` | Declares which storage tier each VM's drives belong on |
+| `vm_backup.yml` | Snapshot schedule, NAS export target, NFS exposure, and export config from one policy |
+| `vm_from_recipe_role.yml` | One VM via `vm_from_recipe`, waited on until it can boot |
+| `vm_snapshots.yml` | Create, list, and optionally restore a VM snapshot |
+
+## Deploying VMs from recipes
+
+A recipe is what you pick in the VergeOS UI when you create a new VM. It
+carries its own set of questions, and deploying one from Ansible means
+answering them. There is a full walkthrough in
+[docs/DEPLOYING-VMS-FROM-RECIPES.md](docs/DEPLOYING-VMS-FROM-RECIPES.md), and
+runnable examples in [`examples/`](examples).
+
+| Module | What it does |
+|---|---|
+| `vm_recipe_info` | Lists recipes, and the questions a recipe accepts. Start here, because question names are not guessable and some valid values depend on the system you are pointed at |
+| `vm_recipe_deploy` | Deploys a VM from a recipe. Answers are checked against the recipe's own published questions before anything is sent, so a bad answer is a refusal rather than a half built VM |
+| `vm_drive_info` | A VM's drives, with optional IO counters. Those counters are how you tell a booted guest from one sitting at "no bootable device" |
+| `vm_nic_info` | A VM's NICs, and separately the ones attached to no network at all. A recipe whose network question was left unanswered produces exactly that, and it otherwise passes every check |
+
+| Role | What it does | Example |
+|---|---|---|
+| `vm_from_recipe` | Deploys a VM from a recipe and then waits until it is genuinely usable, meaning drives imported, NICs attached, and optionally the guest proven to have booted | `examples/vm_from_recipe_role.yml` |
+
+The modules return as soon as the platform accepts the deploy, which happens
+while the OS image is still downloading. Use them when you just want to fire
+a deploy off. Use the role when the next thing in your playbook needs the VM
+to actually work.
+
+### Examples
+
+| Example | What it shows |
+|---|---|
+| `recipe_discover.yml` | Read only. What recipes exist, what each one asks, and which answers are only valid on this particular system |
+| `recipe_preflight.yml` | Validates an answer set and runs the platform's own simulation without creating anything. Exits non zero when the answers would not deploy, so it works as a CI gate |
+| `deploy_from_recipe.yml` | A single VM, driving the modules directly |
+| `vm_from_recipe_role.yml` | A single VM via the role, waited on and boot proved |
+| `recipe_fleet.yml` | Several VMs from one recipe, each with its own size |
+
+### Setting connection details once
+
+The recipe modules share an action group, so `module_defaults` can carry the
+connection for all of them:
+
+```yaml
+- hosts: localhost
+  module_defaults:
+    group/vergeio.vergeos.recipe:
+      host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+      username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
 ```
 
 ## Dynamic Inventory
@@ -116,7 +295,7 @@ group_by:
   - tags      # tag_production, tag_web
   - tenant
   - os_family
-  - cluster
+  - cluster   # cluster_<name> from cluster_name, e.g. cluster_example_lab
   - node      # node_node1, node_node2 (running VMs only)
 
 # Optional: Filter VMs
@@ -133,6 +312,13 @@ cache_timeout: 3600  # 1 hour
 # Optional: Concurrency settings
 max_workers: 10
 site_timeout: 60
+
+# Site fields are templated, so lookup('env', ...) above is resolved before
+# connecting. strict_sites defaults to false: a site that fails is skipped
+# with a warning. Set it to true to make any site failure fatal. Every site
+# failing is always an error. ansible-inventory still exits 0 on that error
+# unless ANSIBLE_INVENTORY_UNPARSED_FAILED=true.
+# strict_sites: true
 ```
 
 ### Available Host Variables
@@ -158,7 +344,8 @@ Each host in the inventory has these variables (with `vergeos_` prefix by defaul
 | `vergeos_ram` | RAM in MB |
 | `vergeos_cpu_cores` | Number of CPU cores |
 | `vergeos_tenant` | Tenant name |
-| `vergeos_cluster` | Cluster name |
+| `vergeos_cluster` | Cluster name (`cluster_name`) |
+| `vergeos_cluster_key` | Cluster id (`cluster_key`) |
 | `vergeos_node_name` | Node running VM (None if stopped) |
 | `vergeos_node_key` | Node resource key (None if stopped) |
 | `vergeos_vm_data` | Full VM data dictionary |

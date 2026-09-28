@@ -1,0 +1,19 @@
+---
+# Example playbook: SMART and vSAN drive triage.
+#
+#   ansible-playbook examples/drive_health.yml
+#
+# As a scheduled check that should page someone, set
+# drive_health_fail_on_critical.
+#
+- name: Report VergeOS drive health
+  hosts: localhost
+  gather_facts: false
+
+  roles:
+    - role: vergeio.vergeos.drive_health
+      vars:
+        # Page on a drive that is actually failing, stay quiet about one that
+        # is merely warm.
+        drive_health_fail_on_critical: true
+        drive_health_fail_on_warning: false

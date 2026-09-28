@@ -1,0 +1,122 @@
+---
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that: api_key_rotation_host | length > 0
+    fail_msg: >-
+      api_key_rotation needs api_key_rotation_host (or VERGEOS_HOST).
+    quiet: true
+
+- name: Preflight -- a user and a key name
+  ansible.builtin.assert:
+    that:
+      - api_key_rotation_user | length > 0
+      - api_key_rotation_key_name | length > 0
+    fail_msg: >-
+      api_key_rotation needs api_key_rotation_user and
+      api_key_rotation_key_name.
+    quiet: true
+
+- name: Read the current generations of this key
+  vergeio.vergeos.api_key_info:
+    host: "{{ api_key_rotation_host }}"
+    username: "{{ api_key_rotation_username }}"
+    password: "{{ api_key_rotation_password }}"
+    insecure: "{{ api_key_rotation_insecure }}"
+    user: "{{ api_key_rotation_user }}"
+  register: api_key_rotation_existing
+  changed_when: false
+
+- name: Work out the generation names
+  ansible.builtin.set_fact:
+    api_key_rotation_new_name: >-
+      {{ api_key_rotation_key_name }}-{{ api_key_rotation_suffix }}
+    api_key_rotation_old_names: >-
+      {{ api_key_rotation_existing.api_keys
+         | map(attribute='name')
+         | select('match',
+                  '^' ~ (api_key_rotation_key_name | regex_escape) ~ '(-|$)')
+         | list }}
+
+# Two rotations inside the same second would produce the same
+# generation name. Refuse loudly rather than quietly reuse one and
+# leave the operator believing a rotation happened.
+- name: Refuse a suffix collision
+  ansible.builtin.assert:
+    that: api_key_rotation_new_name not in api_key_rotation_old_names
+    fail_msg: >-
+      A key named '{{ api_key_rotation_new_name }}' already exists.
+      Pick a different api_key_rotation_suffix -- rotations within the
+      same second collide.
+    quiet: true
+
+- name: Create the new generation
+  vergeio.vergeos.api_key:
+    host: "{{ api_key_rotation_host }}"
+    username: "{{ api_key_rotation_username }}"
+    password: "{{ api_key_rotation_password }}"
+    insecure: "{{ api_key_rotation_insecure }}"
+    user: "{{ api_key_rotation_user }}"
+    name: "{{ api_key_rotation_new_name }}"
+    description: "{{ api_key_rotation_description }}"
+    ip_allow_list: "{{ api_key_rotation_ip_allow_list or omit }}"
+    ip_deny_list: "{{ api_key_rotation_ip_deny_list or omit }}"
+    state: present
+  register: api_key_rotation_created
+  no_log: true
+
+# The secret is returned once, at creation. No secret means the key
+# already existed, which means this is not a rotation.
+- name: The new generation returned a secret
+  ansible.builtin.assert:
+    that: api_key_rotation_created.secret is defined
+    fail_msg: >-
+      No secret was returned, so the key was not newly created. The
+      old generations have NOT been touched.
+    quiet: true
+
+# This is the step that makes the rotation safe. Everything before it
+# is additive; everything after it is destructive. If this fails, the
+# play stops here and the old key still works.
+- name: Prove the new secret authenticates, before anything is revoked
+  ansible.builtin.uri:
+    url: >-
+      https://{{ api_key_rotation_host }}/api/v4/vms?fields=name&limit=1
+    headers:
+      Authorization: "Bearer {{ api_key_rotation_created.secret }}"
+    validate_certs: "{{ not api_key_rotation_insecure }}"
+    status_code: 200
+  when: api_key_rotation_verify_bearer | bool
+  no_log: true
+
+- name: Persist the new secret
+  ansible.builtin.copy:
+    content: "{{ api_key_rotation_created.secret }}"
+    dest: "{{ api_key_rotation_secret_dest }}"
+    mode: "0600"
+  when: api_key_rotation_secret_dest | length > 0
+  no_log: true
+
+- name: Delete the old generations
+  vergeio.vergeos.api_key:
+    host: "{{ api_key_rotation_host }}"
+    username: "{{ api_key_rotation_username }}"
+    password: "{{ api_key_rotation_password }}"
+    insecure: "{{ api_key_rotation_insecure }}"
+    user: "{{ api_key_rotation_user }}"
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ api_key_rotation_old_names }}"
+
+- name: Expose the result to the caller
+  ansible.builtin.set_fact:
+    api_key_rotation_secret: "{{ api_key_rotation_created.secret }}"
+    api_key_rotation_rotated_out: "{{ api_key_rotation_old_names }}"
+  no_log: true
+
+- name: Rotation summary
+  ansible.builtin.debug:
+    msg: >-
+      rotated '{{ api_key_rotation_key_name }}' for user
+      '{{ api_key_rotation_user }}': new generation
+      {{ api_key_rotation_new_name }}, removed
+      {{ api_key_rotation_old_names | length }} old generation(s).

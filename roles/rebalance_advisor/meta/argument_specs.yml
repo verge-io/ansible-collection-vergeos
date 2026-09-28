@@ -1,0 +1,59 @@
+---
+argument_specs:
+  main:
+    short_description: Recommend-only hotspot remediation proposals
+    description:
+      - Samples node CPU and per-VM CPU, finds sustained hotspots, and
+        proposes the smallest set of live migrations that would resolve them.
+      - Writes a reason for every proposal. Respects the C(no-balance) tag,
+        anti-affinity HA groups, nodes in maintenance, a per-run move budget,
+        and target headroom across proposals so two moves cannot both be sent
+        to the same node.
+      - Never migrates anything. Applying a proposal is a human action,
+        because a live migration is the one operation in this collection
+        whose blast radius is a running workload.
+    author:
+      - VergeIO (@vergeio)
+    options:
+      rebalance_advisor_host:
+        description: VergeOS hostname or IP. Defaults to C(VERGEOS_HOST).
+        type: str
+      rebalance_advisor_username:
+        description: Username. Defaults to C(VERGEOS_USERNAME).
+        type: str
+      rebalance_advisor_password:
+        description: Password. Defaults to C(VERGEOS_PASSWORD).
+        type: str
+      rebalance_advisor_insecure:
+        description: Skip SSL validation. Defaults to C(VERGEOS_INSECURE).
+        type: bool
+      rebalance_advisor_cpu_threshold:
+        description: Node CPU percentage above which a node counts as a hotspot.
+        type: int
+        default: 85
+      rebalance_advisor_ram_threshold:
+        description: Node RAM percentage above which a node counts as a hotspot.
+        type: int
+        default: 85
+      rebalance_advisor_max_moves:
+        description:
+          - Maximum proposals per run. Deliberately small - this remediates a
+            hotspot rather than optimising the whole cluster.
+        type: int
+        default: 2
+      rebalance_advisor_samples:
+        description:
+          - Number of CPU samples to average. More than one, because a single
+            sample catches a spike and proposes a move that is not warranted.
+        type: int
+        default: 3
+      rebalance_advisor_interval:
+        description: Seconds between CPU samples.
+        type: int
+        default: 5
+      rebalance_advisor_fixture:
+        description:
+          - Path to a saved JSON document with C(nodes) and C(vms). Runs the
+            planner offline instead of reading the live API. Used by the tests.
+        type: str
+        default: ""

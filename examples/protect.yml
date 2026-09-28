@@ -1,0 +1,46 @@
+---
+# Tag-driven backup-protection enrolment: tag a VM, and the right snapshot
+# profile is attached to it.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/protect.yml                       # report
+#   ansible-playbook examples/protect.yml -e protect_mode=enforce
+#
+# The role creates a 'protect' tag CATEGORY and one tag per class, then
+# enrols any VM carrying a class tag into that class's snapshot profile.
+# Tag VMs with the class name (here: gold / silver) in the protect category.
+#
+# Run it in report mode on a schedule with -e protect_fail_on_drift=true as
+# a CI gate, and enforce once you trust the classification.
+#
+# One deliberate asymmetry: enforce ENROLS tagged VMs, but never STRIPS
+# protection from a VM whose tag was removed. Those are reported as orphans
+# instead. Removing somebody's backups is not a decision a reconciler should
+# make on its own.
+- name: Protection reconciler
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    protect_classes:
+      gold:
+        periods:
+          - name: Hourly
+            frequency: hourly
+            retention: 172800        # 2 days, in seconds
+            quiesce: true
+          - name: Daily
+            frequency: daily
+            retention: 2592000       # 30 days
+            hour: 2
+            quiesce: true
+      silver:
+        periods:
+          - name: Daily
+            frequency: daily
+            retention: 604800        # 7 days
+            hour: 3
+
+  roles:
+    - role: vergeio.vergeos.protect

@@ -1,0 +1,184 @@
+---
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that: k3s_node_host | length > 0
+    fail_msg: "k3s_node needs k3s_node_host (or VERGEOS_HOST)."
+    quiet: true
+
+- name: Preflight -- name, template and a usable spec
+  ansible.builtin.assert:
+    that:
+      - k3s_node_name | length > 0
+      - k3s_node_template | length > 0
+      - k3s_node_spec.role | default('') in ['server', 'agent']
+    fail_msg: >-
+      k3s_node needs k3s_node_name, k3s_node_template, and a
+      k3s_node_spec whose role is 'server' or 'agent'.
+    quiet: true
+
+- name: Preflight -- an agent needs somewhere to join
+  ansible.builtin.assert:
+    that: k3s_node_spec.server_url | default('') | length > 0
+    fail_msg: >-
+      an agent needs k3s_node_spec.server_url pointing at a server.
+      Without it the node boots, installs k3s, and joins nothing.
+    quiet: true
+  when: k3s_node_spec.role | default('') == 'agent'
+
+# Rendered before anything is created. A spec that cannot render should not
+# leave a half-built VM behind.
+#
+# check_mode: false because this is a pure function on the CONTROLLER -- it
+# reads no API and writes no file -- and a --check run of a deploy role is
+# most useful when it shows you the configuration it would apply. Skipped, it
+# does not merely produce nothing: a skipped command still registers an
+# EMPTY stdout, so the role went on to attach an empty cloud-init document
+# and report success. Measured.
+#
+# `changed_when: false` is the other claim, that the task changes nothing,
+# and it is not permission to run (#28).
+#
+# failed_when: false and a separate reporting task because no_log censors the
+# whole result -- a spec the renderer refuses would otherwise reach the
+# operator as {"censored": "..."} and an exit code.
+#
+# The spec travels on stdin, not argv, so the cluster token never appears in
+# a process listing.
+- name: Render the cloud-init document from the spec
+  ansible.builtin.command:
+    argv: ["{{ ansible_playbook_python }}",
+           "{{ role_path }}/files/k3s_render.py", '--spec', '-']
+    stdin: "{{ k3s_node_spec | to_json }}"
+  register: k3s_node_userdata
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
+
+- name: The spec must have rendered
+  ansible.builtin.fail:
+    msg: >-
+      k3s_render.py exited {{ k3s_node_userdata.rc }}:
+      {{ k3s_node_userdata.stderr | default('') | trim }}
+  when: k3s_node_userdata.rc != 0
+
+- name: Refuse to deploy an empty cloud-init document
+  ansible.builtin.assert:
+    that: k3s_node_userdata.stdout | trim | length > 0
+    fail_msg: >-
+      the renderer produced nothing. Attaching that would boot a node with
+      no cloud-init, which looks exactly like a node that booted fine.
+    quiet: true
+
+- name: Does the node VM already exist?
+  vergeio.vergeos.vm_info:
+    host: "{{ k3s_node_host }}"
+    username: "{{ k3s_node_username }}"
+    password: "{{ k3s_node_password }}"
+    insecure: "{{ k3s_node_insecure }}"
+    name: "{{ k3s_node_name }}"
+  register: k3s_node_existing
+  changed_when: false
+
+- name: Clone the golden template
+  vergeio.vergeos.vm_clone:
+    host: "{{ k3s_node_host }}"
+    username: "{{ k3s_node_username }}"
+    password: "{{ k3s_node_password }}"
+    insecure: "{{ k3s_node_insecure }}"
+    name: "{{ k3s_node_name }}"
+    source: "{{ k3s_node_template }}"
+    snapshot: "{{ k3s_node_snapshot }}"
+  when: k3s_node_existing.vms | default([]) | length == 0
+  register: k3s_node_cloned
+
+# Read back rather than trust the clone's `changed`. vm_clone supports check
+# mode, so under --check it reports the clone it WOULD make and makes none --
+# and everything below is addressed to a VM by name. Without this the role
+# went on to configure a VM that does not exist, and the failure arrived as
+#
+#     fatal: FAILED! => {"censored": "the output has been hidden due to the
+#     fact that 'no_log: true' was specified for this result"}
+#
+# because the cloud-init task carries the spec's secret. An existence check
+# is one read, and it names the cause before the censored task can fire.
+- name: Is the VM there to configure?
+  vergeio.vergeos.vm_info:
+    host: "{{ k3s_node_host }}"
+    username: "{{ k3s_node_username }}"
+    password: "{{ k3s_node_password }}"
+    insecure: "{{ k3s_node_insecure }}"
+    name: "{{ k3s_node_name }}"
+  register: k3s_node_present
+  changed_when: false
+
+- name: What this run would deploy (nothing was created)
+  ansible.builtin.debug:
+    msg: >-
+      check mode: would clone '{{ k3s_node_template }}' to
+      '{{ k3s_node_name }}', attach the rendered cloud-init, add a NIC on
+      {{ k3s_node_network }} and boot it. Nothing was created.
+  when: k3s_node_present.vms | default([]) | length == 0
+
+- name: Configure the VM
+  when: k3s_node_present.vms | default([]) | length > 0
+  block:
+    # no_log because the spec carries the cluster token.
+    - name: Attach the rendered cloud-init configuration
+      vergeio.vergeos.cloud_init:
+        host: "{{ k3s_node_host }}"
+        username: "{{ k3s_node_username }}"
+        password: "{{ k3s_node_password }}"
+        insecure: "{{ k3s_node_insecure }}"
+        vm_name: "{{ k3s_node_name }}"
+        datasource: nocloud
+        user_data: "{{ k3s_node_userdata.stdout }}"
+      no_log: true
+
+    - name: NIC on the cluster network
+      vergeio.vergeos.nic:
+        host: "{{ k3s_node_host }}"
+        username: "{{ k3s_node_username }}"
+        password: "{{ k3s_node_password }}"
+        insecure: "{{ k3s_node_insecure }}"
+        vm_name: "{{ k3s_node_name }}"
+        network: "{{ k3s_node_network }}"
+        state: present
+
+    - name: Specs and power
+      vergeio.vergeos.vm:
+        host: "{{ k3s_node_host }}"
+        username: "{{ k3s_node_username }}"
+        password: "{{ k3s_node_password }}"
+        insecure: "{{ k3s_node_insecure }}"
+        name: "{{ k3s_node_name }}"
+        cpu_cores: "{{ k3s_node_cpu_cores }}"
+        ram: "{{ k3s_node_ram_mb }}"
+        state: running
+
+  # `cloned` and `deployed` describe what this RUN did, not what the cluster
+  # contains. vm_clone reports a clone it would have made under check mode, so
+  # keying only off that said "cloned" for a VM nobody created -- and a caller
+  # that branches on it would go on to configure something that is not there.
+- name: Deployment summary
+  ansible.builtin.set_fact:
+    k3s_node_result:
+      vm: "{{ k3s_node_name }}"
+      deployed: "{{ k3s_node_present.vms | default([]) | length > 0 }}"
+      cloned: "{{ k3s_node_cloned is not skipped
+                  and (k3s_node_present.vms | default([]) | length > 0) }}"
+      already_existed: "{{ k3s_node_existing.vms | default([]) | length > 0 }}"
+      network: "{{ k3s_node_network }}"
+      role: "{{ k3s_node_spec.role }}"
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: >-
+      k3s {{ k3s_node_spec.role }} '{{ k3s_node_name }}'
+      {{ 'cloned from ' ~ k3s_node_template if k3s_node_result.cloned
+         else ('already existed'
+               if k3s_node_result.already_existed
+               else 'not deployed -- check mode') }}
+      on {{ k3s_node_network }}.
+      {{ 'The k3s install runs in-guest and needs internet access.'
+         if k3s_node_result.deployed else '' }}

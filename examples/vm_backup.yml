@@ -1,0 +1,54 @@
+---
+# Declare a VM backup policy: a snapshot schedule, a NAS volume to export
+# to, optional NFS exposure, and the export configuration itself.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/vm_backup.yml
+#
+# The export volume is the one layer that is not optional -- there is
+# nowhere to put an export without it. Set vm_backup_nas_service to a NAS
+# service that already exists on the system.
+- name: VM backup policy
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vm_backup_nas_service: nas1
+    vm_backup_volume: backups
+    vm_backup_volume_size_gb: 500
+    # The tier has to exist. The platform accepts any number 1-5 for a
+    # drive's preferred tier without checking that the tier is present, so a
+    # missing one is written, reads back, and is never honoured.
+    vm_backup_volume_tier: 1
+
+    vm_backup_snapshot_profile:
+      name: vm-backups
+      periods:
+        - name: Daily
+          frequency: daily
+          retention: 604800        # 7 days, in seconds
+          hour: 2
+          quiesce: true
+
+    # No share unless somebody is named. An export volume exposed to
+    # everything on the network is not a backup target.
+    #
+    # Emptying allowed_hosts later does NOT revoke an existing share -- it
+    # only stops this run from managing it. To take the exposure away, say
+    # so: state: absent. With an empty list and no state the role refuses
+    # rather than guess which of the two you meant.
+    vm_backup_nfs_share:
+      name: backups
+      allowed_hosts: [192.0.2.0/24]
+      data_access: ro
+      state: present
+
+    vm_backup_export:
+      max_exports: 3               # generations kept
+      quiesced: true
+      run_now: false               # true runs an export during this play
+      vms: []                      # empty means all VMs
+
+  roles:
+    - role: vergeio.vergeos.vm_backup

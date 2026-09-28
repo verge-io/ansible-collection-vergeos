@@ -1,0 +1,129 @@
+---
+# Live-verify ladder for the snapshot_profile module (branch
+# feature/backup-modules, run via integration-backup) against the lab
+# (VergeOS 26.1.8). Touches ONLY the scratch profile zz-verify-profile;
+# cleans up even on failure.
+#
+#   source ~/.config/vergeos/verify.env
+#   ANSIBLE_COLLECTIONS_PATH=<build path> ansible-playbook verify-snapshot-profile.yml
+
+- name: Snapshot profile live-verify ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    prof: zz-verify-profile
+
+  tasks:
+    - name: "Profile ladder (cleanup runs even on failure)"
+      block:
+        - name: "1. Create profile with Daily + Weekly periods"
+          vergeio.vergeos.snapshot_profile:
+            name: "{{ prof }}"
+            description: "ansible live-verify scratch profile"
+            periods:
+              - name: Daily
+                frequency: daily
+                retention: 604800
+                hour: 2
+                quiesce: true
+              - name: Weekly
+                frequency: weekly
+                retention: 2592000
+                day_of_week: sun
+                hour: 3
+            state: present
+          register: create
+
+        - name: "Verify: Weekly"
+          ansible.builtin.assert:
+            that:
+              - create.changed
+              - create.profile.periods | length == 2
+
+        - name: "2. Re-run identically — must be idempotent"
+          vergeio.vergeos.snapshot_profile:
+            name: "{{ prof }}"
+            description: "ansible live-verify scratch profile"
+            periods:
+              - name: Daily
+                frequency: daily
+                retention: 604800
+                hour: 2
+                quiesce: true
+              - name: Weekly
+                frequency: weekly
+                retention: 2592000
+                day_of_week: sun
+                hour: 3
+            state: present
+          register: rerun
+
+        - name: "Verify: Weekly"
+          ansible.builtin.assert:
+            that: ["not rerun.changed"]
+            fail_msg: "NOT idempotent: {{ rerun.actions }}"
+
+        - name: "3. Drift Daily retention 7d → 14d"
+          vergeio.vergeos.snapshot_profile:
+            name: "{{ prof }}"
+            periods:
+              - name: Daily
+                frequency: daily
+                retention: 1209600
+                hour: 2
+                quiesce: true
+          register: drift
+
+        - name: "Verify: Daily"
+          ansible.builtin.assert:
+            that:
+              - drift.changed
+              - (drift.profile.periods | selectattr('name', 'eq', 'Daily') | first).retention == 1209600
+
+        - name: "4. Purge: only Daily should remain"
+          vergeio.vergeos.snapshot_profile:
+            name: "{{ prof }}"
+            periods:
+              - name: Daily
+                frequency: daily
+                retention: 1209600
+                hour: 2
+                quiesce: true
+            purge_periods: true
+          register: purge
+
+        - name: "Verify: Daily"
+          ansible.builtin.assert:
+            that:
+              - purge.changed
+              - purge.profile.periods | length == 1
+
+      rescue:
+        - name: Ladder failed — still clean up below
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+    - name: "5. Delete profile (always)"
+      vergeio.vergeos.snapshot_profile:
+        name: "{{ prof }}"
+        state: absent
+
+    - name: "6. Delete again — idempotent absent"
+      vergeio.vergeos.snapshot_profile:
+        name: "{{ prof }}"
+        state: absent
+      register: redelete
+
+    - name: "Verify: Delete again — idempotent absent"
+      ansible.builtin.assert:
+        that: ["not redelete.changed"]
+
+    - name: Fail the run if the ladder failed before cleanup
+      ansible.builtin.fail:
+        msg: "Ladder failed before cleanup — see the first failed task above"
+      when: ladder_failed | default(false)
+
+    - name: "Report: Fail the run if the ladder failed before cleanup"
+      ansible.builtin.debug:
+        msg: "snapshot_profile ladder PASSED: create(2 periods) → idempotent → drift retention → purge → delete → idempotent-absent"

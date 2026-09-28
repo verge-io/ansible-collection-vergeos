@@ -1,0 +1,378 @@
+---
+# Live ladder for tenant + tenant_info.
+#
+#   set -a; . ~/.config/vergeos/env; set +a
+#   ansible-playbook verify-tenant.yml
+#
+# Touches ONLY zz- objects. The scratch tenant is powered off and deleted in
+# an always: block, so a mid-ladder failure still cleans up.
+#
+# NOT EXERCISED HERE: the unplaceable-node path of issue #24. It cannot be
+# provoked deterministically -- whether the platform places a node depends on
+# what else is running at the time, and a ladder that only fails on a busy
+# system is worse than one that does not try. It WAS reproduced by hand on
+# 26.1.8 while writing this, and the recipe is recorded so anyone can repeat
+# it:
+#
+#   1. start a tenant node sized at the cluster's max_ram_per_vm; it places.
+#   2. with that running, add a second node of 8192 MB. It never places,
+#      through 180s, even though one physical node still has ~59 GB free.
+#
+# The message that failure produces is covered by
+# tests/unit/plugins/modules/test_tenant.py::TestPlacementDiagnostic. What
+# this ladder proves is the half that CAN be pinned live: that `host_node` is
+# a real, readable field, so "never given a host" is a measurement and not a
+# guess.
+- name: Tenant live ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    api: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    scratch: zz-tenant
+    # Every column the module diffs, kept in step with the module by
+    # tests/unit/plugins/modules/test_field_contracts.py.
+    tenant_api_fields:
+      - allow_branding
+      - description
+      - expose_cloud_snapshots
+      - note
+      - url
+    # Small on purpose: this has to place on any system the ladder runs on.
+    node_ram_gb: 4
+    node_cores: 2
+
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+      return_content: true
+
+  tasks:
+    - name: "0. Clear leftovers from an earlier run"
+      vergeio.vergeos.tenant:
+        name: "{{ scratch }}"
+        state: absent
+      failed_when: false
+
+    - name: "Tenant ladder (cleanup runs even on failure)"
+      block:
+        - name: "1. Create the scratch tenant with a node and storage"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            description: "ansible live ladder scratch tenant"
+            url: "https://example.com/zz"
+            note: "created by verify-tenant.yml"
+            nodes:
+              - name: "{{ scratch }}-n1"
+                cpu_cores: "{{ node_cores }}"
+                ram_gb: "{{ node_ram_gb }}"
+            storage:
+              - tier: 1
+                provisioned_gb: 10
+            state: present
+          register: create
+
+        - name: "Verify: create reported what it did"
+          ansible.builtin.assert:
+            that:
+              - create.changed
+              - "'created tenant ' ~ \"'\" ~ scratch ~ \"'\" in
+                 create.actions | join('|')"
+            fail_msg: "create did not report changed: {{ create }}"
+
+        # --- Property 1: every field the module sends is a real column ----
+        - name: "2. Read the tenant row back over plain REST"
+          ansible.builtin.uri:
+            url: "{{ api }}/tenants?fields=$key,name,{{ tenant_api_fields | join(',') }}"
+          register: row
+          changed_when: false
+
+        - name: "3. Every column the module diffs exists on the row"
+          vars:
+            t: "{{ row.json | selectattr('name', 'equalto', scratch) | first }}"
+          ansible.builtin.assert:
+            that: >-
+              tenant_api_fields | difference(t.keys() | list) | length == 0
+            fail_msg: >-
+              these are not columns on a tenant:
+              {{ tenant_api_fields | difference(t.keys() | list) }}
+              -- the API accepts unknown names with HTTP 200 and discards
+              them, which is issue #75's whole class.
+
+        # --- Property 2: what was set is what landed ----------------------
+        - name: "4. Every parameter round-tripped"
+          vars:
+            t: "{{ row.json | selectattr('name', 'equalto', scratch) | first }}"
+          ansible.builtin.assert:
+            that:
+              - t.description == 'ansible live ladder scratch tenant'
+              - t.url == 'https://example.com/zz'
+              - t.note == 'created by verify-tenant.yml'
+            fail_msg: "the tenant does not hold what was asked for: {{ t }}"
+
+        - name: "5. tenant_info agrees with REST"
+          vergeio.vergeos.tenant_info:
+            name: "{{ scratch }}"
+          register: info
+          changed_when: false
+
+        - name: "Verify: the two readers see the same tenant"
+          vars:
+            t: "{{ row.json | selectattr('name', 'equalto', scratch) | first }}"
+          ansible.builtin.assert:
+            that:
+              - info.tenants | length == 1
+              - info.tenants[0].description == t.description
+              - info.tenants[0].url == t.url
+              - info.tenants[0].nodes | length == 1
+              - info.tenants[0].nodes[0].ram_gb == node_ram_gb | float
+              - info.tenants[0].storage | length == 1
+              - info.tenants[0].storage[0].tier == 1
+            fail_msg: >-
+              tenant_info and REST disagree. info={{ info.tenants }} rest={{ t }}
+              (storage[].tier comes from the join `tier#tier as tier_number`;
+              the `tier` COLUMN holds the tier's KEY, so a projection that
+              takes the column reports the wrong number or none)
+
+        # --- Property 3: a second apply is a no-op ------------------------
+        - name: "6. Re-run unchanged"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            description: "ansible live ladder scratch tenant"
+            url: "https://example.com/zz"
+            note: "created by verify-tenant.yml"
+            nodes:
+              - name: "{{ scratch }}-n1"
+                cpu_cores: "{{ node_cores }}"
+                ram_gb: "{{ node_ram_gb }}"
+            storage:
+              - tier: 1
+                provisioned_gb: 10
+            state: present
+          register: again
+
+        - name: "Verify: the tenant converges"
+          ansible.builtin.assert:
+            that: [not again.changed]
+            fail_msg: "tenant is not idempotent: {{ again.actions }}"
+
+        - name: "7. Drift the settings, then settle them"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            description: "corrected by the ladder"
+            allow_branding: true
+            state: present
+          register: drift
+
+        - name: "7b. Apply the same thing again"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            description: "corrected by the ladder"
+            allow_branding: true
+            state: present
+          register: drift_settled
+
+        - name: "7c. And read it back independently"
+          ansible.builtin.uri:
+            url: "{{ api }}/tenants?fields=name,description,allow_branding"
+          register: drift_row
+          changed_when: false
+
+        - name: "Verify: settings drift is corrected once and then settles"
+          vars:
+            t: "{{ drift_row.json | selectattr('name', 'equalto', scratch)
+                   | first }}"
+          ansible.builtin.assert:
+            that:
+              - drift.changed
+              - not drift_settled.changed
+              - t.description == 'corrected by the ladder'
+              - t.allow_branding | bool
+            fail_msg: "settings drift did not converge: {{ t }}"
+
+        - name: "8. Grow the node and the storage"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            nodes:
+              - name: "{{ scratch }}-n1"
+                cpu_cores: "{{ node_cores | int + 1 }}"
+                ram_gb: "{{ node_ram_gb }}"
+            storage:
+              - tier: 1
+                provisioned_gb: 20
+            state: present
+          register: grown
+
+        - name: "8b. Apply the same sizes again"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            nodes:
+              - name: "{{ scratch }}-n1"
+                cpu_cores: "{{ node_cores | int + 1 }}"
+                ram_gb: "{{ node_ram_gb }}"
+            storage:
+              - tier: 1
+                provisioned_gb: 20
+            state: present
+          register: grown_settled
+
+        - name: "8c. Read the two sub-resources back independently"
+          ansible.builtin.uri:
+            url: "{{ api }}/{{ item }}"
+          register: subs
+          changed_when: false
+          loop:
+            - "tenant_nodes?fields=name,cpu_cores,ram"
+            - "tenant_storage?fields=provisioned,tier"
+
+        - name: "Verify: node and storage drift converge"
+          vars:
+            n: "{{ subs.results[0].json
+                   | selectattr('name', 'equalto', scratch ~ '-n1') | first }}"
+          ansible.builtin.assert:
+            that:
+              - grown.changed
+              - not grown_settled.changed
+              - n.cpu_cores | int == node_cores | int + 1
+              - n.ram | int == node_ram_gb | int * 1024
+            fail_msg: >-
+              node drift did not converge: {{ n }}. `ram` is the COLUMN and
+              holds MB; `ram_mb` is the SDK's create keyword. Sending one
+              where the other is expected is issue #75's class.
+
+        # --- power, and the field issue #24 turns on ----------------------
+        - name: "9. Power the tenant on"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            state: running
+          register: powered
+
+        - name: "9b. Read the node's placement back over plain REST"
+          ansible.builtin.uri:
+            url: "{{ api }}/tenant_nodes?fields=name,machine%23status%23node%23%24display%20as%20host_node"
+          register: placement
+          changed_when: false
+
+        - name: "Verify: a tenant that started really was placed somewhere"
+          vars:
+            n: "{{ placement.json
+                   | selectattr('name', 'equalto', scratch ~ '-n1') | first }}"
+          ansible.builtin.assert:
+            that:
+              - powered.changed
+              - "'powered on' in powered.actions"
+              - n.host_node is string
+              - n.host_node | length > 0
+            fail_msg: >-
+              the tenant reports running but its node has no host:
+              {{ n }}. host_node is what issue #24's diagnostic reads to tell
+              "never placed" from "placed and still booting"; if it is empty
+              for a RUNNING node then the diagnostic is reading the wrong
+              field.
+
+        - name: "10. Power on again -- already running is a no-op"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            state: running
+          register: powered_again
+
+        - name: "Verify: power converges"
+          ansible.builtin.assert:
+            that: [not powered_again.changed]
+            fail_msg: "state: running is not idempotent: {{ powered_again }}"
+
+        - name: "11. Stop it"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            state: stopped
+          register: stopped
+
+        - name: "Verify: it stopped"
+          ansible.builtin.assert:
+            that:
+              - stopped.changed
+              - "'powered off' in stopped.actions"
+            fail_msg: "state: stopped did not report powering off"
+
+        - name: "12. Check mode reports the change without making it"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            description: "check mode must not write this"
+            state: present
+          check_mode: true
+          register: dry
+
+        - name: "12b. ...and it really did not happen"
+          ansible.builtin.uri:
+            url: "{{ api }}/tenants?fields=name,description"
+          register: dry_row
+          changed_when: false
+
+        - name: "Verify: check mode wrote nothing"
+          vars:
+            t: "{{ dry_row.json | selectattr('name', 'equalto', scratch)
+                   | first }}"
+          ansible.builtin.assert:
+            that:
+              - dry.changed
+              - t.description == 'corrected by the ladder'
+            fail_msg: "check mode wrote through: {{ t }}"
+
+      rescue:
+        - name: "Record that the ladder failed, so cleanup can still run"
+          ansible.builtin.set_fact:
+            ladder_failed: true
+
+      always:
+        - name: "13. Delete the scratch tenant"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            state: absent
+
+        - name: "14. Delete it again -- absent is idempotent"
+          vergeio.vergeos.tenant:
+            name: "{{ scratch }}"
+            state: absent
+          register: gone
+
+        - name: "15. Re-read every table this ladder wrote to"
+          ansible.builtin.uri:
+            url: "{{ api }}/{{ item }}"
+          register: leftovers
+          changed_when: false
+          loop:
+            - "tenants?fields=name"
+            - "tenant_nodes?fields=name"
+            - "tenant_storage?fields=$key,tenant"
+
+        - name: "16. Zero leftovers"
+          ansible.builtin.assert:
+            that:
+              - not gone.changed
+              - scratch not in (leftovers.results[0].json
+                                | map(attribute='name') | list)
+              - (leftovers.results[1].json | map(attribute='name') | list
+                 | select('match', '^' ~ scratch) | list | length) == 0
+            fail_msg: >-
+              leftovers: tenants={{ leftovers.results[0].json
+                                    | map(attribute='name') | list }},
+              nodes={{ leftovers.results[1].json
+                       | map(attribute='name') | list }}
+
+        - name: "17. Fail the run if the ladder failed before cleanup"
+          ansible.builtin.fail:
+            msg: "ladder FAILED -- see the first failed task above; cleanup ran"
+          when: ladder_failed | default(false)
+
+        - name: PASSED
+          ansible.builtin.debug:
+            msg: >-
+              tenant ladder PASSED: create -> every diffed column is real ->
+              parameters round-trip -> tenant_info agrees with REST ->
+              idempotent -> settings drift settles -> node and storage drift
+              settle -> powers on AND the node reports a real host ->
+              power is idempotent -> stops -> check mode writes nothing ->
+              delete x2, zero leftovers

@@ -27,6 +27,10 @@ options:
     description:
       - The name of the tag category this tag belongs to.
       - Required when creating a new tag or when applying tags to VMs.
+      - Optional when deleting a tag (I(state=absent) with no VM). The name
+        is looked up across categories. One match is deleted, no match is
+        left unchanged, and more than one match fails rather than guessing
+        which tag to delete.
     type: str
   state:
     description:
@@ -103,6 +107,11 @@ EXAMPLES = r'''
     category: "App"
     state: absent
 
+- name: Delete a tag by name when it exists in only one category
+  vergeio.vergeos.tag:
+    name: "OldTag"
+    state: absent
+
 - name: Tag all VMs with 'db' in name (used with inventory)
   vergeio.vergeos.tag:
     host: "{{ vergeos_site_url }}"
@@ -139,6 +148,7 @@ vm_name:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -155,29 +165,39 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_tag(client, name, category_name):
-    """Get tag by name and category using SDK"""
+def get_tag(module, client, name, category_name=None):
+    """Get a tag by name.
+
+    With a category, the lookup is limited to that category. Without one,
+    the name is matched across every category (#122). resolve_one raises
+    NotFoundError when nothing matches and refuses to guess when more than
+    one tag has the name. Claiming the tag is absent without listing is how
+    state=absent used to delete nothing.
+    """
+    kwargs = {}
+    if category_name:
+        kwargs['category_name'] = category_name
     try:
-        return client.tags.get(name=name, category_name=category_name)
+        return resolve_one(module, client.tags, name, 'tag', **kwargs)
     except NotFoundError:
         return None
 
 
-def get_category(client, name):
+def get_category(module, client, name):
     """Get tag category by name using SDK"""
     try:
-        return client.tag_categories.get(name=name)
+        return resolve_one(module, client.tag_categories, name, 'tag category')
     except NotFoundError:
         return None
 
 
-def get_vm(client, name=None, vm_id=None):
+def get_vm(module, client, name=None, vm_id=None):
     """Get VM by name or ID using SDK"""
     try:
         if vm_id is not None:
             return client.vms.get(key=vm_id)
         elif name is not None:
-            return client.vms.get(name=name)
+            return resolve_one(module, client.vms, name, 'VM')
     except NotFoundError:
         return None
     return None
@@ -321,19 +341,19 @@ def main():
         # Get category if specified
         category = None
         if category_name:
-            category = get_category(client, category_name)
+            category = get_category(module, client, category_name)
             if not category:
                 module.fail_json(msg=f"Tag category '{category_name}' not found")
 
-        # Get existing tag
-        tag = None
-        if category:
-            tag = get_tag(client, tag_name, category_name)
+        # Always look the tag up. state=absent with no category still has
+        # to list tags and match by name; skipping that reported "does not
+        # exist" for a tag that was there (#122).
+        tag = get_tag(module, client, tag_name, category_name)
 
         # Handle VM tagging operations
         if vm_name or vm_id:
             # Get the VM
-            vm = get_vm(client, name=vm_name, vm_id=vm_id)
+            vm = get_vm(module, client, name=vm_name, vm_id=vm_id)
             vm_identifier = vm_name or str(vm_id)
 
             if not vm:
@@ -379,7 +399,14 @@ def main():
             if state == 'absent':
                 if tag:
                     delete_tag(module, client, tag)
-                    module.exit_json(changed=True, msg=f"Tag '{tag_name}' deleted")
+                    # Check mode used to say the tag was deleted (#153).
+                    # Same wording as vm (#127).
+                    if module.check_mode:
+                        module.exit_json(
+                            changed=True,
+                            msg=f"Would delete tag '{tag_name}'")
+                    module.exit_json(
+                        changed=True, msg=f"Tag '{tag_name}' deleted")
                 else:
                     module.exit_json(changed=False, msg=f"Tag '{tag_name}' does not exist")
 

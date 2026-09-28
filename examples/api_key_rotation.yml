@@ -1,0 +1,34 @@
+---
+# Zero-downtime rotation of a user's bearer API key.
+#
+#   export VERGEOS_HOST=... VERGEOS_USERNAME=... VERGEOS_PASSWORD=...
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/api_key_rotation.yml
+#
+# Generations are named "<key_name>-<suffix>". Each run:
+#   1. creates the new generation,
+#   2. PROVES the new secret authenticates with a live Bearer request,
+#   3. only then deletes every older generation,
+#   4. optionally writes the new secret to disk at mode 0600.
+#
+# Step 2 before step 3 is the whole design. A rotation that revokes the old
+# credential before confirming the new one works is how automation locks
+# itself out of the system it is managing.
+- name: Rotate an API key
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    api_key_rotation_user: automation
+    api_key_rotation_key_name: ci-runner
+    api_key_rotation_description: "CI runner key, rotated nightly"
+
+    # Where to drop the new secret. Written 0600. Leave empty to print the
+    # generation name only and collect the secret yourself.
+    api_key_rotation_secret_dest: "{{ lookup('env', 'HOME') }}/.config/vergeos/ci-runner.key"
+
+    # Optional source restrictions on the new generation.
+    # api_key_rotation_ip_allow_list: [192.0.2.0/24]
+
+  roles:
+    - role: vergeio.vergeos.api_key_rotation

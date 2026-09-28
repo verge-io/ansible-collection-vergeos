@@ -1,0 +1,20 @@
+---
+# ansible-lint configuration.
+#
+# The CI workflow runs `ansible-lint --profile production`; the profile is
+# passed explicitly there and is not set here.
+#
+# The list below is deliberately empty. It held three entries -- for
+# verify-recipe-custom.yml, verify-recipe-fuzz.yml and verify-recipe-edges.yml
+# -- because those ladders called `catalog` and `api_key` before either module
+# was in the collection. #32 and #30 landed them and all three came off. Every
+# file in the repository is linted.
+#
+# Before adding one back: `syntax-check` cannot be waived inline, because it
+# comes from ansible-playbook's own parser rather than from lint, so
+# `# noqa: syntax-check[unknown-module]` has no effect. That is the pressure
+# that produced the three entries above. If you need one again, pair it with a
+# self-expiring entry in tests/unit/test_module_references.py, so the waiver
+# cannot outlive its reason -- that is how these three expired on schedule
+# rather than becoming permanent.
+exclude_paths: []

@@ -1,0 +1,71 @@
+---
+# rolling_update -- prepare a platform update, prove the cluster can survive
+# losing a node, then let the platform roll the reboots.
+
+# ── Connection ───────────────────────────────────────────────────────────────
+rolling_update_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+rolling_update_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+rolling_update_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+rolling_update_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(false, true) | bool }}"
+
+# ── Consent ──────────────────────────────────────────────────────────────────
+# Rebooting every node in a cluster one at a time is not something to start by
+# accident, and --check is not a safety net a scheduler will remember to pass.
+# The role refuses to reboot anything unless this is the literal string "yes".
+#
+# Everything up to and including install still runs without it, so a dry run
+# that stages the update and reports which nodes would reboot is the default
+# behaviour rather than a special mode.
+rolling_update_confirm: "no"
+
+# ── What to do ───────────────────────────────────────────────────────────────
+# How far to take the system-wide lifecycle before touching any node.
+#   checked    — refresh what the source offers, then stop
+#   downloaded — also pull the packages (safe to do any time; no reboot)
+#   installed  — also install, which is what makes a reboot outstanding
+rolling_update_stage: installed
+
+# ── Capacity gate ────────────────────────────────────────────────────────────
+# Refuse to start when a node that must reboot has nowhere to put its
+# workloads. This is the one thing the platform's own rolling apply does not
+# do: it accepts the request, drains the node immediately, and then stalls
+# mid-migration with no destination.
+#
+# Turn this off only if you know the shortfall is acceptable -- for example
+# because the affected VMs are meant to stop.
+rolling_update_capacity_gate: true
+
+# Permit nodes carrying workloads that cannot be migrated -- GPU passthrough,
+# for instance -- to reboot those workloads rather than stalling the roll.
+# Off by default: this decides availability for those workloads.
+rolling_update_force: false
+
+# ── Waiting ──────────────────────────────────────────────────────────────────
+# The apply action returns when the roll is ACCEPTED, not when it finishes.
+# Waiting is what makes the health gate mean anything; without it the gate
+# would run against a cluster that has not started rebooting yet.
+rolling_update_wait: true
+
+# Seconds to allow the whole roll to complete -- every node down, back, and
+# out of maintenance. Scale with node count: this is the total, not per node.
+rolling_update_roll_timeout: 3600
+
+# Seconds between polls.
+rolling_update_poll_interval: 15
+
+# ── Health gate ──────────────────────────────────────────────────────────────
+# Once the roll has finished, require the cluster to look the way it did
+# before. The platform reports that it STARTED the roll; it does not report
+# that the cluster came out the other side intact.
+rolling_update_health_gate: true
+
+# Every node that was online before the run must be online again afterwards,
+# compared against the baseline captured before anything changed rather than
+# against the live cluster -- otherwise a node that failed to return quietly
+# redefines "all online".
+rolling_update_require_all_online: true
+
+# Seconds to let the cluster settle before the health gate is evaluated. A
+# node that has just rejoined reports online before it is carrying anything,
+# so evaluating immediately measures the wrong moment.
+rolling_update_settle_seconds: 30

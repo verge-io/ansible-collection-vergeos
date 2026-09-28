@@ -1,0 +1,16 @@
+{
+  "_comment": [
+    "Synthetic scenario, not a capture. It declares a THREE-tier system so",
+    "the offline audit can exercise the unsatisfiable-tier check: a policy",
+    "asking for tier 3 here has nowhere to go. A real capture would come",
+    "from the live system, and the ladder makes one -- see rung 3."
+  ],
+  "tiers": [1, 2, 4],
+  "drives": [
+    {"vm": "db-1", "drive": "disk1", "tier": 2},
+    {"vm": "db-2", "drive": "disk1", "tier": 4},
+    {"vm": "app-1", "drive": "data0", "tier": 2},
+    {"vm": "app-1", "drive": "os", "tier": 4},
+    {"vm": "stray-vm", "drive": "disk1", "tier": 3}
+  ]
+}

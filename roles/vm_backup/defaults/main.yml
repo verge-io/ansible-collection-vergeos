@@ -1,0 +1,74 @@
+---
+# vm_backup -- the 3-2-1 story, as far as the platform can take it.
+#
+# Four layers, each optional except the volume. Omit a section and that
+# layer is left unmanaged rather than reset to a default.
+#
+#   snapshot_profile -> when snapshots are taken and how long they live
+#   nas_volume       -> where exports land
+#   nas_nfs_share    -> how external backup tooling reaches them
+#   vm_export        -> what gets exported, and how many generations
+#
+# What this role does NOT do, deliberately:
+#   - attach the snapshot profile to individual VMs. That belongs with
+#     the VM definition, or with the `protect` role.
+#   - verify that a backup restores. That is `restore_drill`. A backup
+#     you have never restored is a hypothesis.
+
+# Connection.
+vm_backup_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+vm_backup_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+vm_backup_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+vm_backup_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(false, true) | bool }}"
+
+# The NAS service the export volume lives on. Required.
+vm_backup_nas_service: ""
+
+# The export volume. Created if missing.
+#
+# The tier has to EXIST. The platform range-checks a drive's preferred tier
+# (1-5) and does not check that the tier is present, so naming a missing one
+# is accepted, reads back, and is never honoured -- see the tier_policy role,
+# which reports exactly that. Check `storage_tiers` before changing this.
+vm_backup_volume: backups
+vm_backup_volume_size_gb: 200
+vm_backup_volume_tier: 1
+
+# Snapshot schedule. Set to null to leave snapshot policy unmanaged.
+vm_backup_snapshot_profile:
+  name: vm-backups
+  periods:
+    - name: Daily
+      frequency: daily
+      retention: 604800        # 7 days, in seconds
+      hour: 2
+      quiesce: true
+
+# NFS exposure of the export volume. An export volume reachable by
+# everyone is not a backup target, it is a liability -- so a share is only
+# created when somebody is named.
+#
+# `state` says what an EMPTY allowed_hosts means, and it has to be said
+# because the two readings are opposites:
+#
+#   present  this run does not manage the share. An existing one is left
+#            exactly as it is, still exporting to whoever it exported to.
+#   absent   revoke it. Idempotent -- removing a share that is not there
+#            is a no-op.
+#
+# Skipping the task does NOT revoke anything. Measured on 26.1.8: apply
+# with a host listed, re-apply with the list emptied, and the platform
+# still reports the share and its allowed host. The role used to summarise
+# that as "NFS (no share)".
+vm_backup_nfs_share:
+  name: backups
+  allowed_hosts: []
+  data_access: ro
+  state: present
+
+# Export configuration.
+vm_backup_export:
+  max_exports: 3               # generations kept
+  quiesced: true
+  run_now: false               # true runs an export during this play
+  vms: []                      # empty means all VMs

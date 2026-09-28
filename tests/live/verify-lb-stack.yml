@@ -1,0 +1,363 @@
+---
+# Live ladder for the lb_stack role.
+#
+# Boots a real VM from the debian13-golden template and lets cloud-init
+# install haproxy, so it needs guest internet and takes several
+# minutes. Everything is zz-* and torn down in the always: block.
+#
+#   ansible-playbook verify-lb-stack.yml -e lb_template=debian13-golden
+- name: Lb stack live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    lb_vm: zz-lb
+    lb_template: debian13-golden
+    spec:
+      hostname: zz-lb
+      frontends:
+        - name: web
+          bind_port: 80
+          default_backend: app
+      backends:
+        - name: app
+          httpchk: true
+          servers:
+            - {name: a, host: 192.0.2.10, port: 8081}
+            - {name: b, host: 192.0.2.11, port: 8081}
+  tasks:
+    - name: "0. The golden template must exist"
+      vergeio.vergeos.vm_info:
+        insecure: true
+        name: "{{ lb_template }}"
+      register: tmpl
+      changed_when: false
+
+    - name: "0b. Refuse to run without it"
+      ansible.builtin.assert:
+        that: tmpl.vms | length == 1
+        fail_msg: >-
+          template '{{ lb_template }}' not found. Build one first with
+          the image_pipeline role, or pass -e lb_template=<name>.
+
+    # The role clones from a SNAPSHOT of the template, which is what
+    # image_pipeline leaves behind. If the template was built by hand,
+    # or its snapshot has since been pruned, there is nothing to clone.
+    # Ensure it here so the ladder states its own prerequisite instead
+    # of depending on undocumented lab state.
+    - name: "0c. The template needs a 'golden' snapshot to clone from"
+      vergeio.vergeos.vm_snapshot:
+        insecure: true
+        vm_name: "{{ lb_template }}"
+        operation: list
+      register: tmpl_snaps
+      changed_when: false
+
+    - name: "0d. Create it if it is missing"
+      vergeio.vergeos.vm_snapshot:
+        insecure: true
+        vm_name: "{{ lb_template }}"
+        snapshot_name: golden
+        operation: create
+      when: >-
+        'golden' not in (tmpl_snaps.snapshots | default([])
+                         | map(attribute='name') | list)
+
+    - name: "0e. Clean leftovers"
+      vergeio.vergeos.vm:
+        insecure: true
+        name: "{{ lb_vm }}"
+        state: absent
+
+    - name: "1. A spec with no frontends is refused"
+      block:
+        - name: "1a. Call with an empty spec"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.lb_stack
+          vars:
+            lb_stack_name: "{{ lb_vm }}"
+            lb_stack_template: "{{ lb_template }}"
+            lb_stack_spec: {}
+        - name: "1b. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "an empty spec was accepted"
+      rescue:
+        - name: "1c. Refused, as it should be"
+          ansible.builtin.debug:
+            msg: "empty spec refused"
+
+    - name: "1d. The refusal created nothing"
+      vergeio.vergeos.vm_info:
+        insecure: true
+        name: "{{ lb_vm }}"
+      register: after_refusal
+      changed_when: false
+
+    - name: "1e. Assert side-effect free"
+      ansible.builtin.assert:
+        that: after_refusal.vms | length == 0
+        fail_msg: "the refused run left a VM behind"
+
+    # keepalived's auth_pass used to default to a fixed string shipped in
+    # this repository, which made it the same VRRP secret on every pair
+    # that never overrode it -- and VRRP sends it in clear.
+    - name: "1f. An HA spec with no auth_pass is refused"
+      block:
+        - name: "1f-i. Declare ha with only a vip"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.lb_stack
+          vars:
+            lb_stack_name: "{{ lb_vm }}"
+            lb_stack_template: "{{ lb_template }}"
+            lb_stack_spec: "{{ spec | combine({'ha': {'vip': '192.0.2.100/24'}}) }}"
+        - name: "1f-ii. Reaching here means it was accepted"
+          ansible.builtin.fail:
+            msg: "an HA spec with no auth_pass was accepted"
+      rescue:
+        - name: "1f-iii. Refused, and it says why"
+          ansible.builtin.assert:
+            that:
+              - "'auth_pass is required' in ansible_failed_result.msg"
+            fail_msg: >-
+              expected a refusal naming auth_pass; got
+              {{ ansible_failed_result.msg }}
+
+    - name: "1g. That refusal created nothing either"
+      vergeio.vergeos.vm_info:
+        insecure: true
+        name: "{{ lb_vm }}"
+      register: after_ha_refusal
+      changed_when: false
+
+    - name: "1h. Assert side-effect free"
+      ansible.builtin.assert:
+        that: after_ha_refusal.vms | length == 0
+        fail_msg: "the refused HA run left a VM behind"
+
+    - name: "2. Deploy the LB"
+      block:
+        - name: "2a. Run the role"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.lb_stack
+          vars:
+            lb_stack_name: "{{ lb_vm }}"
+            lb_stack_template: "{{ lb_template }}"
+            lb_stack_network: External
+            lb_stack_spec: "{{ spec }}"
+
+        - name: "2b. It reported a clone"
+          ansible.builtin.assert:
+            that:
+              - lb_stack_result.cloned | bool
+              - lb_stack_result.frontends == [80]
+            fail_msg: "unexpected result: {{ lb_stack_result }}"
+
+        - name: "2c. The VM exists and is running"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ lb_vm }}"
+          register: lb_info
+          changed_when: false
+
+        - name: "2d. Assert running with the declared specs"
+          ansible.builtin.assert:
+            that:
+              - lb_info.vms | length == 1
+              - (lb_info.vms | first).running
+              - (lb_info.vms | first).cpu_cores == 1
+              - (lb_info.vms | first).ram == 1024
+            fail_msg: "LB VM wrong: {{ lb_info.vms }}"
+
+        - name: "2e. It has a NIC on the service network"
+          vergeio.vergeos.vm_nic_info:
+            insecure: true
+            vm: "{{ lb_vm }}"
+          register: lb_nics
+          changed_when: false
+
+        - name: "2f. Assert exactly one NIC"
+          ansible.builtin.assert:
+            that: lb_nics.nics | default([]) | length == 1
+            fail_msg: >-
+              expected one NIC, got
+              {{ lb_nics.nics | default([]) | map(attribute='name') | list }}
+
+        - name: "2g. Read the cloud-init back from the platform"
+          ansible.builtin.include_tasks: read-cloudinit.yml
+          vars:
+            ci_vm: "{{ lb_vm }}"
+
+        - name: "2h. Assert the datasource"
+          ansible.builtin.assert:
+            that: ci_datasource == 'nocloud'
+            fail_msg: "cloud-init not configured: {{ ci_datasource }}"
+
+        # The ported rungs stopped at the datasource. A VM with an EMPTY
+        # user-data has datasource 'nocloud' too -- and that is exactly what
+        # the role produced under --check, because a skipped render still
+        # registers an empty stdout. The document is the thing the role
+        # exists to deliver, so the document is what gets asserted.
+        - name: "2i. The document that arrived is the one we rendered"
+          ansible.builtin.assert:
+            that:
+              - ci_user_data | length > 0
+              - ci_user_data.startswith('#cloud-config')
+              - "'haproxy' in ci_user_data"
+              - "'frontend web' in ci_user_data"
+              - "'bind *:80' in ci_user_data"
+              - "'default_backend app' in ci_user_data"
+              - "'server a 192.0.2.10:8081 check' in ci_user_data"
+              - "'server b 192.0.2.11:8081 check' in ci_user_data"
+            fail_msg: >-
+              the cloud-init document is not the rendered haproxy config.
+              Got {{ ci_user_data | length }} bytes.
+
+        - name: "2j. It is valid YAML, not just a string that arrived"
+          ansible.builtin.assert:
+            that:
+              - (ci_user_data | from_yaml).runcmd is iterable
+              - (ci_user_data | from_yaml).runcmd
+                | select('search', 'systemctl restart haproxy')
+                | list | length == 1
+              - (ci_user_data | from_yaml).write_files
+                | map(attribute='path') | list == ['/etc/haproxy/haproxy.cfg']
+            fail_msg: >-
+              the document parses to something cloud-init cannot act on:
+              {{ ci_user_data | from_yaml }}
+
+        - name: "2k. No keepalived config, because no HA was declared"
+          ansible.builtin.assert:
+            that: "'keepalived' not in ci_user_data"
+            fail_msg: >-
+              a spec with no ha block produced a keepalived configuration
+
+        - name: "3. Adoption -- a second run must not clone again"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.lb_stack
+          vars:
+            lb_stack_name: "{{ lb_vm }}"
+            lb_stack_template: "{{ lb_template }}"
+            lb_stack_network: External
+            lb_stack_spec: "{{ spec }}"
+
+        - name: "3b. Reported as already existing"
+          ansible.builtin.assert:
+            that: not (lb_stack_result.cloned | bool)
+            fail_msg: "the second run cloned a second VM"
+
+        - name: "3c. Still exactly one VM by that name"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ lb_vm }}"
+          register: lb_again
+          changed_when: false
+
+        - name: "3d. Assert no duplicate"
+          ansible.builtin.assert:
+            that: lb_again.vms | length == 1
+            fail_msg: "a duplicate LB was created"
+
+        # The renderer is a pure function on the controller, so --check
+        # should show you the configuration it would apply rather than
+        # skipping it. It used to be skipped -- and a skipped command still
+        # registers an EMPTY stdout, so the role attached an empty
+        # cloud-init document and reported success.
+        - name: "5. Check mode still renders"
+          when: true
+          check_mode: true
+          block:
+            - name: "5a. Dry-run against a name that is free"
+              ansible.builtin.include_role:
+                name: vergeio.vergeos.lb_stack
+              vars:
+                lb_stack_name: "{{ lb_vm }}-dry"
+                lb_stack_template: "{{ lb_template }}"
+                lb_stack_spec: "{{ spec }}"
+
+        - name: "5b. It rendered a real document"
+          ansible.builtin.assert:
+            that:
+              - lb_stack_userdata.stdout | length > 0
+              - "'frontend web' in lb_stack_userdata.stdout"
+            fail_msg: >-
+              check mode produced no rendered configuration, so a --check
+              run cannot show what it would apply
+          no_log: true
+
+        - name: "5b-2. And reported honestly that it deployed nothing"
+          ansible.builtin.assert:
+            that:
+              - not (lb_stack_result.deployed | bool)
+              - not (lb_stack_result.cloned | bool)
+            fail_msg: >-
+              a check-mode run reported {{ lb_stack_result }}. vm_clone
+              reports a clone it WOULD make, so keying off that alone says
+              'cloned' for a VM nobody created.
+
+        - name: "5c. And built nothing"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ lb_vm }}-dry"
+          register: dry
+          changed_when: false
+
+        - name: "5d. Assert check mode created no VM"
+          ansible.builtin.assert:
+            that: dry.vms | length == 0
+            fail_msg: "check mode deployed a load balancer for real"
+
+      rescue:
+        - name: Record the failure
+          ansible.builtin.set_fact:
+            ladder_failed: true
+        - name: Re-raise
+          ansible.builtin.fail:
+            msg: "lb_stack ladder FAILED -- see the task above"
+
+      always:
+        - name: "4. Stop the LB"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ lb_vm }}"
+            state: stopped
+          failed_when: false
+
+        - name: "4b. Delete it"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ lb_vm }}"
+            state: absent
+
+        - name: "4c. Confirm zero leftovers"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ lb_vm }}"
+          register: leftover
+          changed_when: false
+
+        - name: "4e. Remove any dry-run VM"
+          vergeio.vergeos.vm:
+            insecure: true
+            name: "{{ lb_vm }}-dry"
+            state: absent
+
+        - name: "4d. Assert clean"
+          ansible.builtin.assert:
+            that: leftover.vms | length == 0
+            fail_msg: "LB VM left behind"
+
+    - name: Stop if the ladder failed
+      ansible.builtin.fail:
+        msg: "lb_stack ladder FAILED"
+      when: ladder_failed | default(false)
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          lb_stack ladder PASSED: an empty spec is refused side-effect
+          free -> an HA spec with no auth_pass is refused -> the LB clones
+          from the golden template, boots with the declared specs, gets one
+          NIC and a nocloud cloud-init document -> and that document, read
+          back from the platform, is the haproxy config we rendered, parses
+          as YAML, and carries no keepalived block we did not ask for -> a
+          second run adopts rather than cloning again -> check mode renders
+          but builds nothing -> zero leftovers

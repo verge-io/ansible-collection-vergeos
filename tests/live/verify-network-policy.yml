@@ -1,0 +1,206 @@
+---
+# Live ladder for the network_policy role.
+#
+# Touches ONLY a scratch network named zz-policy-net. Never touches
+# Core, DMZ, External, or any pre-existing network. The network is
+# deleted in the always: block even if the ladder fails.
+- name: Network policy role live ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    net: zz-policy-net
+    scratch_api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    scratch_net_cidr: 10.99.95.0/24
+    scratch_net_ip: 10.99.95.1
+    base_policy:
+      - network: zz-policy-net
+        rules:
+          - name: zz-allow-ssh
+            protocol: tcp
+            destination_ports: "22"
+          - name: zz-allow-https
+            protocol: tcp
+            destination_ports: "443"
+  tasks:
+    - name: "0. Create the scratch network"
+      ansible.builtin.include_tasks: scratch_net_tasks.yml
+      vars:
+        scratch_net_name: "{{ net }}"
+        scratch_net_action: create
+
+    - name: "1. Enforce two rules"
+      block:
+        - name: "1a. Apply the base policy"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.network_policy
+          vars:
+            network_policy_networks: "{{ base_policy }}"
+
+        - name: "1b. Both rules exist"
+          vergeio.vergeos.vnet_rule_info:
+            insecure: true
+            network: "{{ net }}"
+          register: rules1
+          changed_when: false
+
+        - name: "1c. Assert both are there"
+          ansible.builtin.assert:
+            that:
+              - "'zz-allow-ssh' in (rules1.rules | map(attribute='name') | list)"
+              - "'zz-allow-https' in (rules1.rules | map(attribute='name') | list)"
+            fail_msg: "rules missing: {{ rules1.rules | map(attribute='name') | list }}"
+
+        - name: "2. Re-run unchanged -- a converged policy changes nothing"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.network_policy
+          vars:
+            network_policy_networks: "{{ base_policy }}"
+
+        - name: "2b. Neither the rules nor the apply reported a change"
+          ansible.builtin.assert:
+            that:
+              - network_policy_staged.results
+                | selectattr('changed') | list | length == 0
+              - not network_policy_applied.changed
+            fail_msg: >-
+              converged policy was not a zero-change run:
+              staged={{ network_policy_staged.results | selectattr('changed') | list }}
+              applied={{ network_policy_applied.changed }}
+
+        - name: "3. Drift the port, and watch it get corrected"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.network_policy
+          vars:
+            network_policy_networks:
+              - network: "{{ net }}"
+                rules:
+                  - name: zz-allow-ssh
+                    protocol: tcp
+                    destination_ports: "2222"
+                  - name: zz-allow-https
+                    protocol: tcp
+                    destination_ports: "443"
+
+        - name: "3b. Exactly one rule changed, and it applied once"
+          ansible.builtin.assert:
+            that:
+              - network_policy_staged.results
+                | selectattr('changed') | list | length == 1
+              - network_policy_applied.changed
+            fail_msg: >-
+              expected one corrected rule and one apply, got
+              {{ network_policy_staged.results | selectattr('changed') | list | length }}
+
+        - name: "4. Add a stray rule outside the policy"
+          vergeio.vergeos.vnet_rule:
+            insecure: true
+            network: "{{ net }}"
+            name: zz-stray
+            protocol: tcp
+            destination_ports: "8080"
+            state: present
+
+        - name: "4b. Additive mode leaves the stray alone"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.network_policy
+          vars:
+            network_policy_networks: "{{ base_policy }}"
+
+        - name: "4c. Read the rules back"
+          vergeio.vergeos.vnet_rule_info:
+            insecure: true
+            network: "{{ net }}"
+          register: rules_additive
+          changed_when: false
+
+        - name: "4d. The stray survived, because additive means additive"
+          ansible.builtin.assert:
+            that: "'zz-stray' in (rules_additive.rules | map(attribute='name') | list)"
+            fail_msg: "additive mode deleted an unmanaged rule"
+
+        - name: "5. Exact mode purges the stray"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.network_policy
+          vars:
+            network_policy_networks:
+              - network: "{{ net }}"
+                exact: true
+                rules: "{{ base_policy[0].rules }}"
+
+        - name: "5b. Read the rules back"
+          vergeio.vergeos.vnet_rule_info:
+            insecure: true
+            network: "{{ net }}"
+          register: rules_exact
+          changed_when: false
+
+        - name: "5c. Stray gone, declared rules kept, system rules untouched"
+          ansible.builtin.assert:
+            that:
+              - "'zz-stray' not in (rules_exact.rules | map(attribute='name') | list)"
+              - "'zz-allow-ssh' in (rules_exact.rules | map(attribute='name') | list)"
+              - "'zz-allow-https' in (rules_exact.rules | map(attribute='name') | list)"
+              - rules_exact.rules | selectattr('system_rule') | list | length
+                == rules1.rules | selectattr('system_rule') | list | length
+            fail_msg: >-
+              exact mode got it wrong:
+              {{ rules_exact.rules | map(attribute='name') | list }}
+
+        - name: "6. A converged exact run is still a zero-change run"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.network_policy
+          vars:
+            network_policy_networks:
+              - network: "{{ net }}"
+                exact: true
+                rules: "{{ base_policy[0].rules }}"
+
+        - name: "6b. Assert no change"
+          ansible.builtin.assert:
+            that:
+              - network_policy_staged.results
+                | selectattr('changed') | list | length == 0
+              - not network_policy_applied.changed
+            fail_msg: "converged exact run reported a change"
+
+        - name: "7. state: absent in the policy removes a rule"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.network_policy
+          vars:
+            network_policy_networks:
+              - network: "{{ net }}"
+                rules:
+                  - name: zz-allow-ssh
+                    state: absent
+                  - name: zz-allow-https
+                    protocol: tcp
+                    destination_ports: "443"
+
+        - name: "7b. Read the rules back"
+          vergeio.vergeos.vnet_rule_info:
+            insecure: true
+            network: "{{ net }}"
+          register: rules_removed
+          changed_when: false
+
+        - name: "7c. Assert it is gone"
+          ansible.builtin.assert:
+            that: "'zz-allow-ssh' not in (rules_removed.rules | map(attribute='name') | list)"
+            fail_msg: "state: absent did not remove the rule"
+
+      always:
+        - name: "8. Delete the scratch network"
+          ansible.builtin.include_tasks: scratch_net_tasks.yml
+          vars:
+            scratch_net_name: "{{ net }}"
+            scratch_net_action: delete
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          network_policy ladder PASSED: two rules enforced with one apply
+          -> converged re-run is zero-change -> drift corrected with
+          exactly one apply -> additive mode keeps an unmanaged rule ->
+          exact mode purges it while keeping declared and system rules ->
+          converged exact run is zero-change -> state absent removes a
+          rule -> scratch network deleted

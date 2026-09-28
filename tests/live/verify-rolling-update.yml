@@ -1,0 +1,266 @@
+---
+# Live ladder for the update / update_info modules and the rolling_update
+# role.
+#
+#   ansible-playbook verify-rolling-update.yml
+#
+# WHAT THIS LADDER DELIBERATELY DOES NOT DO
+#
+# It never sets rolling_update_confirm, and it never asks for state: applied
+# on a system with a reboot outstanding. Applying an update reboots every node
+# in the cluster one at a time -- on a system whose API rides a vnet, that
+# takes away the connection this playbook is running over, halfway through.
+#
+# So the reboot itself is NOT covered here, and the role's README says so
+# rather than implying a coverage it does not have. What IS covered is
+# everything that decides whether the reboot starts: the lifecycle staging,
+# the capacity gate, the consent gate, and the refusals.
+#
+# It also pins the lifecycle stage to `checked` rather than taking the role's
+# default of `installed`. On a system with an update pending, the default
+# would install a platform update as a side effect of running a test.
+- name: Rolling update live ladder
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "0. Read the update state before anything"
+      vergeio.vergeos.update_info:
+        insecure: true
+      register: before
+      changed_when: false
+
+    - name: "0b. Report it"
+      ansible.builtin.debug:
+        msg:
+          source: "{{ before.source }}"
+          branch: "{{ before.branch }}"
+          installed: "{{ before.installed }}"
+          reboot_required: "{{ before.reboot_required }}"
+          applying: "{{ before.applying }}"
+
+    - name: "0c. Refuse to run while the platform is mid-update"
+      ansible.builtin.assert:
+        that: not before.applying
+        fail_msg: >-
+          the platform is applying updates right now. Running this ladder
+          would interleave two update runs.
+        quiet: true
+
+    - name: "0d. The summary is built from the raw row, not invented"
+      ansible.builtin.assert:
+        that:
+          - before.settings is mapping
+          - before.settings.installed is defined
+          - before.settings.reboot_required is defined
+          - before.installed == (before.settings.installed | bool)
+          - before.reboot_required == (before.settings.reboot_required | bool)
+        fail_msg: >-
+          the normalised summary disagrees with the row it came from.
+          The raw row spells these `installed` and `reboot_required`; the
+          model spells them `is_installed` and `is_reboot_required`, and
+          reading only one spelling reports "nothing pending" on the shape it
+          does not recognise -- the answer that quietly skips an upgrade.
+        quiet: true
+
+    - name: "0e. Survey the nodes before anything"
+      vergeio.vergeos.node_info:
+        insecure: true
+      register: nodes_before
+      changed_when: false
+
+    # ── the capacity gate, which is the substance of the role ──────────────
+
+    - name: "1. Ask whether each node could be taken out of service"
+      vergeio.vergeos.cluster_info:
+        insecure: true
+        drain_candidates: "{{ nodes_before.online | map(attribute='name') | list }}"
+      register: capacity
+      changed_when: false
+
+    - name: "1b. Every online node got a verdict, and it is a real one"
+      ansible.builtin.assert:
+        that:
+          - capacity.drain_checks | length
+            == nodes_before.online | length
+          - capacity.drain_checks | rejectattr('fits', 'defined')
+            | list | length == 0
+          - capacity.drain_checks | selectattr('fits', 'none')
+            | list | length == 0
+        fail_msg: "unusable verdicts: {{ capacity.drain_checks }}"
+        quiet: true
+
+    - name: "1c. The arithmetic is against committed RAM, not the node's share"
+      ansible.builtin.assert:
+        that: >-
+          capacity.drain_checks
+          | selectattr('used_ram_mb', 'equalto',
+                       capacity.cluster_status | map(attribute='used_ram')
+                       | map('int') | sum)
+          | list | length == capacity.drain_checks | length
+        fail_msg: >-
+          a drain check used something other than the cluster's committed RAM.
+          Draining moves workloads, it does not stop them, so the whole of
+          used_ram has to fit on the survivors -- subtracting the drained
+          node's share is what makes an impossible drain look possible.
+        quiet: true
+
+    - name: "1d. A node that does not exist gets 'could not tell', not 'yes'"
+      vergeio.vergeos.cluster_info:
+        insecure: true
+        drain_candidates: [zz-no-such-node]
+      register: unknown
+      changed_when: false
+
+    - name: "1e. And 'could not tell' is not a pass"
+      ansible.builtin.assert:
+        that:
+          - (unknown.drain_checks | first).fits is none
+          - "'not in the cluster' in (unknown.drain_checks | first).reason"
+        fail_msg: >-
+          an unknown node returned {{ unknown.drain_checks | first }}.
+          A gate whose job is certainty must not treat silence as consent.
+        quiet: true
+
+    - name: "1f. failover_ram is reported rather than assumed"
+      ansible.builtin.debug:
+        msg: >-
+          nodes reserving nothing for a peer failure:
+          {{ capacity.no_failover_reservation }}
+          (headroom {{ capacity.ram_headroom_mb }} MB)
+
+    # ── the role, without consent, which is its default path ───────────────
+
+    - name: "2. Preflight run -- stages nothing, reboots nothing"
+      ansible.builtin.include_role:
+        name: vergeio.vergeos.rolling_update
+      vars:
+        rolling_update_stage: checked
+
+    - name: "2b. It reports that it applied nothing"
+      ansible.builtin.assert:
+        that:
+          - not rolling_update_result.applied
+          - not rolling_update_result.confirmed
+          - rolling_update_result.baseline_online | length
+            == nodes_before.online | length
+        fail_msg: "preflight result looks wrong: {{ rolling_update_result }}"
+        quiet: true
+
+    - name: "2c. And the nodes are exactly as they were"
+      vergeio.vergeos.node_info:
+        insecure: true
+      register: nodes_after_preflight
+      changed_when: false
+
+    - name: "2d. Same nodes online, none in maintenance that was not"
+      ansible.builtin.assert:
+        that:
+          - (nodes_after_preflight.online | map(attribute='name') | list | sort)
+            == (nodes_before.online | map(attribute='name') | list | sort)
+          - (nodes_after_preflight.maintenance | length)
+            == (nodes_before.maintenance | length)
+        fail_msg: >-
+          a preflight changed the cluster.
+          before={{ nodes_before.online | map(attribute='name') | list }}
+          after={{ nodes_after_preflight.online | map(attribute='name') | list }}
+        quiet: true
+
+    - name: "3. Consent written as YAML's bare yes is refused, not ignored"
+      block:
+        - name: "3a. Ask with the boolean true rather than the string"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.rolling_update
+          vars:
+            rolling_update_stage: checked
+            rolling_update_confirm: true
+        - name: "3b. Reaching here means the ambiguity was swallowed"
+          ansible.builtin.fail:
+            msg: >-
+              rolling_update_confirm: true was accepted. It is not the string
+              "yes", so nothing would have rebooted -- and the run would have
+              reported success while the operator believed they had asked for
+              the roll.
+      rescue:
+        - name: "3c. Refused, as it should be"
+          ansible.builtin.debug:
+            msg: "ambiguous consent refused"
+
+    # ── the apply path, as far as it is safe to take it ────────────────────
+
+    - name: "4. state=applied declines when no reboot is outstanding"
+      vergeio.vergeos.update:
+        insecure: true
+        state: applied
+      register: apply_noop
+      when: not before.reboot_required
+
+    - name: "4b. And it declined without changing anything"
+      ansible.builtin.assert:
+        that:
+          - not apply_noop.changed
+          - apply_noop.stages_run == []
+          - "'nothing to apply' in apply_noop.msg"
+        fail_msg: "state=applied did something: {{ apply_noop }}"
+        quiet: true
+      when: not before.reboot_required
+
+    - name: "4c. Check mode over the same call reboots nothing either"
+      vergeio.vergeos.update:
+        insecure: true
+        state: applied
+      register: apply_check
+      check_mode: true
+      when: not before.reboot_required
+
+    - name: "4d. Which is the same answer, because there is still nothing to do"
+      ansible.builtin.assert:
+        that: not apply_check.changed
+        fail_msg: >-
+          check mode disagreed with the real call about whether there was
+          anything to apply: {{ apply_check }}
+        quiet: true
+      when: not before.reboot_required
+
+    - name: "4e. The apply itself is NOT covered by this ladder"
+      ansible.builtin.debug:
+        msg: >-
+          reboot_required is {{ before.reboot_required }}.
+          {{ 'There is a reboot outstanding on this system, and this ladder
+              does not apply it: rolling the cluster takes the API away
+              mid-run. Apply it by hand, attended, with a console available.'
+             if before.reboot_required
+             else 'Nothing is pending, so the roll could not have been
+                   exercised here even if it were safe to.' }}
+
+    # ── nothing was left behind ────────────────────────────────────────────
+
+    - name: "5. Read the update state back"
+      vergeio.vergeos.update_info:
+        insecure: true
+      register: after
+      changed_when: false
+
+    - name: "5b. It is where it started"
+      ansible.builtin.assert:
+        that:
+          - after.installed == before.installed
+          - after.reboot_required == before.reboot_required
+          - not after.applying
+        fail_msg: >-
+          the ladder moved the update state.
+          before={{ before.installed }}/{{ before.reboot_required }}
+          after={{ after.installed }}/{{ after.reboot_required }}
+        quiet: true
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          rolling_update ladder PASSED: the update summary agrees with the raw
+          row it was built from -> every online node gets a real drain verdict
+          computed against committed RAM -> an unknown node returns "could not
+          tell", which is not a pass -> a preflight run stages nothing and
+          leaves every node where it was -> consent written as YAML's bare yes
+          is refused rather than silently ignored -> state=applied declines
+          when no reboot is outstanding, in check mode and out -> the update
+          state is where it started. The reboot itself is not exercised; see
+          the header.

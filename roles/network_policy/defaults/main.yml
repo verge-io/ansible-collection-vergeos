@@ -1,0 +1,44 @@
+---
+# network_policy -- firewall rules as code, per network.
+#
+# Every rule is staged with apply: false, then vnet_apply refreshes the
+# network ONCE, and only if something is actually pending. That is what
+# makes a converged policy a zero-change run rather than a refresh on
+# every play.
+
+# Connection.
+network_policy_host: "{{ lookup('env', 'VERGEOS_HOST') }}"
+network_policy_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+network_policy_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+network_policy_insecure: "{{ lookup('env', 'VERGEOS_INSECURE') | default(false, true) | bool }}"
+
+# One entry per network.
+#
+#   network_policy_networks:
+#     - network: DMZ
+#       exact: false
+#       rules:
+#         - name: allow-ssh
+#           protocol: tcp
+#           destination_ports: "22"
+#
+# Per entry:
+#
+#   network  (required) the vnet name
+#   exact    (default false) when true, non-system rules NOT named in
+#            this policy are deleted -- "nothing exists here but this
+#            policy". System rules are never touched. Adopt an existing
+#            network with exact: false first and read what it reports,
+#            then flip to true once the policy names everything you
+#            intend to keep.
+#   rules    (required) list. `name` is the idempotence key. The rest
+#            are optional and fall back to the vnet_rule module's own
+#            defaults: state, direction, rule_action, protocol,
+#            interface, source_ip, source_ports, destination_ip,
+#            destination_ports, target_ip, target_ports, enabled, log,
+#            statistics, order, description.
+#
+# Ordering note: rules are created in list order on a fresh network.
+# When retrofitting a network that already has rules, set an explicit
+# `order` per rule rather than relying on position.
+network_policy_networks: []

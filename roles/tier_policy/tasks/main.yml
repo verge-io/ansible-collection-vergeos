@@ -1,0 +1,137 @@
+---
+- name: Preflight -- connection is configured
+  ansible.builtin.assert:
+    that:
+      - tier_policy_fixture | length > 0 or tier_policy_host | length > 0
+    fail_msg: >-
+      tier_policy needs tier_policy_host (or VERGEOS_HOST), unless
+      tier_policy_fixture is set for an offline audit.
+    quiet: true
+
+- name: Preflight -- the mode is one we understand
+  ansible.builtin.assert:
+    that: tier_policy_mode in ['report', 'enforce']
+    fail_msg: >-
+      tier_policy_mode must be 'report' or 'enforce';
+      got '{{ tier_policy_mode }}'.
+    quiet: true
+
+# Refused up front, before the audit runs, so the failure names the
+# real problem instead of surfacing later as "nothing converged".
+- name: Refuse to enforce against a fixture
+  ansible.builtin.fail:
+    msg: >-
+      enforce needs the live system -- a fixture cannot be retiered.
+      Drop tier_policy_fixture, or use tier_policy_mode=report.
+  when:
+    - tier_policy_mode == 'enforce'
+    - tier_policy_fixture | length > 0
+
+# failed_when: false, and then a separate task to report the failure.
+#
+# Credentials go in the environment rather than argv, so they stay out of a
+# process listing and out of -vvv -- and that is what makes `no_log: true`
+# necessary here. But no_log censors the WHOLE task result, so a script that
+# dies takes its diagnostic with it:
+#
+#   fatal: [localhost]: FAILED! => {"censored": "the output has been hidden
+#   due to the fact that 'no_log: true' was specified for this result"}
+#
+# Measured with a rule missing its `tier`. The operator got the exit code and
+# nothing else. Splitting the failure out lets us show stderr, which the
+# script keeps free of credentials on purpose (tier_audit.scrub).
+#
+# check_mode: false because the audit is read-only and --check is exactly
+# when someone runs a reporting role. `changed_when: false` is the other
+# claim -- that it changes nothing -- and does not grant permission to run
+# (#28).
+- name: Audit tier placement
+  ansible.builtin.command:
+    argv: >-
+      {{ [ansible_playbook_python, role_path ~ '/files/tier_audit.py',
+          '--policy-json', tier_policy_rules | to_json]
+         + (['--default-tier', tier_policy_default_tier | string]
+            if tier_policy_default_tier is not none else [])
+         + (['--fixture', tier_policy_fixture]
+            if tier_policy_fixture else []) }}
+  environment:
+    VERGEOS_HOST: "{{ tier_policy_host }}"
+    VERGEOS_USERNAME: "{{ tier_policy_username }}"
+    VERGEOS_PASSWORD: "{{ tier_policy_password }}"
+    VERGEOS_INSECURE: "{{ 'true' if tier_policy_insecure else '' }}"
+  register: tier_policy_audit_raw
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
+
+- name: The audit must have succeeded
+  ansible.builtin.fail:
+    msg: >-
+      tier_audit.py exited {{ tier_policy_audit_raw.rc }}:
+      {{ tier_policy_audit_raw.stderr | default('') | trim }}
+  when: tier_policy_audit_raw.rc != 0
+
+- name: Parse the report
+  ansible.builtin.set_fact:
+    tier_policy_result: "{{ tier_policy_audit_raw.stdout | from_json }}"
+
+- name: Audit summary
+  ansible.builtin.debug:
+    msg: "[{{ tier_policy_mode }}] {{ tier_policy_result.summary }}"
+
+# "configured for tier N", not "is on tier N". The only placement signal a
+# machine_drives row carries is preferred_tier, which is a preference; nothing
+# in the API reports where a drive's blocks actually live. Saying otherwise
+# would be a claim this role cannot support.
+- name: Drift detail
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.vm }}/{{ item.drive }} is configured for tier
+      {{ item.actual }}, policy ({{ item.rule }}) says {{ item.expected }}
+  loop: "{{ tier_policy_result.drift }}"
+  loop_control:
+    label: "{{ item.vm }}/{{ item.drive }}"
+
+# A policy tier the system has no storage tier for is not a harmless typo.
+# Measured on 26.1.8: the platform range-checks preferred_tier (1-5) and does
+# NOT check that the tier exists, so writing tier 3 on a one-tier system
+# succeeds, reads back '3', and satisfies the convergence proof enforce
+# depends on -- while the data cannot have gone anywhere.
+- name: Policy tiers this system cannot satisfy
+  ansible.builtin.debug:
+    msg: >-
+      tier {{ item.tier }} ({{ item.rules | join(', ') }}): {{ item.reason }}
+  loop: "{{ tier_policy_result.unsatisfiable | default([]) }}"
+  loop_control:
+    label: "tier {{ item.tier }}"
+
+- name: Refuse to enforce a tier the system does not have
+  ansible.builtin.fail:
+    msg: >-
+      {{ tier_policy_result.unsatisfiable | length }} policy tier(s) have no
+      storage tier on this system (present:
+      {{ tier_policy_result.tiers_present | join(', ') }}). Enforcing them
+      would write a preferred_tier the platform accepts and reads back while
+      the data stays where it is -- a converged report for a placement that
+      cannot happen. Fix the rules, add the tier, or stay in report mode.
+      {{ tier_policy_result.unsatisfiable }}
+  when:
+    - tier_policy_mode == 'enforce'
+    - tier_policy_result.unsatisfiable | default([]) | length > 0
+    - tier_policy_require_tiers_exist | bool
+
+- name: Enforce -- retier drifted drives
+  ansible.builtin.include_tasks: enforce.yml
+  when: tier_policy_mode == 'enforce'
+
+- name: Fail on drift (report-mode CI gate)
+  ansible.builtin.fail:
+    msg: >-
+      tier drift: {{ tier_policy_result.drift | length }} drive(s)
+      configured for the wrong tier -- re-run with
+      tier_policy_mode=enforce to correct them.
+  when:
+    - tier_policy_mode != 'enforce'
+    - tier_policy_fail_on_drift | bool
+    - tier_policy_result.drift | length > 0

@@ -1,0 +1,73 @@
+---
+# Post-install baseline for a freshly seeded VergeOS system.
+#
+# Point auth at the NEW system (not the lab host):
+#   export VERGEOS_HOST=<new-system-ip>
+#   export VERGEOS_USERNAME=admin
+#   export VERGEOS_PASSWORD=<seed password>
+#   export VERGEOS_INSECURE=true
+#   ansible-playbook examples/unattended_install/post_install.yml
+#
+# tag and tag_category update through manager.update(key, ...).
+# Re-checked against the pyvergeos 1.6.1 floor this collection installs:
+# pyVergeOS #97 (save() skipping alias translation) is fixed there.
+# See docs/SDK-COMPATIBILITY.md. This playbook only creates categories
+# and tags.
+#
+# Each category sets taggable_vms. An omitted taggable flag is stored as
+# false on create, and a category with every flag false cannot tag a VM.
+
+- name: VergeOS post-install baseline
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    tag_categories:
+      - name: environment
+        description: Deployment environment
+        single_tag_selection: true
+        taggable_vms: true
+      - name: role
+        description: Workload role
+        single_tag_selection: false
+        taggable_vms: true
+      - name: backup-policy
+        description: Snapshot and backup profile selection
+        single_tag_selection: true
+        taggable_vms: true
+    vergeos_tags:
+      - { name: prod, category: environment }
+      - { name: staging, category: environment }
+      - { name: dev, category: environment }
+      - { name: web, category: role }
+      - { name: db, category: role }
+      - { name: infra, category: role }
+      - { name: daily, category: backup-policy }
+      - { name: hourly, category: backup-policy }
+      - { name: none, category: backup-policy }
+
+  tasks:
+    - name: Create tag categories
+      vergeio.vergeos.tag_category:
+        name: "{{ item.name }}"
+        description: "{{ item.description | default(omit) }}"
+        single_tag_selection: "{{ item.single_tag_selection | default(omit) }}"
+        taggable_vms: "{{ item.taggable_vms | default(omit) }}"
+        state: present
+      loop: "{{ tag_categories }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create tags
+      vergeio.vergeos.tag:
+        name: "{{ item.name }}"
+        category: "{{ item.category }}"
+        state: present
+      loop: "{{ vergeos_tags }}"
+      loop_control:
+        label: "{{ item.category }}/{{ item.name }}"
+
+    # Follow-on, once the site decides what else the baseline contains.
+    # user, group, permission, api_key, network, snapshot_profile,
+    # auth_source, and nas_volume are in the collection. This playbook
+    # stops at the categories and tags the acceptance run converged.

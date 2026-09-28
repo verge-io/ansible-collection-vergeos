@@ -17,6 +17,8 @@ description:
   - Enable cloud-init datasource and manage cloud-init configuration files.
   - Handles /user-data, /meta-data, and /network-config files.
   - Cloud-init files are automatically removed when the VM is deleted.
+  - Reports C(changed) only when the datasource or a file is written.
+    Applying the same configuration again, including in check mode, reports C(changed=false).
 options:
   vm_name:
     description:
@@ -31,10 +33,23 @@ options:
   datasource:
     description:
       - The cloud-init datasource type.
-      - Set to C(nocloud) to enable cloud-init (default with I(state=present)).
-      - Use I(state=absent) to disable cloud-init and remove its files.
+      - C(nocloud) enables cloud-init. It is the default with
+        O(state=present), so this option only needs naming to do something
+        else.
+      - C(none) is what the platform stores for a VM with cloud-init off, and
+        is what a freshly created VM reads. Setting it with O(state=present)
+        stages the files without turning cloud-init on; O(state=absent)
+        disables it and removes the files too.
+      - The empty string used to be offered here and is gone. The platform
+        rejects it outright - measured on 26.1.8, C(PUT cloudinit_datasource)
+        of C('') returns "value '' is not in list for field
+        'cloudinit_datasource'" - and the module never sent it anyway,
+        because O(state=present) coerces any falsy datasource to C(nocloud).
+        So the one alternative the option offered silently meant the default,
+        while C(none), the only value that turns cloud-init off, could not be
+        selected at all.
     type: str
-    choices: [ nocloud, '' ]
+    choices: [ nocloud, none ]
   user_data:
     description:
       - Contents of the /user-data cloud-init file.
@@ -173,9 +188,12 @@ datasource:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
+    cloudinit_datasource_differs,
+    cloudinit_file_needs_update,
     HAS_PYVERGEOS,
 )
 
@@ -199,7 +217,7 @@ def get_vm(client, module, vm_name=None, vm_id=None):
 
     if vm_name:
         try:
-            return client.vms.get(name=vm_name)
+            return resolve_one(module, client.vms, vm_name, 'VM')
         except NotFoundError:
             module.fail_json(msg=f"VM '{vm_name}' not found")
 
@@ -305,7 +323,8 @@ def configure_cloudinit(client, module):
 
     # Get VM
     vm = get_vm(client, module, vm_name, vm_id_param)
-    vm_key = str(dict(vm).get('$key'))
+    vm_dict = dict(vm)
+    vm_key = str(vm_dict.get('$key'))
 
     changed = False
     result = {
@@ -313,15 +332,19 @@ def configure_cloudinit(client, module):
         'cloudinit_files': []
     }
 
-    # Enable cloud-init datasource
+    # The datasource is a column on the VM. PUT it only when it differs.
     if datasource:
-        enable_cloudinit_datasource(client, module, vm_key, datasource)
-        changed = True
+        if cloudinit_datasource_differs(vm_dict.get('cloudinit_datasource'), datasource):
+            enable_cloudinit_datasource(client, module, vm_key, datasource)
+            changed = True
         result['datasource'] = datasource
 
     # Get existing cloud-init files
     existing_files = get_cloudinit_files(client, module, vm_key)
-    file_map = {dict(f)['name']: str(dict(f).get('$key')) for f in existing_files}
+    file_rows = {}
+    for file_obj in existing_files:
+        row = dict(file_obj)
+        file_rows[row['name']] = row
 
     # Prepare content
     user_data_content = module.params.get('user_data')
@@ -351,15 +374,18 @@ def configure_cloudinit(client, module):
         files_to_update.append(('/network-config', network_config_content))
 
     for filename, content in files_to_update:
-        if filename not in file_map:
+        row = file_rows.get(filename)
+        if row is None:
             # Create file with contents in one call
             file_id = create_cloudinit_file(client, module, vm_key, filename, content)
             changed = True
         else:
-            # Update existing file
-            file_id = file_map[filename]
-            update_cloudinit_file(client, module, file_id, content)
-            changed = True
+            file_id = str(row.get('$key'))
+            # Rewrite only when stored contents or render differ. Check mode
+            # still reads, and update_cloudinit_file skips the PUT.
+            if cloudinit_file_needs_update(client, file_id, content, row.get('render')):
+                update_cloudinit_file(client, module, file_id, content)
+                changed = True
 
         result['cloudinit_files'].append({
             'key': file_id,
@@ -404,7 +430,7 @@ def main():
     argument_spec.update(
         vm_name=dict(type='str'),
         vm_id=dict(type='str'),
-        datasource=dict(type='str', choices=['nocloud', '']),
+        datasource=dict(type='str', choices=['nocloud', 'none']),
         user_data=dict(type='str'),
         meta_data=dict(type='str'),
         network_config=dict(type='str'),
@@ -437,6 +463,8 @@ def main():
 
     # Validate required parameters for present state
     if module.params['state'] == 'present':
+        # The documented default, applied here rather than in the argument
+        # spec so that state=absent does not inherit it.
         if not module.params.get('datasource'):
             module.params['datasource'] = 'nocloud'
 

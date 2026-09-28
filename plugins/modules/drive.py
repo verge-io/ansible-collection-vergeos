@@ -33,11 +33,16 @@ options:
     default: present
   size:
     description:
-      - Size of the drive in GB.
+      - Size of the drive in GiB.
+      - On an existing drive, a larger size grows the disk. A smaller size
+        fails, because disks are not allowed to shrink.
+      - Omit on update to leave the current size unchanged.
     type: int
   drive_type:
     description:
       - Type of storage drive.
+      - C(virtio) and C(scsi) both map to virtio-scsi. C(ide) maps to ide
+        and C(sata) maps to ahci.
       - Defaults to C(virtio) when creating. Omit to leave unchanged on update.
     type: str
     choices: [ virtio, ide, sata, scsi ]
@@ -85,6 +90,16 @@ EXAMPLES = r'''
     drive_type: ide
     state: present
 
+- name: Grow an existing drive
+  vergeio.vergeos.drive:
+    host: "192.168.1.100"
+    username: "admin"
+    password: "password"
+    vm_name: "web-server-01"
+    name: "data-disk"
+    size: 200
+    state: present
+
 - name: Remove a drive
   vergeio.vergeos.drive:
     host: "192.168.1.100"
@@ -110,6 +125,7 @@ drive:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    resolve_one,
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
@@ -126,10 +142,10 @@ if HAS_PYVERGEOS:
     )
 
 
-def get_vm(client, vm_name):
+def get_vm(module, client, vm_name):
     """Get VM by name using SDK"""
     try:
-        return client.vms.get(name=vm_name)
+        return resolve_one(module, client.vms, vm_name, 'VM')
     except NotFoundError:
         return None
 
@@ -148,7 +164,8 @@ def get_drive(client, vm, drive_name):
 
 def create_drive(module, client, vm):
     """Create a new drive using SDK"""
-    # Map our friendly drive_type names to SDK interface names
+    # virtio and scsi both map to virtio-scsi. The platform's plain
+    # virtio (virtio-blk) interface is not selectable through this module.
     interface_mapping = {
         'virtio': 'virtio-scsi',
         'ide': 'ide',
@@ -176,12 +193,40 @@ def create_drive(module, client, vm):
     return True, dict(drive)
 
 
+# Module parameter -> raw VergeOS API field, for the update path.
+#
+# update_drive() PUTs these keys verbatim, so every value must be a real field
+# on the machine_drives resource. The API accepts unknown fields with HTTP 200
+# and discards them, which is how #8 shipped: 'tier' was sent where the field
+# is 'preferred_tier', so drive tier updates never applied and never
+# converged. Verified against a live 26.1.8 system; see
+# tests/live/verify-field-contract.yml and issue #75.
+#
+# Values here are field NAMES only. Three of them also need a value transform
+# (drive_type through interface_mapping, tier to a string, size from GiB to
+# disksize bytes) which stays in update_drive().
+#
+# size is compared as GiB against disksize, which the platform stores in
+# bytes (5 GiB is 5368709120). A larger size is written as disksize. A
+# smaller size is refused with the platform's own error, "Disks are not
+# allowed to shrink", instead of reporting ok (#124).
+GiB = 1024 ** 3
+
+UPDATE_FIELD_MAP = {
+    'drive_type': 'interface',
+    'tier': 'preferred_tier',
+    'read_only': 'readonly',
+    'size': 'disksize',
+}
+
+
 def update_drive(module, client, drive):
     """Update an existing drive using SDK"""
     changed = False
     update_data = {}
 
-    # Map our friendly drive_type names to SDK interface names
+    # virtio and scsi both map to virtio-scsi. The platform's plain
+    # virtio (virtio-blk) interface is not selectable through this module.
     interface_mapping = {
         'virtio': 'virtio-scsi',
         'ide': 'ide',
@@ -195,7 +240,7 @@ def update_drive(module, client, drive):
     if module.params.get('drive_type') is not None:
         target_interface = interface_mapping.get(module.params['drive_type'], 'virtio-scsi')
         if drive_dict.get('interface') != target_interface:
-            update_data['interface'] = target_interface
+            update_data[UPDATE_FIELD_MAP['drive_type']] = target_interface
             changed = True
 
     # Check tier. The API field is preferred_tier and is returned as a
@@ -208,14 +253,32 @@ def update_drive(module, client, drive):
         except (TypeError, ValueError):
             current_tier = None
         if current_tier != module.params['tier']:
-            update_data['preferred_tier'] = str(module.params['tier'])
+            update_data[UPDATE_FIELD_MAP['tier']] = str(module.params['tier'])
             changed = True
 
     # Check read_only
     if module.params.get('read_only') is not None:
         if drive_dict.get('readonly') != module.params['read_only']:
-            update_data['readonly'] = module.params['read_only']
+            update_data[UPDATE_FIELD_MAP['read_only']] = module.params['read_only']
             changed = True
+
+    # Check size. disksize is bytes; the option is GiB. Grow by writing
+    # disksize. Shrink is rejected by the platform, so fail here with its
+    # message rather than reporting the drive unchanged.
+    if module.params.get('size') is not None:
+        requested = module.params['size'] * GiB
+        try:
+            current = int(drive_dict.get('disksize'))
+        except (TypeError, ValueError):
+            module.fail_json(
+                msg="Drive '%s' did not report disksize, so size cannot "
+                    "be applied" % drive_dict.get('name'))
+        else:
+            if requested < current:
+                module.fail_json(msg="Disks are not allowed to shrink")
+            if requested > current:
+                update_data[UPDATE_FIELD_MAP['size']] = requested
+                changed = True
 
     if not changed:
         return False, drive_dict
@@ -262,7 +325,7 @@ def main():
 
     try:
         # Get VM
-        vm = get_vm(client, vm_name)
+        vm = get_vm(module, client, vm_name)
         if not vm:
             module.fail_json(msg=f"VM '{vm_name}' not found")
 
