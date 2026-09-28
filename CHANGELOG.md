@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A bad password, unreachable host, or TLS failure fails the module cleanly** (#171). `VergeClient` logs in inside its constructor, and every module called `get_vergeos_client()` before its own `try`, so `AuthenticationError` and `VergeConnectionError` never reached `sdk_error_handler`. On ansible-core 2.15 that was `MODULE FAILURE` and a raw traceback. The helper now reports those as an authentication failure or a connection failure.
+
 ## [2.2.0] - 2026-09-28
 
 ### Breaking changes

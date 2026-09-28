@@ -49,7 +49,10 @@ def get_vergeos_client(module):
         VergeClient: Configured SDK client
 
     Raises:
-        module.fail_json if pyvergeos is not installed
+        module.fail_json if pyvergeos is not installed, or if the SDK cannot
+        authenticate or connect. VergeClient logs in inside its constructor,
+        and modules call this helper before their own try, so those errors
+        have to be reported here.
     """
     if not HAS_PYVERGEOS:
         module.fail_json(
@@ -79,13 +82,20 @@ def get_vergeos_client(module):
     # fall back to BASIC auth via username + password.
     api_key = module.params.get('api_key') or None
 
-    return VergeClient(
-        host=host,
-        username=module.params.get('username') or "",
-        password=module.params.get('password') or "",
-        token=api_key,
-        verify_ssl=not module.params.get('insecure', False)
-    )
+    # Login happens in the constructor. A bad password, an unreachable host,
+    # or a TLS failure raises here, before the module's own try, so
+    # sdk_error_handler would otherwise never see it. On ansible-core 2.15
+    # that unhandled raise is MODULE FAILURE plus a raw traceback.
+    try:
+        return VergeClient(
+            host=host,
+            username=module.params.get('username') or "",
+            password=module.params.get('password') or "",
+            token=api_key,
+            verify_ssl=not module.params.get('insecure', False)
+        )
+    except (AuthenticationError, VergeConnectionError) as e:
+        sdk_error_handler(module, e)
 
 
 # Fields a module must name when it needs a vnet's power state.

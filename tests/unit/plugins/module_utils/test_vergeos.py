@@ -133,6 +133,57 @@ class TestGetVergeosClient:
         mock_module.fail_json.assert_called_once()
         assert 'pyvergeos' in mock_module.fail_json.call_args[1]['msg']
 
+    @pytest.mark.parametrize(
+        'exc_name, detail, prefix, other',
+        [
+            ('AuthenticationError', 'Login required',
+             'Authentication failed', 'Connection failed'),
+            ('VergeConnectionError', 'certificate verify failed',
+             'Connection failed', 'Authentication failed'),
+        ],
+    )
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.VergeClient')
+    def test_constructor_auth_and_connection_errors_fail_cleanly(
+            self, mock_client_class, exc_name, detail, prefix, other):
+        """A constructor failure is fail_json, not an unhandled traceback.
+
+        VergeClient connects in __init__. Modules call get_vergeos_client()
+        before their own try, so AuthenticationError (bad password) and
+        VergeConnectionError (unreachable host, TLS) must be reported here.
+        """
+        from ansible_collections.vergeio.vergeos.plugins.module_utils import vergeos
+
+        exc_type = getattr(vergeos, exc_name)
+        mock_client_class.side_effect = exc_type(detail)
+
+        mock_module = MagicMock()
+        # The real fail_json exits. Without that, the helper would return
+        # None after reporting the error and the test would miss a leak.
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_module.params = {
+            'host': 'vergeos.example.com',
+            'username': 'admin',
+            'password': 'secret',
+            'insecure': False,
+        }
+
+        with pytest.raises(SystemExit):
+            vergeos.get_vergeos_client(mock_module)
+
+        mock_module.fail_json.assert_called_once()
+        assert mock_module.fail_json.call_args[0] == ()
+        kwargs = mock_module.fail_json.call_args[1]
+        msg = kwargs['msg']
+        assert msg.startswith(prefix)
+        assert detail in msg
+        assert other not in msg
+        # No traceback attached. fail_json's exception kwarg is a traceback,
+        # and an unhandled raise would have escaped as the SDK exception
+        # rather than SystemExit.
+        assert 'exception' not in kwargs
+        assert 'Traceback' not in msg
+
 
 class TestSdkErrorHandler:
     """Tests for sdk_error_handler() function"""
