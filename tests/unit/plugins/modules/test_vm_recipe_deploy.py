@@ -657,6 +657,28 @@ def test_simulate_422_with_a_reason_is_an_answer_refusal_not_transport():
     assert client.posts[0]['simulate'] is True
 
 
+def test_simulate_403_with_a_reason_is_an_account_refusal():
+    """A 403 is the account, not a bad answer set.
+
+    The platform's own reason stays on the message. The framing must not
+    send the operator off to rewrite answers that an admin can deploy.
+    """
+    client = FakeClient(
+        recipes=[RECIPE], questions=[question('HOSTNAME')],
+        responses=[(403, {'err': 'Error creating VM: Error creating VM '
+                                 'during clone: Permission denied'})])
+    module = run(client, answers={'HOSTNAME': 'web-01'})
+    msg = failed(module)['msg']
+    assert 'transport' not in msg
+    assert 'refused the answer set' not in msg
+    assert 'refused the request for this account' in msg
+    assert 'permissions to create VMs and recipe instances' in msg
+    assert 'HTTP 403' in msg
+    assert 'Permission denied' in msg
+    assert len(client.posts) == 1
+    assert client.posts[0]['simulate'] is True
+
+
 def test_simulate_with_no_reason_is_still_a_transport_failure():
     client = FakeClient(
         recipes=[RECIPE], questions=[question('HOSTNAME')],
