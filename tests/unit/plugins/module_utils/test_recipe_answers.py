@@ -410,8 +410,10 @@ def test_list_answer_that_is_the_display_label_names_the_key():
     assert out["errors"]
     msg = " ".join(out["errors"])
     assert "YB_IP_ADDR_TYPE" in msg
+    assert "(got 'DHCP')" in msg
     assert "valid: dhcp=DHCP, static=Static" in msg
     assert "'DHCP' is the label for key 'dhcp'" in msg
+    assert "YAML turned the unquoted word" not in msg
     assert "YB_IP_ADDR_TYPE" not in out["answers"]
 
 
@@ -422,8 +424,10 @@ def test_bogus_list_answer_lists_the_choices_and_no_key_hint():
     assert out["errors"]
     msg = " ".join(out["errors"])
     assert "not a valid choice" in msg
+    assert "(got 'bogus')" in msg
     assert "valid: dhcp=DHCP, static=Static" in msg
     assert "label for key" not in msg
+    assert "YAML turned the unquoted word" not in msg
     assert "YB_IP_ADDR_TYPE" not in out["answers"]
 
 
@@ -436,6 +440,99 @@ def test_list_choices_given_as_a_json_string_are_checked():
     msg = " ".join(out["errors"])
     assert "valid: dhcp=DHCP, static=Static" in msg
     assert "'Static' is the label for key 'static'" in msg
+
+
+CDROM_CHOICES = {
+    "yes": "Use Local Media Image",
+    "no": "No",
+    "netboot": "Netboot Bootloader",
+}
+
+
+def _cdrom_question():
+    return q("SELECT_CREATE_CDROM", "list", default="yes",
+             display="Create a CD-Rom Drive", list=CDROM_CHOICES)
+
+
+@pytest.mark.parametrize("given,example", [(False, "no"), (True, "yes")])
+def test_unquoted_yaml_bool_on_a_yes_no_list_is_refused_with_a_quoting_hint(
+        given, example):
+    """An unquoted no/yes is a boolean by the time it arrives.
+
+    SELECT_CREATE_CDROM keys are the strings yes, no and netboot. The
+    boolean is refused, the message shows the value received (the same
+    "(got ...)" form as a bool question), and it says quoting the string
+    fixes the YAML conversion. The bool is not rewritten to "no" or "yes".
+    """
+    out = resolve_answers([_cdrom_question()], {"SELECT_CREATE_CDROM": given})
+    assert out["errors"], "%r was accepted for a yes/no list" % given
+    assert "SELECT_CREATE_CDROM" not in out["answers"]
+    assert out["answers"].get("SELECT_CREATE_CDROM") != example
+    msg = " ".join(out["errors"])
+    assert "not a valid choice" in msg
+    assert "(got %r)" % given in msg
+    assert ("valid: yes=Use Local Media Image, no=No, "
+            "netboot=Netboot Bootloader") in msg
+    assert "YAML turned the unquoted word into a boolean" in msg
+    assert 'quote the string (for example "%s")' % example in msg
+
+
+@pytest.mark.parametrize("given", ["no", "yes", "netboot"])
+def test_quoted_cdrom_choice_is_accepted(given):
+    """The string "no" is the answer the recipe wants. Quoting is the fix."""
+    out = resolve_answers([_cdrom_question()], {"SELECT_CREATE_CDROM": given})
+    assert out["errors"] == []
+    assert out["answers"]["SELECT_CREATE_CDROM"] == given
+
+
+@pytest.mark.parametrize("given", ["maybe", "False", "enabled"])
+def test_invalid_cdrom_strings_name_the_value_without_a_yaml_hint(given):
+    """A string that is not a key is still refused, and it is not a boolean.
+
+    The YAML-quoting hint is only for a real bool against yes/no-style keys.
+    The string "False" is not that bool.
+    """
+    out = resolve_answers([_cdrom_question()], {"SELECT_CREATE_CDROM": given})
+    assert out["errors"]
+    assert "SELECT_CREATE_CDROM" not in out["answers"]
+    msg = " ".join(out["errors"])
+    assert "not a valid choice" in msg
+    assert "(got %r)" % given in msg
+    assert "YAML turned the unquoted word" not in msg
+
+
+@pytest.mark.parametrize("choices,given,example", [
+    ({"true": "Yes", "false": "No"}, False, "false"),
+    ({"true": "Yes", "false": "No"}, True, "true"),
+    ({"on": "On", "off": "Off"}, False, "off"),
+    ({"on": "On", "off": "Off"}, True, "on"),
+    ({"Yes": "Y", "No": "N"}, False, "No"),
+    ({"Yes": "Y", "No": "N"}, True, "Yes"),
+])
+def test_yaml_quoting_hint_covers_true_false_on_off_and_key_case(
+        choices, given, example):
+    out = resolve_answers(
+        [q("P", "list", default="", list=choices)],
+        {"P": given})
+    assert out["errors"]
+    assert "P" not in out["answers"]
+    msg = " ".join(out["errors"])
+    assert "(got %r)" % given in msg
+    assert "YAML turned the unquoted word into a boolean" in msg
+    assert 'quote the string (for example "%s")' % example in msg
+
+
+def test_a_bool_against_list_keys_yaml_would_not_rewrite_has_no_quoting_hint():
+    """dhcp/static has no yes/no key, so a boolean is refused without the hint."""
+    out = resolve_answers(
+        [q("YB_IP_ADDR_TYPE", "list", default="dhcp", list=IP_CHOICES)],
+        {"YB_IP_ADDR_TYPE": False})
+    assert out["errors"]
+    assert "YB_IP_ADDR_TYPE" not in out["answers"]
+    msg = " ".join(out["errors"])
+    assert "not a valid choice" in msg
+    assert "(got False)" in msg
+    assert "YAML turned the unquoted word" not in msg
 
 
 def test_missing_required_list_answer_lists_the_choices():

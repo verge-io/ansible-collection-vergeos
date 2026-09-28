@@ -40,6 +40,13 @@ _BOOL_TRUE_WORDS = ("true", "yes", "on", "1")
 _BOOL_FALSE_WORDS = ("false", "no", "off", "0")
 _BOOL_TRUE = frozenset(_BOOL_TRUE_WORDS)
 _BOOL_FALSE = frozenset(_BOOL_FALSE_WORDS + ("",))
+# Inline list keys YAML 1.1 reads as booleans when left unquoted. Order is
+# the example quoted back to the operator: the word they most likely wrote
+# for this boolean, then the other spellings. "1" and "0" are not here; an
+# unquoted 1 is an integer, and a list key of "1" is a different refusal.
+_YAML_LIST_TRUE_WORDS = ("yes", "true", "on")
+_YAML_LIST_FALSE_WORDS = ("no", "false", "off")
+_YAML_LIST_BOOL_WORDS = _YAML_LIST_TRUE_WORDS + _YAML_LIST_FALSE_WORDS
 # Types carrying a secret; their variable names drive redaction in the module.
 SECRET_TYPES = frozenset({"password"})
 # Names that mark an answer as a secret when its type cannot say so. A recipe
@@ -241,6 +248,37 @@ def _list_label_hint(value, choices):
     if len(key_hits) == 1:
         return "; %r matches key %r" % (value, key_hits[0])
     return ""
+
+
+def _yaml_bool_list_hint(value, choices):
+    """Advise quoting when YAML 1.1 delivered a boolean for a string key.
+
+    An unquoted ``no`` in a playbook is the boolean ``False`` by the time it
+    arrives. The choice keys are strings, so the boolean is refused. It is
+    not rewritten to ``"no"``. The hint is added only when a key is one of
+    the words YAML would have turned into a boolean (yes/no, true/false,
+    on/off): that is when the refusal otherwise lists the word they typed
+    as a valid choice.
+    """
+    if not isinstance(value, bool):
+        return ""
+    by_lower = {}
+    for key in choices:
+        by_lower.setdefault(key.lower(), key)
+    if not any(word in by_lower for word in _YAML_LIST_BOOL_WORDS):
+        return ""
+    preferred = (_YAML_LIST_FALSE_WORDS if value is False
+                 else _YAML_LIST_TRUE_WORDS)
+    example = None
+    for word in preferred + _YAML_LIST_BOOL_WORDS:
+        found = by_lower.get(word)
+        if found is not None:
+            example = found
+            break
+    if example is None:
+        return ""
+    return ("; YAML turned the unquoted word into a boolean; "
+            "quote the string (for example \"%s\")" % example)
 
 
 def _declared(bound):
@@ -549,10 +587,17 @@ def resolve_answers(questions, answers, vnets=None, options=None,
         if choices and not isinstance(value, (list, dict, tuple)):
             text = value if isinstance(value, str) else str(value)
             if text not in choices:
+                # "(got %r)" matches _bool_answer_error: a string prints as
+                # 'enabled', a boolean as False. str(False) is "False", which
+                # is not what the operator typed, so a boolean does not also
+                # get the label/case hint that stringifies it.
+                label_hint = ("" if isinstance(value, bool)
+                              else _list_label_hint(text, choices))
                 errors.append(
-                    "answer %r is not a valid choice%s%s"
-                    % (name, describe_list_choices(q),
-                       _list_label_hint(text, choices)))
+                    "answer %r is not a valid choice (got %r)%s%s%s"
+                    % (name, value, describe_list_choices(q),
+                       label_hint,
+                       _yaml_bool_list_hint(value, choices)))
                 continue
 
         resolved[name] = value
