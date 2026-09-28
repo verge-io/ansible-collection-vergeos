@@ -86,7 +86,9 @@
         # one configuration on this system known to pass local validation and
         # fail the server-side simulation, which makes it the honest way to
         # show what the flag removes. Both rungs are check mode; nothing is
-        # created either way.
+        # created either way. Refusals are recorded with ignore_errors and
+        # read from `.failed`. failed_when would clear that flag, and
+        # failed_when_suppressed_exception is absent on ansible-core 2.15.
         - name: "1. A broken config, with the simulate ON (the default)"
           vergeio.vergeos.vm_recipe_deploy:
             insecure: true
@@ -99,7 +101,7 @@
               YB_DRIVE_1_SIZE: 1073741824
               YB_NIC_main_nic: DMZ
           check_mode: true
-          failed_when: false
+          ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
           register: eg_sim_on
 
         - name: "1b. The same config, with the simulate OFF"
@@ -111,7 +113,7 @@
             simulate: false
             answers: *newvm_answers
           check_mode: true
-          failed_when: false
+          ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
           register: eg_sim_off
 
         # This rung is not a complaint about the flag. It is the evidence for
@@ -121,9 +123,9 @@
         - name: "1c. Only the simulated run catches it"
           ansible.builtin.assert:
             that:
-              - eg_sim_on.failed_when_suppressed_exception is defined
+              - eg_sim_on is failed
               - "'would build a broken VM' in (eg_sim_on.msg | default(''))"
-              - eg_sim_off.failed_when_suppressed_exception is not defined
+              - eg_sim_off is not failed
               - eg_sim_off.simulate_result is not defined
             fail_msg: >-
               expected simulate=true to refuse and simulate=false to pass.
@@ -142,7 +144,7 @@
             simulate: false
             answers: "{{ dict(newvm | combine({'YB_RAM': 'not-a-number'})) }}"
           check_mode: true
-          failed_when: false
+          ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
           register: eg_sim_off_bad
           vars:
             newvm:
@@ -154,7 +156,7 @@
         - name: "2b. Assert it still refused, on the local check"
           ansible.builtin.assert:
             that:
-              - eg_sim_off_bad.failed_when_suppressed_exception is defined
+              - eg_sim_off_bad is failed
               - "'whole number' in (eg_sim_off_bad.msg | default(''))"
             fail_msg: >-
               simulate: false also skipped the local validation:

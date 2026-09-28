@@ -15,13 +15,13 @@
 #   answer types    min / max / regex enforced locally, before the API
 #   networks        by name, by key, and a nonexistent one refused
 #
-# Every rung uses failed_when: false so one refusal does not stop the
-# ladder. That means `.failed` is ALWAYS false and cannot be the check --
-# ansible-core sets it to false precisely because we suppressed it. The
-# signal that the module actually refused is
-# `failed_when_suppressed_exception`, which core attaches only when a real
-# failure was suppressed. Measured both ways: it is present on a refused
-# run and absent on a clean one, while `.failed` is false on both.
+# Every rung uses ignore_errors so one refusal does not stop the ladder.
+# The refusal signal is `.failed`. failed_when set to false cannot be that
+# signal: it forces `.failed` false on every core, and the marker it leaves
+# behind (`failed_when_suppressed_exception`) is only attached by newer
+# cores. ansible-core 2.15, the collection floor, never sets it, so a real
+# refusal used to read as a pass. `ignore_errors` leaves `.failed` set on
+# 2.15 and on every newer core.
 - name: Recipe scenarios live ladder
   hosts: localhost
   gather_facts: false
@@ -67,13 +67,13 @@
         answers: "{{ base_answers | combine({'ZZ_NOT_A_QUESTION': 'x'}) }}"
         prune_unknown: false
       check_mode: true
-      failed_when: false
+      ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: prune_off
 
     - name: "1b. It failed, and named the answer it did not recognise"
       ansible.builtin.assert:
         that:
-          - prune_off.failed_when_suppressed_exception is defined
+          - prune_off is failed
           - "'ZZ_NOT_A_QUESTION' in (prune_off.msg | default(''))"
         fail_msg: >-
           expected a refusal naming ZZ_NOT_A_QUESTION, got:
@@ -87,7 +87,7 @@
         answers: "{{ base_answers | combine({'ZZ_NOT_A_QUESTION': 'x'}) }}"
         prune_unknown: true
       check_mode: true
-      failed_when: false
+      ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: prune_on
 
     # The point of the rung. prune_unknown exists so one answer set can be
@@ -97,11 +97,11 @@
     - name: "2b. It succeeded, and the pruned answer is not in answers_sent"
       ansible.builtin.assert:
         that:
-          - prune_on.failed_when_suppressed_exception is not defined
+          - prune_on is not failed
           - "'ZZ_NOT_A_QUESTION' not in (prune_on.answers_sent | default([]))"
           - prune_on.answers_sent | default([]) | length > 0
         fail_msg: >-
-          prune_unknown did not behave: refused={{ prune_on.failed_when_suppressed_exception is defined }},
+          prune_unknown did not behave: refused={{ prune_on is failed }},
           answers_sent={{ prune_on.answers_sent | default([]) }}
 
     - name: "2c. And the known answers still went through"
@@ -127,17 +127,17 @@
         answers: "{{ base_answers }}"
         fail_on_hints: false
       check_mode: true
-      failed_when: false
+      ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: hints_off
 
     - name: "3b. It succeeded and there is at least one hint to be fatal about"
       ansible.builtin.assert:
         that:
-          - hints_off.failed_when_suppressed_exception is not defined
+          - hints_off is not failed
           - hints_off.hints | default([]) | length > 0
         fail_msg: >-
           expected a clean run carrying hints, got
-          refused={{ hints_off.failed_when_suppressed_exception is defined }},
+          refused={{ hints_off is failed }},
           hints={{ hints_off.hints | default([]) }}
 
     - name: "4. fail_on_hints on: the same run is fatal"
@@ -148,12 +148,12 @@
         answers: "{{ base_answers }}"
         fail_on_hints: true
       check_mode: true
-      failed_when: false
+      ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: hints_on
 
     - name: "4b. It failed, on the same answer set that passed at rung 3"
       ansible.builtin.assert:
-        that: hints_on.failed_when_suppressed_exception is defined
+        that: hints_on is failed
         fail_msg: >-
           fail_on_hints=true did not fail a run with
           {{ hints_off.hints | default([]) | length }} hint(s)
@@ -168,12 +168,12 @@
         catalog: "{{ zz_catalog }}"
         answers: "{{ base_answers }}"
       check_mode: true
-      failed_when: false
+      ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: cat_right
 
     - name: "5b. Assert it resolved"
       ansible.builtin.assert:
-        that: cat_right.failed_when_suppressed_exception is not defined
+        that: cat_right is not failed
         fail_msg: >-
           naming the correct catalog '{{ zz_catalog }}' broke the lookup:
           {{ cat_right.msg | default('') }}
@@ -186,12 +186,12 @@
         catalog: zz-no-such-catalog
         answers: "{{ base_answers }}"
       check_mode: true
-      failed_when: false
+      ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: cat_wrong
 
     - name: "6b. Assert refused rather than silently ignoring the catalog"
       ansible.builtin.assert:
-        that: cat_wrong.failed_when_suppressed_exception is defined
+        that: cat_wrong is failed
         fail_msg: >-
           a nonexistent catalog was ignored instead of refusing --
           the recipe resolved anyway
@@ -205,13 +205,13 @@
         recipe: "{{ zz_recipe }}"
         answers: "{{ base_answers | combine({'YB_CPU_CORES': 0}) }}"
       check_mode: true
-      failed_when: false
+      ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: below_min
 
     - name: "7b. Assert refused, naming the question"
       ansible.builtin.assert:
         that:
-          - below_min.failed_when_suppressed_exception is defined
+          - below_min is failed
           - "'YB_CPU_CORES' in (below_min.msg | default(''))"
         fail_msg: >-
           expected YB_CPU_CORES=0 to be refused, got:
@@ -224,13 +224,13 @@
         recipe: "{{ zz_recipe }}"
         answers: "{{ base_answers | combine({'YB_RAM': 'not-a-number'}) }}"
       check_mode: true
-      failed_when: false
+      ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: bad_type
 
     - name: "8b. Assert refused, naming the question"
       ansible.builtin.assert:
         that:
-          - bad_type.failed_when_suppressed_exception is defined
+          - bad_type is failed
           - "'YB_RAM' in (bad_type.msg | default(''))"
         fail_msg: >-
           expected a non-numeric YB_RAM to be refused, got:
@@ -254,12 +254,12 @@
           {{ base_answers
              | combine({'YB_NIC_ETH0': (dmz.networks | first)['$key']}) }}
       check_mode: true
-      failed_when: false
+      ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: net_by_key
 
     - name: "9c. Assert it resolved"
       ansible.builtin.assert:
-        that: net_by_key.failed_when_suppressed_exception is not defined
+        that: net_by_key is not failed
         fail_msg: >-
           a network answer by key was refused:
           {{ net_by_key.msg | default('') }}
@@ -271,13 +271,13 @@
         recipe: "{{ zz_recipe }}"
         answers: "{{ base_answers | combine({'YB_NIC_ETH0': 'zz-no-such-net'}) }}"
       check_mode: true
-      failed_when: false
+      ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: net_bad
 
     - name: "10b. Assert refused, naming the question"
       ansible.builtin.assert:
         that:
-          - net_bad.failed_when_suppressed_exception is defined
+          - net_bad is failed
           - "'YB_NIC_ETH0' in (net_bad.msg | default(''))"
         fail_msg: >-
           expected a nonexistent network to be refused, got:

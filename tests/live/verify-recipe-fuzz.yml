@@ -486,10 +486,13 @@
 
         # ── 2. The case table ────────────────────────────────────────────────
         #
-        # failed_when: false rather than a rescue per case, so one refusal does
-        # not stop the table. That makes `.failed` always false and useless as
-        # the signal; `failed_when_suppressed_exception` is what ansible-core
-        # attaches only when a real failure was suppressed.
+        # ignore_errors rather than a rescue per case, so one refusal does
+        # not stop the table. `.failed` is the refusal signal. failed_when
+        # set to false clears it on every core, and
+        # failed_when_suppressed_exception -- the marker that would otherwise
+        # say a real failure was suppressed -- is never set on ansible-core
+        # 2.15, so every refusal on the collection floor used to look like a
+        # pass.
         - name: "2. Run every hostile configuration"
           vergeio.vergeos.vm_recipe_deploy:
             insecure: true
@@ -504,7 +507,7 @@
             prune_unknown: "{{ item.prune | default(false) }}"
             fail_on_hints: "{{ item.fail_on_hints | default(false) }}"
           check_mode: true
-          failed_when: false
+          ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
           register: fz_runs
           loop: "{{ fz_cases }}"
           loop_control:
@@ -515,7 +518,7 @@
             fz_results: >-
               {%- set out = [] -%}
               {%- for r in fz_runs.results -%}
-                {%- set refused = r.failed_when_suppressed_exception is defined -%}
+                {%- set refused = r.failed | default(false) -%}
                 {%- set msg = r.msg | default('') | string -%}
                 {%- set want = r.item.matching | default('') -%}
                 {%- set ok = (not refused) if r.item.expect == 'pass'
@@ -589,7 +592,7 @@
           vars:
             unsimulated: >-
               {{ fz_runs.results
-                 | rejectattr('failed_when_suppressed_exception', 'defined')
+                 | rejectattr('failed')
                  | rejectattr('simulate_result.ok', 'defined') | list }}
           ansible.builtin.assert:
             that: unsimulated | length == 0
@@ -651,13 +654,13 @@
             answers: {ZZ_HOSTNAME: zz-fuzz-host, ZZ_SECRET: Zz-Fuzz-Scratch-1!,
                       ZZ_RAM_MB: 256, YB_CPU_CORES: 1}
           check_mode: true
-          failed_when: false
+          ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
           register: fz_masked
 
         - name: "5b. The minimum survived, digits and all"
           ansible.builtin.assert:
             that:
-              - fz_masked.failed_when_suppressed_exception is defined
+              - fz_masked is failed
               - "'requires at least 512' in (fz_masked.msg | default(''))"
             fail_msg: >-
               a one-character non-secret answer is masking the recipe's own
@@ -741,7 +744,7 @@
             catalog: "{{ fz_cat }}"
             answers: "{{ fz_base }}"
           check_mode: true
-          failed_when: false
+          ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
           register: fz_names
           loop:
             - "zz-from-fuzz-o'brien"
@@ -758,7 +761,7 @@
                  | selectattr('already_existed') | list }}
             errored: >-
               {{ fz_names.results
-                 | selectattr('failed_when_suppressed_exception', 'defined')
+                 | selectattr('failed')
                  | list }}
           ansible.builtin.assert:
             that:
@@ -809,13 +812,13 @@
             recipe: "{{ fz_recipe }}"
             answers: "{{ fz_base }}"
           check_mode: true
-          failed_when: false
+          ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
           register: fz_ambig
 
         - name: "7e. It refused, and said so in those terms"
           ansible.builtin.assert:
             that:
-              - fz_ambig.failed_when_suppressed_exception is defined
+              - fz_ambig is failed
               - "'recipes named' in (fz_ambig.msg | default(''))"
               - "'disambiguate' in (fz_ambig.msg | default(''))"
             fail_msg: >-
@@ -837,13 +840,13 @@
             catalog: "{{ fz_cat }}"
             answers: "{{ fz_base }}"
           check_mode: true
-          failed_when: false
+          ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
           register: fz_disambig
 
         - name: "7g. Clean simulate, and the ZZ_ answers were the ones sent"
           ansible.builtin.assert:
             that:
-              - fz_disambig.failed_when_suppressed_exception is not defined
+              - fz_disambig is not failed
               - fz_disambig.simulate_result.ok | default(false)
               - "'ZZ_RAM_MB' in (fz_disambig.answers_sent | default([]))"
             fail_msg: >-
