@@ -204,9 +204,13 @@ def simulate_transport_error(status, document):
 
     A simulate answering on HTTP 405 with a log document is the normal,
     measured behaviour -- so status alone cannot be the test, and neither can
-    "non-2xx means failure". A 4xx that carries a reason is the platform
-    refusing the answer set: the request arrived. That is not a transport
-    failure. Transport is a reply with no reason at all.
+    "non-2xx means failure". A 4xx that carries a reason means the request
+    arrived and the platform refused it. That is not a transport failure.
+    Transport is a reply with no reason at all.
+
+    400 and 422 refuse the answer set. 401 and 403 refuse the account: the
+    answers may be fine and the operator should check permissions. Any other
+    4xx is a refusal that does not blame the answers.
 
     Returned as a message rather than raised so the caller can report the
     status it actually saw instead of a generic API error.
@@ -217,8 +221,15 @@ def simulate_transport_error(status, document):
         return ''
     reason = _stated_reason(document)
     if reason and 400 <= status < 500:
-        return ('the simulate POST refused the answer set: HTTP %s -- %s'
-                % (status, reason))
+        detail = 'HTTP %s -- %s' % (status, reason)
+        if status in (400, 422):
+            return 'the simulate POST refused the answer set: %s' % detail
+        if status in (401, 403):
+            return ('the platform refused the request for this account on '
+                    'the simulate POST: %s. Check this account\'s '
+                    'permissions to create VMs and recipe instances'
+                    % detail)
+        return 'the simulate POST was refused: %s' % detail
     detail = reason
     if not detail:
         if isinstance(document, dict) and document:

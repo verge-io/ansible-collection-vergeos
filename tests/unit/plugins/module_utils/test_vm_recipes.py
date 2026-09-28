@@ -338,12 +338,48 @@ def test_simulate_4xx_with_a_reason_is_an_answer_refusal_not_transport():
     assert 'transport' not in msg
 
 
-def test_simulate_401_with_a_reason_is_a_refusal_not_transport():
-    """Any 4xx that states a reason is a refusal, not a transport failure."""
+def test_simulate_400_with_a_reason_refuses_the_answer_set():
+    """400 is an answer refusal, the same framing as 422."""
+    msg = simulate_transport_error(400, {'err': 'hostname is invalid'})
+    assert 'HTTP 400' in msg
+    assert 'hostname is invalid' in msg
+    assert 'refused the answer set' in msg
+    assert 'transport' not in msg
+    assert 'permissions' not in msg
+
+
+def test_simulate_401_with_a_reason_is_an_account_refusal_not_transport():
+    """401 is the account, not the answers, and not a transport failure."""
     msg = simulate_transport_error(401, {'err': 'Login required'})
     assert 'HTTP 401' in msg
     assert 'Login required' in msg
-    assert 'refused the answer set' in msg
+    assert 'refused the request for this account' in msg
+    assert 'permissions to create VMs and recipe instances' in msg
+    assert 'refused the answer set' not in msg
+    assert 'transport' not in msg
+
+
+def test_simulate_403_with_a_reason_is_an_account_refusal():
+    """403 is permission denied. The answers may be fine."""
+    msg = simulate_transport_error(
+        403, {'err': 'Error creating VM: Error creating VM during clone: '
+                     'Permission denied'})
+    assert 'HTTP 403' in msg
+    assert 'Permission denied' in msg
+    assert 'refused the request for this account' in msg
+    assert 'permissions to create VMs and recipe instances' in msg
+    assert 'refused the answer set' not in msg
+    assert 'transport' not in msg
+
+
+def test_simulate_other_4xx_with_a_reason_does_not_blame_the_answers():
+    """A 4xx other than 400, 401, 403, and 422 is a refusal, not the answers."""
+    msg = simulate_transport_error(404, {'err': 'recipe instance route missing'})
+    assert 'HTTP 404' in msg
+    assert 'recipe instance route missing' in msg
+    assert 'the simulate POST was refused' in msg
+    assert 'refused the answer set' not in msg
+    assert 'permissions' not in msg
     assert 'transport' not in msg
 
 

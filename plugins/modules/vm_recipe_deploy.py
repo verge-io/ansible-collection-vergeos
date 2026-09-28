@@ -518,8 +518,10 @@ def main():
                                              simulate=True)
             # The status is deliberately not treated as pass/fail. A clean
             # simulate answers HTTP 405 with err='Simulation complete' on
-            # 26.1.8. A 4xx that names a reason is the platform refusing the
-            # answer set. Only a reply with no reason is a transport failure.
+            # 26.1.8. A 4xx that names a reason means the request arrived.
+            # 400 and 422 refuse the answer set. 401 and 403 refuse the
+            # account. Any other 4xx is a refusal that does not blame the
+            # answers. Only a reply with no reason is a transport failure.
             transport = simulate_transport_error(status, document)
             if transport:
                 module.fail_json(msg=transport, **result)
