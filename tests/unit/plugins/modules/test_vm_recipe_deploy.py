@@ -12,6 +12,11 @@ deploy POST fires on the next line.
 import pytest
 from unittest.mock import MagicMock, patch
 
+from ansible.module_utils.common.parameters import remove_values
+
+from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    maskable_strings,
+)
 from ansible_collections.vergeio.vergeos.plugins.modules import vm_recipe_deploy
 
 
@@ -131,18 +136,46 @@ def params(**over):
     return base
 
 
-def run(client, check_mode=False, **over):
+def run(client, check_mode=False, no_log_values=None, **over):
     module = MagicMock()
     module.params = params(**over)
     module.check_mode = check_mode
     module.exit_json.side_effect = SystemExit(0)
     module.fail_json.side_effect = SystemExit(1)
+    if no_log_values is not None:
+        # What AnsibleModule would have collected before main() ran.
+        module.no_log_values = set(no_log_values)
 
-    with patch.object(vm_recipe_deploy, 'AnsibleModule', return_value=module), \
+    def build(*args, **kwargs):
+        spec = kwargs.get('argument_spec')
+        if spec is None and args:
+            spec = args[0]
+        module.argument_spec = spec
+        return module
+
+    with patch.object(vm_recipe_deploy, 'AnsibleModule', side_effect=build), \
          patch.object(vm_recipe_deploy, 'get_vergeos_client', return_value=client):
         with pytest.raises(SystemExit):
             vm_recipe_deploy.main()
     return module
+
+
+def collected_no_log(module_params):
+    """The no_log strings ansible-core would collect for this call.
+
+    password and api_key are no_log on their own. answers is no_log as a
+    whole, which is what makes an ordinary tier of 1 mask every "1".
+    """
+    values = set()
+    for name in ('password', 'api_key', 'answers'):
+        values |= maskable_strings(module_params.get(name))
+    return values
+
+
+def shown(module):
+    """The result ansible-core would print, after no_log masking."""
+    result = exited(module)
+    return remove_values(result, module.no_log_values)
 
 
 def exited(module):
@@ -193,6 +226,108 @@ def test_convergence_does_not_even_simulate():
     client = FakeClient(recipes=[RECIPE],
                         vms=[{'name': 'web-01', '$key': 12}])
     run(client)
+    assert client.posts == []
+
+
+# The recipe row from the #178 rerun. SELECT_OS_TIER: 1 is an ordinary answer.
+# While "1" stays in no_log_values, ansible-core rewrites every copy of it.
+DEBIAN = {
+    'name': 'Debian 12 (Bookworm)',
+    '$key': 'r1',
+    'version': '1.0',
+    'creator': 'node1',
+    'build': 13,
+    'vm_snapshot': 1,
+    'catalog_display': 'Local',
+    # Whole-value collisions, so masking replaces the field rather than a
+    # substring. hunter2 is a password answer. secret is the connection
+    # password, a different no_log parameter.
+    'pw_echo': 'hunter2',
+    'auth_echo': 'secret',
+}
+
+TIER_ANSWERS = {
+    'SELECT_OS_TIER': 1,
+    'HOSTNAME': 'web-01',
+    'PASSWORD': 'hunter2',
+}
+
+
+def _debian_client(questions):
+    return FakeClient(
+        recipes=[DEBIAN],
+        questions=questions,
+        vms=[{'name': 'web-01', '$key': 12}],
+    )
+
+
+def _run_exists(client, answers):
+    module_params = params(recipe=DEBIAN['name'], answers=answers)
+    return run(client, no_log_values=collected_no_log(module_params),
+               recipe=DEBIAN['name'], answers=answers)
+
+
+def test_existing_vm_keeps_recipe_fields_when_questions_are_known():
+    """A rerun used to exit before narrow_no_log().
+
+    With the questions in hand, a tier of 1 must not scramble the recipe
+    row. The password answer, and the connection password, stay masked.
+    """
+    client = _debian_client([
+        question('SELECT_OS_TIER', 'num'),
+        question('HOSTNAME'),
+        question('PASSWORD', 'password'),
+    ])
+    module = _run_exists(client, TIER_ANSWERS)
+    result = shown(module)
+
+    assert result['changed'] is False
+    assert result['already_existed'] is True
+    assert result['vm_key'] == '12'
+    assert client.posts == []
+
+    recipe = result['recipe']
+    assert recipe['name'] == 'Debian 12 (Bookworm)'
+    assert recipe['version'] == '1.0'
+    assert recipe['creator'] == 'node1'
+    assert recipe['build'] == 13
+    assert recipe['vm_snapshot'] == 1
+    assert recipe['$key'] == 'r1'
+    assert recipe['pw_echo'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
+    assert recipe['auth_echo'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
+    assert '1' not in module.no_log_values
+    assert 'web-01' not in module.no_log_values
+    assert 'hunter2' in module.no_log_values
+    assert 'secret' in module.no_log_values
+
+
+def test_existing_vm_still_masks_everything_when_no_questions_are_published():
+    """No question types means nothing is safe to unmask, rerun included."""
+    client = _debian_client([])
+    module = _run_exists(client, TIER_ANSWERS)
+    result = shown(module)
+
+    assert result['already_existed'] is True
+    assert client.posts == []
+    recipe = result['recipe']
+    assert recipe['name'] == 'Debian ********2 (Bookworm)'
+    assert recipe['version'] == '********.0'
+    assert recipe['creator'] == 'node********'
+    assert recipe['build'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
+    assert recipe['vm_snapshot'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
+    assert recipe['$key'] == 'r********'
+    assert '1' in module.no_log_values
+
+
+def test_existing_vm_converges_even_when_an_answer_would_be_refused():
+    """The lookup classifies answers. It does not turn a rerun into a refusal."""
+    client = FakeClient(recipes=[RECIPE],
+                        questions=[question('HOSTNAME')],
+                        vms=[{'name': 'web-01', '$key': 12}])
+    result = exited(run(client, answers={'NOT_A_QUESTION': 'x'}))
+    assert result['already_existed'] is True
+    assert result['changed'] is False
+    assert result['answers_sent'] == []
     assert client.posts == []
 
 

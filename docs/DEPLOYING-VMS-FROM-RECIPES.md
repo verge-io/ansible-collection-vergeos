@@ -172,18 +172,33 @@ still has its firmware read the boot sector and send a few DHCP packets, so
 read counters and NIC counters both move off zero on a guest sitting at "no
 bootable device". Only written bytes separate the two.
 
-### Your VM name may appear as asterisks
+### When the result shows asterisks
 
 The `answers` parameter is marked `no_log`, because recipe answers routinely
-carry a guest password. A side effect catches everyone once: Ansible scrubs
-every value in that mapping from the task output, so a non secret answer that
-happens to equal another string in the result gets masked too.
+carry a guest password. Ansible scrubs every value in that mapping from the
+task output, and it does so by substring, so a short answer can rewrite some
+other field that happens to contain the same text.
 
-In practice this bites `HOSTNAME`, which is usually the same string as the VM
-name, so the VM name shows up as `********` in that task's output. That is
-Ansible protecting the mapping, not an error. The module's own messages
-identify the VM by key for exactly this reason. Use `vm_key`, or read the name
-back with a separate `vm_info` task.
+What you see depends on whether the recipe publishes its questions.
+
+A recipe that publishes questions is classified. Once those question types are
+known, answers that are not credentials stop being masked in this task's
+result. That includes a second run, the one that finds a VM of this name
+already exists. `recipe.name` stays `Debian 12 (Bookworm)`. A tier answer of
+`1` leaves the digits in `version` and `creator` alone, and leaves `build` and
+`vm_snapshot` as numbers rather than
+`VALUE_SPECIFIED_IN_NO_LOG_PARAMETER`. The VM name stays readable when the
+result contains it. `HOSTNAME` being the same string does not turn it into
+`********`. A password answer stays masked.
+
+A recipe that publishes no questions cannot be classified, so every answer
+stays masked, on a first deploy and on a rerun. A tier of `1` then rewrites
+`recipe.name` to `Debian ********2 (Bookworm)`, `version` `1.0` to
+`********.0` and `creator` `node1` to `node********`, and replaces `build` and
+`vm_snapshot` with `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER` when those values
+contain `1`. A `HOSTNAME` equal to the VM name is scrubbed the same way, in
+any result field that contains the name. The module's messages identify the VM
+by key. Use `vm_key`, or read the name back with a separate `vm_info` task.
 
 ### fail_on_hints asks more of you than it looks
 
@@ -263,7 +278,8 @@ explicit act:
 | `network 'x' not found` | A network answer named something that is not on this system. Check the name, including case |
 | VM exists but will not boot | The image import may still be running. The role waits for this; the module does not |
 | VM boots but reaches nothing | A network question was probably left at `__new_internal__`. Check with `vm_nic_info` |
-| VM name shows as `********` | Expected. `answers` is `no_log`. Use `vm_key`, or read the name back with `vm_info` |
+| `recipe.name` contains `********`, or a field is `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER` | The recipe publishes no questions, so every answer stays `no_log`. A recipe that publishes questions does not do this, including when the VM already exists |
+| VM name shows as `********` | The recipe publishes no questions and the name equals an answer, usually `HOSTNAME`. Use `vm_key`, or read the name back with `vm_info` |
 | `fail_on_hints is set and questions are unanswered` | Read the hints, answer the ones that matter, see the section above |
 
 ## Where to look next

@@ -73,14 +73,23 @@ options:
         then fails mid-deploy; those are reported in RV(hints), and
         O(fail_on_hints) makes them fatal.
       - Marked C(no_log), because recipe answers routinely carry a guest
-        password. One side effect is worth knowing - Ansible scrubs every
-        value in this mapping from the task's output, so a non-secret answer
-        that happens to equal another string in the result is masked there
-        too.
-      - In practice that bites C(HOSTNAME), which is usually the same string
-        as O(name), so the VM name appears as C(********) in this task's
-        output. That is Ansible protecting the mapping, not an error. This
-        module's own messages identify the VM by key for that reason; use
+        password. Ansible scrubs every value in this mapping from the task
+        result, including where that value is only a substring of another
+        field.
+      - When the recipe publishes questions, this module stops masking the
+        answers whose types are not credentials, in its own return values.
+        That includes the return that reports a VM of this name already
+        exists. A tier of C(1) leaves RV(recipe) readable, so a name like
+        Debian 12 (Bookworm) keeps its digits, and C(build) / C(vm_snapshot)
+        stay numbers rather than C(VALUE_SPECIFIED_IN_NO_LOG_PARAMETER). The
+        VM name is readable when the result contains it. C(HOSTNAME) equalling
+        O(name) does not turn it into C(********). A password answer stays
+        masked.
+      - When the recipe publishes no questions, nothing can be classified, so
+        every answer stays masked on a first deploy and on a rerun. A short
+        value such as C(1) is then scrubbed out of RV(recipe), and a
+        C(HOSTNAME) equal to O(name) is masked wherever that name appears.
+        This module's messages identify the VM by key for that reason; use
         RV(vm_key), or read the name from a separate
         M(vergeio.vergeos.vm_info) task.
       - Answer values are never echoed back regardless - RV(answers_sent)
@@ -376,9 +385,10 @@ def narrow_no_log(module, resolved):
     The refusal was right and unreadable, which is the worst combination --
     the operator loses the number at the moment they need it.
 
-    Called only once the recipe's question TYPES have said which answers are
-    credentials, so the decision is made on the platform's own classification
-    rather than on a guess. Three things keep it conservative:
+    Called once the recipe's question TYPES have said which answers are
+    credentials, and before any return that includes the recipe row, including
+    the already-exists return. The decision is made on the platform's own
+    classification rather than on a guess. Three things keep it conservative:
 
       * a recipe that publishes no questions cannot be classified, so nothing
         is unmasked at all;
@@ -388,8 +398,8 @@ def narrow_no_log(module, resolved):
         ``api_key`` -- stays masked, read from the argument spec rather than
         named here so a future no_log parameter is covered automatically.
 
-    Everything before this point in main() still runs fully masked. That is
-    deliberate: it fails closed.
+    Everything before this call still runs fully masked. That is deliberate:
+    it fails closed.
     """
     if not resolved.get('introspectable'):
         return
@@ -443,17 +453,26 @@ def main():
             hints=[],
         )
 
+        # Before any return that includes the recipe row. The already-exists
+        # path used to leave here while every answer was still a no_log value,
+        # so a rerun scrambled recipe.name / version / build with the same
+        # substring masking a first deploy had already stopped. Question types
+        # say which answers are credentials. A recipe that publishes none
+        # cannot be classified and stays fully masked. See narrow_no_log().
+        resolved, _questions = resolve(client, recipe['$key'],
+                                       params['answers'],
+                                       params['prune_unknown'])
+        narrow_no_log(module, resolved)
+
         # Converge on the VM, not on the recipe instance: some recipes set
         # YB_DETACH_RECIPE, which drops the instance row once the guest agent
         # reports in, so the instance is not a durable identity. The VM is.
         existing = find_vm_by_name(client, name)
         if existing:
-            # The name is deliberately NOT interpolated here. `answers` is
-            # no_log, and Ansible masks every no_log VALUE wherever it appears
-            # in output -- HOSTNAME is normally the same string as the VM
-            # name, so the message came out as "VM '********' already exists".
-            # Correct and unreadable. The key identifies it and cannot
-            # collide with an answer.
+            # Identify by key. A recipe that publishes no questions cannot be
+            # classified, so every answer stays no_log and a HOSTNAME equal to
+            # the VM name would still be scrubbed out of a message that quoted
+            # the name. The key does not collide with an answer.
             result.update(
                 already_existed=True,
                 vm_key=str(existing.get('$key') or ''),
@@ -462,15 +481,6 @@ def main():
                     % (existing.get('$key') or '?'),
             )
             module.exit_json(**result)
-
-        resolved, _questions = resolve(client, recipe['$key'],
-                                       params['answers'],
-                                       params['prune_unknown'])
-
-        # Before the first message that quotes the recipe's own numbers back
-        # at the operator, and after the question types that classify the
-        # credentials. See narrow_no_log().
-        narrow_no_log(module, resolved)
 
         result['answers_sent'] = sorted(resolved['answers'])
         result['hints'] = resolved['hints']
