@@ -108,7 +108,6 @@
         fail_msg: >-
           Set VERGEOS_HOST, VERGEOS_USERNAME, and VERGEOS_PASSWORD for the
           host cloud before deploying the nested lab.
-      no_log: true
 
     - name: Require the nested admin password from the environment
       ansible.builtin.assert:
@@ -119,7 +118,6 @@
           Set VLAB_ADMIN_PASSWORD (at least 8 characters; the VergeOS
           installer rejects ' " +) before running.
         quiet: true
-      no_log: true
 
     - name: Require a node count this playbook can seed
       ansible.builtin.assert:
