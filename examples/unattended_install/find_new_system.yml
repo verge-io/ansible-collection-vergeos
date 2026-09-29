@@ -42,7 +42,6 @@
           Set VLAB_ADMIN_PASSWORD, pass exclude_ips as a list
           (exclude_ips='["<host-cloud-ui>"]'), and keep discover_subnet
           as the first three octets.
-      no_log: true
 
     - name: Scan the subnet until a VergeOS API answers
       block:
