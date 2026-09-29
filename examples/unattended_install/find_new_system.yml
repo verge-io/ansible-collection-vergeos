@@ -7,16 +7,15 @@
 #     -e exclude_ips='["<host-cloud-ui>"]'
 #
 # exclude_ips is every VergeOS UI already on the subnet. The host cloud's
-# own UI answers the same signature. The first match in address order wins.
+# own UI answers the same signature. The lowest matching address wins.
 #
 # Auth for the new system comes from the seed:
 #   export VLAB_ADMIN_USERNAME=admin VLAB_ADMIN_PASSWORD='...'
 #
 # The play probes with a 4 second cap (a nested node answers slowly; a 1
-# second timeout reports it absent). It retries discover_tries times and
-# waits discover_wait seconds between failed scans, then fails. It does
-# not retry forever. Each attempt still walks the subnet, so the wall
-# clock is the scans plus those waits.
+# second timeout reports it absent), 32 addresses at a time. It retries
+# discover_tries times and waits discover_wait seconds between failed
+# scans, then fails. It does not retry forever.
 
 - name: Find and verify a newly installed VergeOS system
   hosts: localhost
@@ -46,22 +45,40 @@
     - name: Scan the subnet until a VergeOS API answers
       block:
         - name: Probe each address for the VergeOS login challenge
-          ansible.builtin.shell: |
-            set -eu
-            for i in $(seq 1 254); do
-              ip="{{ discover_subnet }}.$i"
-              case " {{ exclude_ips | join(' ') }} " in
-                *" $ip "*) continue ;;
-              esac
-              body=$(curl -sk --max-time 4 "https://$ip/api/v4/version" 2>/dev/null || true)
-              case "$body" in
-                *"Login required"*)
-                  printf '%s\n' "$ip"
-                  exit 0
-                  ;;
-              esac
-            done
-            exit 1
+          ansible.builtin.shell:
+            cmd: |
+              set -euo pipefail
+              subnet="{{ discover_subnet }}"
+              exclude=" {{ exclude_ips | join(' ') }} "
+              workers=32
+              tmpdir=$(mktemp -d)
+              trap 'rm -rf "$tmpdir"' EXIT
+              seq 1 254 | xargs -P "$workers" -n 1 bash -c '
+                set -eu
+                subnet="$1"
+                exclude="$2"
+                tmpdir="$3"
+                octet="$4"
+                ip="${subnet}.${octet}"
+                case "$exclude" in
+                  *" ${ip} "*) exit 0 ;;
+                esac
+                body=$(curl -sk --max-time 4 "https://${ip}/api/v4/version" 2>/dev/null || true)
+                case "$body" in
+                  *"Login required"*)
+                    printf "%s\n" "$ip" > "${tmpdir}/hit.${octet}"
+                    ;;
+                esac
+              ' _ "$subnet" "$exclude" "$tmpdir"
+              # Length expansions are templated as comments, so count hits this way.
+              shopt -s nullglob
+              set -- "${tmpdir}"/hit.*
+              if [[ $# -eq 0 ]]; then
+                exit 1
+              fi
+              lowest=$(sort -t. -k4,4n "$@")
+              printf '%s\n' "${lowest%%$'\n'*}"
+            executable: /bin/bash
           register: scan
           retries: "{{ discover_tries | int }}"
           delay: "{{ discover_wait | int }}"
