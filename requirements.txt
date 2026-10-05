@@ -1,27 +1,8 @@
-# Floor.
-#
-# Manager availability is satisfied at 1.2.3 (physical_drives exists).
-# 1.2.5 adds the OData apostrophe escape (pyvergeos#72). 1.2.7 was the
-# previous verified floor.
-#
-# 1.2.8 is the brace fix: quote_value() escapes '{' (pyVergeOS#100,
-# PR #114). That version was prepared (pyVergeOS#122) and not published
-# to PyPI. The next published release is 1.6.1, which contains the fix,
-# so `>=1.2.8` installs 1.6.1 from PyPI. Verified through 1.6.1 on
-# 2026-09-23, and through 1.7.1 on 2026-09-28: first at commit 5b5c43f,
-# then at the published v1.7.1 tag (7dde9cb), which differs from 5b5c43f
-# only in docs/changelog.rst.
-# See docs/SDK-COMPATIBILITY.md.
-#
-# Client-side name matching stays. #100 is no longer the reason: the
-# floor includes the fix. Ambiguous names still are (#72), and switching
-# lookups to list(name=...) is a behavior change, not part of this floor.
+# Floor verified through pyVergeOS 1.7.1. See docs/SDK-COMPATIBILITY.md for
+# the history behind it. `>=1.2.8` installs 1.6.1 or later from PyPI, which
+# carries the quote_value() brace fix (pyVergeOS#100).
 pyvergeos>=1.2.8
 #
-# physical_drive_info node: uses PhysicalDriveManager(node_key=...) only
-# when the installed SDK has the pyVergeOS#143 parent_drive walk
-# (_parent_drive_filter_for_node). Released builds from 1.2.7 through
-# 1.6.1 still filter "node eq <key>" against a column machine_drive_phys
-# does not have, and that list is always empty. On those SDKs the module
-# matches node_name client-side. Do not raise this floor to pick up #143.
-# The parent_drive walk is released as of pyVergeOS 1.7.1.
+# physical_drive_info uses PhysicalDriveManager(node_key=...) only when the
+# installed SDK has the pyVergeOS#143 parent_drive walk (released in 1.7.1);
+# older SDKs match node_name client-side. Do not raise the floor for #143.

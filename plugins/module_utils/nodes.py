@@ -43,21 +43,13 @@ ONLINE = ('is_online', 'running')
 MAINTENANCE = ('is_maintenance', 'maintenance')
 NEEDS_RESTART = ('needs_restart', 'need_restart')
 
-# What is actually resident on a node, which is not the same question as
-# "which VMs are on it". Measured on the lab: node1 carried NINE running
-# machines while ``vms.list()`` attributed only TWO of them to it. The other
-# seven are vnets -- Core, DMZ, External and the tenant fabrics -- and
-# ``networks.list()`` reports no node at all, so a check written over VMs
-# cannot see them.
-#
-# That gap has teeth. On a system whose UI and API ride a vnet, draining the
-# node hosting it takes away the connection the drain is being driven over,
-# and a caller that counted only VMs would have called the node empty.
-#
-# ``running_machines`` is absent from the SDK's default projection but does
-# survive a named one, so it costs one extra call rather than a raw request.
-# Each entry carries ``migratable``, which is precisely what decides whether
-# a drain moves a workload or stops it.
+# What is resident on a node, which is a different question from which VMs
+# are on it. vnets run as machines too and ``networks.list()`` reports no node
+# for them, so a drain check written over ``vms.list()`` misses them; on a
+# system whose UI rides a vnet that is the connection the drain runs over.
+# ``running_machines`` is absent from the SDK's default projection but survives
+# a named one, and each entry carries ``migratable``, which decides whether a
+# drain moves a workload or stops it.
 MACHINE_FIELDS = ['$key', 'name', 'running_machines']
 
 
