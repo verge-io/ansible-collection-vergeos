@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Role scripts no longer import urllib3** (#209). `billing_export`, `health_report`, `protect`, `rebalance_advisor`, and `tier_policy` build a `VergeClient` and leave `InsecureRequestWarning` to the SDK. When `verify_ssl` is false, pyvergeos filters that one warning. `urllib3` is not a direct dependency of the collection.
+
 ### Fixed
 
 - **`tag`: a failed assignment lookup is reported instead of "not on the VM"** (#208). `vm_has_tag()` caught every exception from `vm.get_tags()`. An API error, an expired login, or a dropped connection looked like the VM had no such tag. `state=absent` then exited unchanged and left the tag attached. `state=present` called `vm.tag()` again, and the platform rejected the duplicate assignment. `get_tags()` returns an empty list when nothing is assigned, and that is still "not on the VM". The error now reaches `sdk_error_handler`.

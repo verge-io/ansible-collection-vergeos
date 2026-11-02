@@ -157,8 +157,6 @@ def write_csv(path, fields, rows):
 
 
 def collect():
-    import urllib3
-    urllib3.disable_warnings()
     from pyvergeos import VergeClient
     from pyvergeos.exceptions import NotFoundError
 
