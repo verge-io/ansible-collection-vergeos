@@ -180,8 +180,6 @@ def plan(nodes, vms, cfg):
 # -------------------------------------------------------------- collector
 
 def client():
-    import urllib3
-    urllib3.disable_warnings()
     from pyvergeos import VergeClient
 
     kwargs = {'host': os.environ['VERGEOS_HOST'],

@@ -205,8 +205,6 @@ def audit(drives, rules, default_tier=None, existing_tiers=None):
 # -------------------------------------------------------------- collector
 
 def client():
-    import urllib3
-    urllib3.disable_warnings()
     from pyvergeos import VergeClient
 
     kwargs = {'host': os.environ['VERGEOS_HOST'],
