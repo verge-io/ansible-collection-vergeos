@@ -215,14 +215,15 @@ def tag_to_dict(tag):
 
 
 def vm_has_tag(vm, tag_key):
-    """Check if a VM already has a specific tag"""
-    try:
-        vm_tags = vm.get_tags()
-        for t in vm_tags:
-            if t.get('tag_key') == tag_key:
-                return True
-    except Exception:
-        pass
+    """Return whether this VM's assignments include tag_key.
+
+    get_tags() is one filtered read of tag_members. Nothing assigned is an
+    empty list, and that is the not-on-the-VM answer. A failure of that read
+    is an API, auth, or connection error, and main() reports it (#208).
+    """
+    for assignment in vm.get_tags():
+        if assignment.get('tag_key') == tag_key:
+            return True
     return False
 
 

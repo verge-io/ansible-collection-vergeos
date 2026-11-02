@@ -178,10 +178,9 @@ def collect():
     for row in (dict(t) for t in client.tenants.list()):
         key = row.get('$key')
         # nodes() and storage() each call get(key) first, so a tenant
-        # deleted between list() and the read raises NotFoundError. An
-        # empty allocation is an empty list, not an exception. Anything
-        # else (API error, auth, connection) used to be swallowed and
-        # invoiced as zero cores and zero storage (#207).
+        # deleted between list() and the read raises NotFoundError and
+        # that row is skipped. An empty allocation is an empty list, not
+        # an exception. Any other error fails the export.
         try:
             nodes = [dict(n) for n in client.tenants.nodes(key)]
             storage = [dict(s) for s in client.tenants.storage(key)]
