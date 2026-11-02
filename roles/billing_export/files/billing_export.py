@@ -9,7 +9,10 @@ Usage:
   billing_export.py --dest DIR [--periods N]      # VERGEOS_* env auth
   billing_export.py --dest DIR --fixture f.json   # offline (tests)
 
-Prints a JSON summary on stdout: {system_rows, tenant_rows, files}.
+Prints a JSON summary on stdout: {system_rows, tenant_rows,
+tenants_skipped, files}. tenants_skipped is a tenant that disappeared
+between the list and its node or storage read. Any other failure from
+those reads aborts the export instead of invoicing that tenant at zero.
 """
 
 from __future__ import annotations
@@ -157,6 +160,7 @@ def collect():
     import urllib3
     urllib3.disable_warnings()
     from pyvergeos import VergeClient
+    from pyvergeos.exceptions import NotFoundError
 
     kwargs = {'host': os.environ['VERGEOS_HOST'],
               'verify_ssl': os.environ.get('VERGEOS_INSECURE', '') not in
@@ -170,19 +174,22 @@ def collect():
 
     billing_rows = [dict(r) for r in client.billing.list()]
     tenants = []
+    skipped = 0
     for row in (dict(t) for t in client.tenants.list()):
         key = row.get('$key')
-        entry = {'row': row, 'nodes': [], 'storage': []}
+        # nodes() and storage() each call get(key) first, so a tenant
+        # deleted between list() and the read raises NotFoundError. An
+        # empty allocation is an empty list, not an exception. Anything
+        # else (API error, auth, connection) used to be swallowed and
+        # invoiced as zero cores and zero storage (#207).
         try:
-            entry['nodes'] = [dict(n) for n in client.tenants.nodes(key)]
-        except Exception:
-            pass
-        try:
-            entry['storage'] = [dict(s) for s in client.tenants.storage(key)]
-        except Exception:
-            pass
-        tenants.append(entry)
-    return billing_rows, tenants
+            nodes = [dict(n) for n in client.tenants.nodes(key)]
+            storage = [dict(s) for s in client.tenants.storage(key)]
+        except NotFoundError:
+            skipped += 1
+            continue
+        tenants.append({'row': row, 'nodes': nodes, 'storage': storage})
+    return billing_rows, tenants, skipped
 
 
 def main():
@@ -203,8 +210,9 @@ def main():
         with open(args.fixture) as fh:
             state = json.load(fh)
         billing_rows, tenants = state['billing'], state['tenants']
+        skipped = 0
     else:
-        billing_rows, tenants = collect()
+        billing_rows, tenants, skipped = collect()
 
     os.makedirs(args.dest, exist_ok=True)
     stamp = datetime.now(tz=timezone.utc).strftime('%Y%m%d')
@@ -218,6 +226,7 @@ def main():
     write_csv(ten_path, TENANT_FIELDS, ten_rows)
 
     json.dump({'system_rows': len(sys_rows), 'tenant_rows': len(ten_rows),
+               'tenants_skipped': skipped,
                'periods_deduplicated':
                    len(billing_rows) - len(dedupe_periods(billing_rows)),
                'files': [sys_path, ten_path]}, sys.stdout, indent=2)

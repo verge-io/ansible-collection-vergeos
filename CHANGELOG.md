@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`billing_export`: a failed per-tenant read no longer invoices that tenant at zero** (#207). `tenants.nodes()` and `tenants.storage()` were wrapped in `except Exception: pass`. An API error or a dropped connection still wrote the tenant, with cores, RAM, and storage at zero, and the script exited 0. Those errors now fail the export, so the role fails with them. A tenant removed between the list and the read raises `NotFoundError`; that row is omitted and counted as `tenants_skipped` in the summary. An empty allocation is still an empty list, and still a zero row, because that is what the platform returns.
+
 - **A bad password, unreachable host, or TLS failure fails the module cleanly** (#171). `VergeClient` logs in inside its constructor, and every module called `get_vergeos_client()` before its own `try`, so `AuthenticationError` and `VergeConnectionError` never reached `sdk_error_handler`. On ansible-core 2.15 that was `MODULE FAILURE` and a raw traceback. The helper now reports those as an authentication failure or a connection failure.
 
 ## [2.2.0] - 2026-09-28
