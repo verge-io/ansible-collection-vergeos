@@ -6,6 +6,8 @@ __metaclass__ = type
 import pytest
 
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    answers_retained_in_no_log,
+    credential_answer_concealed,
     drive_tier_has_no_question,
     fill_recipe_answers,
     maskable_strings,
@@ -617,6 +619,90 @@ def test_secret_vars_naming_an_absent_answer_is_harmless():
 def test_empty_inputs_do_not_explode():
     assert unmaskable_answer_strings(None, None) == set()
     assert unmaskable_answer_strings({}, []) == set()
+
+
+def test_retained_no_log_names_are_only_values_still_held():
+    held = {"fuzz", "secret"}
+    names = answers_retained_in_no_log(
+        {"ZZ_SECRET": "fuzz", "ZZ_HOSTNAME": "zz-fuzz-host",
+         "YB_CPU_CORES": 1, "ZZ_NOTE": ""},
+        held)
+    assert names == ["ZZ_SECRET"]
+
+
+def test_retained_no_log_names_drop_a_value_removed_from_the_set():
+    """Classification off removes the password string. The name goes with it."""
+    names = answers_retained_in_no_log(
+        {"ZZ_SECRET": "fuzz", "ZZ_HOSTNAME": "zz-fuzz-host"},
+        set())
+    assert names == []
+
+
+def test_a_value_shared_with_another_no_log_parameter_stays_listed():
+    names = answers_retained_in_no_log(
+        {"YB_CPU_CORES": 1, "ZZ_SECRET": "1"}, {"1"})
+    assert names == ["YB_CPU_CORES", "ZZ_SECRET"]
+
+
+def _refusal(no_log_answers, msg=None):
+    """The ZZ_RAM_MB refusal. It quotes the recipe and not the password."""
+    return {
+        "msg": msg or (
+            "the answer set is not valid for recipe 'zz-fuzz-recipe': "
+            "answer 'ZZ_RAM_MB' is 256; the recipe requires at least 512"),
+        "recipe": {
+            "name": "zz-fuzz-recipe",
+            "description": "fuzz ladder recipe, for the no_log check",
+            "catalog_display": "zz-fuzz-cat",
+        },
+        "answers_sent": ["YB_CPU_CORES", "ZZ_HOSTNAME", "ZZ_RAM_MB", "ZZ_SECRET"],
+        "hints": [],
+        "no_log_answers": no_log_answers,
+    }
+
+
+def test_recipe_name_alone_does_not_conceal_a_password():
+    """The live rung used to pass on this result. The password was not no_log."""
+    result = _refusal([])
+    assert "zz-fuzz-recipe" in result["msg"]
+    assert "fuzz" in result["msg"]
+    assert credential_answer_concealed(result, "ZZ_SECRET", "fuzz") is False
+
+
+def test_a_password_kept_no_log_is_concealed_when_the_recipe_name_matches():
+    result = _refusal(["ZZ_SECRET"])
+    assert credential_answer_concealed(result, "ZZ_SECRET", "fuzz") is True
+    assert credential_answer_concealed(result, "ZZ_NOTE", "fuzz") is False
+
+
+def test_an_echoed_password_is_not_concealed_even_when_listed():
+    result = _refusal(
+        ["ZZ_SECRET"],
+        msg=("the answer set is not valid for recipe 'zz-fuzz-recipe': "
+             "refusing fuzz"),
+    )
+    assert credential_answer_concealed(result, "ZZ_SECRET", "fuzz") is False
+
+
+def test_a_rewritten_result_with_the_name_still_listed_is_concealed():
+    """Cores that rewrite the return replace the marker. The list still decides."""
+    result = _refusal(["ZZ_SECRET"])
+    result["msg"] = result["msg"].replace("fuzz", "********")
+    result["recipe"]["name"] = "zz-********-recipe"
+    result["recipe"]["description"] = "******** ladder recipe, for the no_log check"
+    assert "********" in result["msg"]
+    assert credential_answer_concealed(result, "ZZ_SECRET", "fuzz") is True
+
+
+def test_a_missing_no_log_list_is_not_concealed():
+    result = _refusal(["ZZ_SECRET"])
+    del result["no_log_answers"]
+    assert credential_answer_concealed(result, "ZZ_SECRET", "fuzz") is False
+
+
+def test_an_empty_password_is_not_concealed():
+    result = _refusal(["ZZ_SECRET"])
+    assert credential_answer_concealed(result, "ZZ_SECRET", "") is False
 
 
 # ── matrix answer fill ───────────────────────────────────────────────────────

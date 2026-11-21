@@ -667,10 +667,9 @@
               numbers again: {{ fz_masked.msg | default('(none)') }}
             quiet: true
 
-        # The decisive half. 'fuzz' is a substring of the recipe name the
-        # module quotes back, so whether it survives says exactly how the
-        # answer was classified -- the same marker is used as an ordinary
-        # answer in rung 5e.
+        # Password value is the marker. Rung 5e passes that same text as an
+        # ordinary note. Classification is no_log_answers, not the recipe name
+        # the refusal quotes.
         - name: "5c. The same marker, as a password-typed answer"
           vergeio.vergeos.vm_recipe_deploy:
             insecure: true
@@ -683,36 +682,24 @@
           failed_when: false
           register: fz_secret
 
-        # The registered result is what this reads. Before 2.22, ansible-core
-        # rewrites a no_log substring, so the recipe name in the message loses
-        # the marker and the message contains ********. 2.22 keeps the real
-        # result and masks only what it prints. The placeholder there is
-        # $REDACTED$, when the core rewrites the text at all. Either
-        # placeholder counts. When the message still holds the recipe name,
-        # the marker may remain only inside that name.
-        #
-        # Do not scan the whole result. 2.22 returns the recipe row unchanged,
-        # and the marker is ordinary text in that row's description
-        # ("fuzz ladder recipe, ...") and in the catalog name. That is not
-        # the answer. The value itself must not appear in the message, once
-        # the recipe name is removed, or in the answer names the module
-        # returns.
-        - name: "5d. The secret value is absent, and a mask uses either placeholder"
-          vars:
-            secret_msg: "{{ fz_secret.msg | default('') }}"
-            secret_msg_outside_name: "{{ secret_msg | replace(fz_recipe, '') }}"
-            answer_names: "{{ (fz_secret.answers_sent | default([])) | join(',') }}"
+        # The refusal quotes the recipe name and does not quote the password.
+        # no_log_answers is the list of names whose values stayed no_log.
+        # The recipe name is not that list. The filter fails closed when the
+        # name is missing from it, and when the value is echoed outside the
+        # recipe name.
+        - name: "5d. The password answer stayed no_log and was not echoed"
           ansible.builtin.assert:
             that:
-              - "'fuzz' not in secret_msg_outside_name"
-              - "'fuzz' not in answer_names"
               - >-
-                ('********' in secret_msg)
-                or ('$REDACTED$' in secret_msg)
-                or (fz_recipe in secret_msg)
+                fz_secret | vergeio.vergeos.vergeos_credential_concealed(
+                'ZZ_SECRET', 'fuzz')
+              - "'ZZ_HOSTNAME' not in (fz_secret.no_log_answers | default([]))"
+              - "'ZZ_RAM_MB' not in (fz_secret.no_log_answers | default([]))"
+              - "'YB_CPU_CORES' not in (fz_secret.no_log_answers | default([]))"
             fail_msg: >-
-              a password-typed answer stopped being masked:
-              {{ fz_secret.msg | default('(none)') }}
+              a password-typed answer stopped being masked.
+              no_log_answers={{ fz_secret.no_log_answers | default([]) }}
+              msg={{ fz_secret.msg | default('(none)') }}
             quiet: true
 
         - name: "5e. The same marker as an ORDINARY answer is not masked"
@@ -727,24 +714,33 @@
           failed_when: false
           register: fz_plain
 
-        - name: "5f. Assert the classification, not merely the masking"
+        # Same refusal, two answers. ZZ_SECRET stays no_log. ZZ_NOTE, whose
+        # value is the marker, must not. An empty no_log_answers list fails
+        # the password check, which is the case where nothing was classified.
+        - name: "5f. The password stayed no_log and the ordinary answer did not"
           ansible.builtin.assert:
-            that: fz_recipe in (fz_plain.msg | default(''))
+            that:
+              - >-
+                fz_plain | vergeio.vergeos.vergeos_credential_concealed(
+                'ZZ_SECRET', 'Zz-Fuzz-Scratch-1!')
+              - "'ZZ_NOTE' not in (fz_plain.no_log_answers | default([]))"
+              - "'ZZ_HOSTNAME' not in (fz_plain.no_log_answers | default([]))"
+              - "'ZZ_RAM_MB' not in (fz_plain.no_log_answers | default([]))"
+              - "'YB_CPU_CORES' not in (fz_plain.no_log_answers | default([]))"
             fail_msg: >-
-              an ordinary answer is still being masked, so the narrowing is
-              not classifying by question type:
-              {{ fz_plain.msg | default('(none)') }}
+              an ordinary answer is still being masked, or the password was
+              not classified.
+              no_log_answers={{ fz_plain.no_log_answers | default([]) }}
+              msg={{ fz_plain.msg | default('(none)') }}
             quiet: true
 
         - name: "5g. Report it, since a passing assert prints nothing"
           ansible.builtin.debug:
             msg: >-
-              no_log narrowing -- ordinary answer:
+              no_log narrowing -- ordinary digits:
               "{{ fz_masked.msg | default('') | regex_search('requires at least [^;]*') }}";
-              the marker 'fuzz' as a password shows as
-              "{{ fz_secret.msg | default('') | regex_search("recipe '[^']*'") }}",
-              as a note as
-              "{{ fz_plain.msg | default('') | regex_search("recipe '[^']*'") }}"
+              password no_log_answers={{ fz_secret.no_log_answers | default([]) }};
+              ordinary marker no_log_answers={{ fz_plain.no_log_answers | default([]) }}
 
         # ── 6. Names that have to survive a filter ───────────────────────────
         #

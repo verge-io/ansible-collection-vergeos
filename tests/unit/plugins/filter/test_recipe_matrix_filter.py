@@ -3,6 +3,9 @@
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
+from ansible_collections.vergeio.vergeos.plugins.filter.vergeos_credential_concealed import (
+    FilterModule as CredentialConcealedFilterModule,
+)
 from ansible_collections.vergeio.vergeos.plugins.filter.vergeos_fill_answers import (
     FilterModule as FillAnswersFilterModule,
 )
@@ -13,6 +16,7 @@ from ansible_collections.vergeio.vergeos.plugins.filter.vergeos_tier_step_unansw
     FilterModule as TierStepFilterModule,
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    credential_answer_concealed,
     drive_tier_has_no_question,
     fill_recipe_answers,
     recipe_not_applicable,
@@ -38,6 +42,22 @@ def test_not_applicable_filter():
     assert filters["vergeos_not_applicable"] is recipe_not_applicable
     assert filters["vergeos_not_applicable"]({"downloaded": False}) is True
     assert filters["vergeos_not_applicable"]({"downloaded": True}) is False
+
+
+def test_credential_concealed_filter():
+    filters = CredentialConcealedFilterModule().filters()
+    assert filters["vergeos_credential_concealed"] is credential_answer_concealed
+    quoted = {
+        "msg": "not valid for recipe 'zz-fuzz-recipe'",
+        "recipe": {"name": "zz-fuzz-recipe"},
+        "answers_sent": ["ZZ_SECRET"],
+        "no_log_answers": [],
+    }
+    assert filters["vergeos_credential_concealed"](
+        quoted, "ZZ_SECRET", "fuzz") is False
+    quoted["no_log_answers"] = ["ZZ_SECRET"]
+    assert filters["vergeos_credential_concealed"](
+        quoted, "ZZ_SECRET", "fuzz") is True
 
 
 def test_tier_step_unanswered_filter():

@@ -315,6 +315,18 @@ answers_sent:
   type: list
   elements: str
   sample: ["HOSTNAME", "SELECT_OS_TIER", "USER"]
+no_log_answers:
+  description:
+    - Names of answers whose values were still C(no_log) after the recipe's
+      question types were applied.
+    - Values are never included. A password-typed question stays in this list.
+      An ordinary answer is removed once its value is no longer masked.
+    - Absent when the recipe could not be resolved. Empty when every supplied
+      answer was ordinary, or when no answer contributed a maskable string.
+  returned: when the recipe was resolved
+  type: list
+  elements: str
+  sample: ["PASSWORD"]
 hints:
   description:
     - Unanswered questions whose default is empty. Not fatal unless
@@ -373,6 +385,7 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     HAS_PYVERGEOS,
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    answers_retained_in_no_log,
     looks_secret,
     maskable_strings,
     resolve_answers,
@@ -598,6 +611,9 @@ def main():
         # Refuse it before the already-exists return, which would otherwise
         # look like success.
         refuse_plain_credentials(module, plain, resolved)
+        # Recorded after narrowing. Names only; the values stay in no_log_values.
+        result['no_log_answers'] = answers_retained_in_no_log(
+            merged, module.no_log_values)
 
         # Converge on the VM, not on the recipe instance: some recipes set
         # YB_DETACH_RECIPE, which drops the instance row once the guest agent

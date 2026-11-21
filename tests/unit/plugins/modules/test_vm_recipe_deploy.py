@@ -9,12 +9,15 @@ reported -- so a test asserting "nothing was created" can pass while the
 deploy POST fires on the next line.
 """
 
+import re
+
 import pytest
 from unittest.mock import MagicMock, patch
 
 from ansible.module_utils.common.parameters import remove_values
 
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    credential_answer_concealed,
     maskable_strings,
 )
 from ansible_collections.vergeio.vergeos.plugins.modules import vm_recipe_deploy
@@ -319,6 +322,115 @@ def test_existing_vm_still_masks_everything_when_no_questions_are_published():
     assert recipe['vm_snapshot'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
     assert recipe['$key'] == 'r********'
     assert '1' in module.no_log_values
+
+
+FUZZ_RECIPE = {
+    'name': 'zz-fuzz-recipe',
+    '$key': 'abc',
+    'catalog_display': 'zz-fuzz-cat',
+    'description': 'fuzz ladder recipe, for the no_log check',
+}
+
+
+def _fuzz_questions(include_note=False):
+    rows = [
+        question('ZZ_HOSTNAME', 'hostname', required=True, default='',
+                 regex='zz-[a-z0-9-]{1,20}', max=24),
+        question('ZZ_RAM_MB', 'num', required=True, default='',
+                 min=512, max=4096),
+        question('ZZ_SECRET', 'password', required=True, default=''),
+        question('YB_CPU_CORES', 'num', required=False, default='1'),
+    ]
+    if include_note:
+        rows.append(question('ZZ_NOTE', 'string', required=False, default='n/a',
+                             min=0, max=0))
+    return rows
+
+
+def test_a_password_answer_stays_no_log_when_the_refusal_quotes_the_recipe():
+    """The RAM refusal quotes zz-fuzz-recipe. That name is not the password.
+
+    ZZ_SECRET stays in no_log_answers. Ordinary answers do not. Dropping the
+    list makes the same message fail the check.
+    """
+    answers = {
+        'ZZ_HOSTNAME': 'zz-fuzz-host',
+        'ZZ_SECRET': 'fuzz',
+        'ZZ_RAM_MB': 256,
+        'YB_CPU_CORES': 1,
+    }
+    client = FakeClient(recipes=[FUZZ_RECIPE], questions=_fuzz_questions())
+    module_params = params(recipe=FUZZ_RECIPE['name'], answers=answers)
+    module = run(client, no_log_values=collected_no_log(module_params),
+                 recipe=FUZZ_RECIPE['name'], answers=answers)
+    result = failed(module)
+    assert 'requires at least 512' in result['msg']
+    assert 'zz-fuzz-recipe' in result['msg']
+    assert result['no_log_answers'] == ['ZZ_SECRET']
+    assert 'fuzz' not in result['msg'].replace(FUZZ_RECIPE['name'], '')
+    assert credential_answer_concealed(result, 'ZZ_SECRET', 'fuzz') is True
+    unmarked = dict(result)
+    unmarked['no_log_answers'] = []
+    assert credential_answer_concealed(unmarked, 'ZZ_SECRET', 'fuzz') is False
+    assert 'fuzz' in module.no_log_values
+    assert 'zz-fuzz-host' not in module.no_log_values
+    assert '256' not in module.no_log_values
+    assert '1' not in module.no_log_values
+    assert client.posts == []
+
+
+def test_an_unclassified_password_is_not_concealed_even_when_the_recipe_is_quoted():
+    """No secret type and no name match. The refusal still quotes the recipe.
+
+    The password value is not kept no_log, so the check is false.
+    """
+    answers = {
+        'ZZ_HOSTNAME': 'zz-fuzz-host',
+        'ZZ_SECRET': 'fuzz',
+        'ZZ_RAM_MB': 256,
+        'YB_CPU_CORES': 1,
+    }
+    client = FakeClient(recipes=[FUZZ_RECIPE], questions=_fuzz_questions())
+    module_params = params(recipe=FUZZ_RECIPE['name'], answers=answers)
+    with patch('ansible_collections.vergeio.vergeos.plugins.module_utils.'
+               'recipe_answers.SECRET_TYPES', frozenset()), \
+         patch('ansible_collections.vergeio.vergeos.plugins.module_utils.'
+               'recipe_answers.SECRET_NAME_RE', re.compile('zzzneverzzz')):
+        module = run(client, no_log_values=collected_no_log(module_params),
+                     recipe=FUZZ_RECIPE['name'], answers=answers)
+    result = failed(module)
+    assert 'zz-fuzz-recipe' in result['msg']
+    assert result['no_log_answers'] == []
+    assert credential_answer_concealed(result, 'ZZ_SECRET', 'fuzz') is False
+    assert 'fuzz' not in module.no_log_values
+
+
+def test_an_ordinary_marker_is_not_no_log_when_the_password_is():
+    answers = {
+        'ZZ_HOSTNAME': 'zz-fuzz-host',
+        'ZZ_SECRET': 'Zz-Fuzz-Scratch-1!',
+        'ZZ_NOTE': 'fuzz',
+        'ZZ_RAM_MB': 256,
+        'YB_CPU_CORES': 1,
+    }
+    client = FakeClient(recipes=[FUZZ_RECIPE],
+                        questions=_fuzz_questions(include_note=True))
+    module_params = params(recipe=FUZZ_RECIPE['name'], answers=answers)
+    module = run(client, no_log_values=collected_no_log(module_params),
+                 recipe=FUZZ_RECIPE['name'], answers=answers)
+    result = failed(module)
+    assert result['no_log_answers'] == ['ZZ_SECRET']
+    assert 'ZZ_NOTE' not in result['no_log_answers']
+    assert credential_answer_concealed(
+        result, 'ZZ_SECRET', 'Zz-Fuzz-Scratch-1!') is True
+    assert credential_answer_concealed(result, 'ZZ_NOTE', 'fuzz') is False
+    assert 'Zz-Fuzz-Scratch-1!' not in result['msg']
+    assert 'fuzz' not in module.no_log_values
+    assert 'Zz-Fuzz-Scratch-1!' in module.no_log_values
+    unmarked = dict(result)
+    unmarked['no_log_answers'] = []
+    assert credential_answer_concealed(
+        unmarked, 'ZZ_SECRET', 'Zz-Fuzz-Scratch-1!') is False
 
 
 def test_plain_answers_is_not_no_log_and_answers_still_is():

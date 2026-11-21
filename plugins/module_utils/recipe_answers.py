@@ -564,6 +564,89 @@ def unmaskable_answer_strings(answers, secret_vars):
     return plain_strings - secret_strings
 
 
+def answers_retained_in_no_log(answers, no_log_values):
+    """Names whose values are still entirely inside ``no_log_values``.
+
+    A name is included only when the answer contributes at least one maskable
+    string and every one of those strings is still present. An empty value
+    contributes nothing and is left out. Values are not returned.
+    """
+    held = set(no_log_values or ())
+    names = []
+    for name, value in (answers or {}).items():
+        strings = maskable_strings(value)
+        if strings and strings <= held:
+            names.append(name)
+    return sorted(names)
+
+
+_ECHO_FIELDS = (
+    "msg", "hints", "answers_sent", "pruned", "no_log_answers",
+    "exception",
+)
+
+
+def _recipe_name(result):
+    recipe = result.get("recipe") if isinstance(result, dict) else None
+    if isinstance(recipe, dict):
+        name = recipe.get("name")
+        return "" if name is None else str(name)
+    if isinstance(recipe, str):
+        return recipe
+    return ""
+
+
+def _field_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def answer_value_echoed(result, value, recipe_name=""):
+    """True when ``value`` shows up outside the recipe name.
+
+    The refusal quotes the recipe. That name is removed from ``msg`` before
+    the search, so a recipe that happens to contain the same letters is not
+    an echo of the answer. The recipe row itself is not searched.
+    """
+    if not isinstance(result, dict):
+        return False
+    text = "" if value is None else str(value)
+    if not text:
+        return False
+    msg = _field_text(result.get("msg"))
+    if recipe_name:
+        msg = msg.replace(str(recipe_name), "")
+    if text in msg:
+        return True
+    for key in _ECHO_FIELDS:
+        if key == "msg":
+            continue
+        if text in _field_text(result.get(key)):
+            return True
+    return False
+
+
+def credential_answer_concealed(result, name, value):
+    """True when ``name`` stayed no_log and ``value`` was not echoed.
+
+    ``result['no_log_answers']`` is the list of names still masked. A message
+    that only quotes the recipe does not count, and neither does an empty
+    list. The recipe name cannot make this true.
+    """
+    if not isinstance(result, dict) or not isinstance(name, str) or not name:
+        return False
+    text = "" if value is None else str(value)
+    if not text:
+        return False
+    retained = result.get("no_log_answers")
+    if not isinstance(retained, (list, tuple, set)) or name not in retained:
+        return False
+    return not answer_value_echoed(result, text, _recipe_name(result))
+
+
 def _is_no_log_placeholder(value):
     """True for the tokens ansible-core prints in place of a no_log value."""
     return isinstance(value, str) and value.strip() in _NO_LOG_PLACEHOLDERS
