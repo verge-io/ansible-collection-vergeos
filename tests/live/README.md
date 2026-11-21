@@ -13,7 +13,7 @@ Every ladder:
 - proves **idempotence** — a converged re-run reports `changed=false`;
 - proves **check mode** reports the pending change without making it, where
   the module supports it;
-- tears down in `post_tasks:` or `always:`, so a mid-ladder failure still
+- tears down in `always:`, so a mid-ladder failure still
   cleans up, and then asserts **zero leftovers**.
 
 ## Running them
