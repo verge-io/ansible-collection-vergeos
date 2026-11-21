@@ -1,33 +1,18 @@
-"""Gate 4 -- blast radius.
+# -*- coding: utf-8 -*-
 
-One rule underneath all of these: the guard may refuse a safe attachment,
-but it must never approve an unsafe one. A stopped migration is an
-inconvenience; a duplicate MAC on a production VLAN is an outage of the
-workloads the exercise was meant to protect.
-"""
-import importlib.util
-import json
-import subprocess
-import sys
-from pathlib import Path
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""Gate 4 -- blast radius. Verdicts only. Nothing is attached."""
+
+from __future__ import absolute_import, division, print_function
+__metaclass__ = type
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-
-
-def _load(name):
-    path = ROOT / "tools" / ("%s.py" % name)
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod, path
-
-
-netguard, GUARD_PATH = _load("netguard")
-netmap, _ = _load("netmap")
-GuardError = netguard.GuardError
-
+from ansible_collections.vergeio.vergeos.plugins.module_utils import netguard
+from ansible_collections.vergeio.vergeos.plugins.module_utils import netmap
+from ansible_collections.vergeio.vergeos.plugins.module_utils.netguard import GuardError
 
 def decision(vm="web01", nic="net0", mac="AA:BB:CC:DD:EE:01", action="map",
              target="prod-web", segment="vmbr0.20"):
@@ -297,39 +282,6 @@ def test_bad_attach_mode_is_an_error():
 
 
 # ------------------------------------------------------------ cli shape
-def _write(tmp_path, name, obj):
-    path = tmp_path / name
-    path.write_text(json.dumps(obj))
-    return str(path)
-
-
-def test_cli_refuses_live_attach_over_a_running_source(tmp_path):
-    r = subprocess.run(
-        [sys.executable, str(GUARD_PATH), "--strict", "--attach-mode", "live",
-         "--plan", _write(tmp_path, "plan.json", make_plan([decision()])),
-         "--source-states", _write(tmp_path, "st.json", {"web01": "running"})],
-        capture_output=True, text=True)
-    assert r.returncode == 3
-    assert "REFUSED" in r.stderr
-
-
-def test_cli_approves_when_the_source_is_down(tmp_path):
-    r = subprocess.run(
-        [sys.executable, str(GUARD_PATH), "--strict", "--attach-mode", "live",
-         "--plan", _write(tmp_path, "plan.json", make_plan([decision()])),
-         "--source-states", _write(tmp_path, "st.json", {"web01": "stopped"})],
-        capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    assert json.loads(r.stdout)["results"][0]["attach_to"] == "prod-web"
-
-
-def test_cli_reports_guard_errors(tmp_path):
-    r = subprocess.run(
-        [sys.executable, str(GUARD_PATH), "--attach-mode", "bubble",
-         "--plan", _write(tmp_path, "plan.json", make_plan([decision()]))],
-        capture_output=True, text=True)
-    assert r.returncode == 2
-    assert "FATAL" in r.stderr
 
 
 # --------------------------------- the address a synthesised vnet takes
@@ -356,12 +308,12 @@ def test_no_address_warning_once_the_source_is_down():
 
 
 def test_address_collision_is_a_warning_not_a_refusal():
-    """It cannot bite until someone attaches an uplink by hand, and the
-    collection cannot attach one at all."""
+    """The guard reports the collision. It does not create the vnet."""
     v = netguard.assess(make_create_plan(), {"web01": "running"},
                         options={"attach_mode": "live",
                                  "live_attach_running_override": ["web01"]})
     assert v["ok"] is True
+    assert v["applied"] is False
 
 
 def test_detached_mode_raises_no_address_warning():
@@ -376,3 +328,25 @@ def test_plan_warnings_are_carried_through_to_the_guard():
     v = netguard.assess(plan, {"web01": "stopped"},
                         options={"attach_mode": "live"})
     assert "synthesised vnet has no uplink" in v["warnings"]
+
+
+def _uplink_plan():
+    plan = make_create_plan()
+    plan["creates"][0]["interface_network"] = "ext1 Switch"
+    return plan
+
+
+def test_named_uplink_warns_while_the_source_is_up():
+    v = netguard.assess(_uplink_plan(), {"web01": "running"},
+                        options={"attach_mode": "detached"})
+    assert any("ext1 Switch" in w and "duplicate gateway" in w
+               for w in v["warnings"])
+    assert v["ok"] is True
+    assert v["applied"] is False
+
+
+def test_named_uplink_is_quiet_once_the_source_is_down():
+    v = netguard.assess(_uplink_plan(), {"web01": "stopped"},
+                        options={"attach_mode": "live"})
+    assert v["warnings"] == []
+    assert one(v)["verdict"] == "approve"

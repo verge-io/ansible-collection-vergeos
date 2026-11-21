@@ -1,8 +1,15 @@
-#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+from __future__ import absolute_import, division, print_function
+__metaclass__ = type
+
 """Parse Proxmox VE NIC configuration into the shared network schema.
 
-Pure transformation: `qm config` text (or a JSON object of net lines) on
-stdin, JSON array on stdout. No I/O beyond the streams.
+Pure transformation: `qm config` text or a dict of net lines in, a list
+of NIC records out. No I/O.
 
 Why this exists
 ---------------
@@ -32,9 +39,7 @@ Fields not represented in the output are deliberately dropped, not
 silently mapped: see UNSUPPORTED_KEYS.
 """
 
-import json
 import re
-import sys
 
 # Every NIC model Proxmox accepts. The model is part of the guest's
 # hardware identity: switching a Linux guest from virtio to e1000 renames
@@ -100,8 +105,8 @@ def _int_or_none(opts, key):
         return None
     try:
         return int(raw)
-    except ValueError:
-        raise NetParseError("%s=%r is not an integer" % (key, raw))
+    except ValueError as exc:
+        raise NetParseError("%s=%r is not an integer" % (key, raw)) from exc
 
 
 def _bool_flag(opts, key, default=False):
@@ -122,8 +127,8 @@ def parse_trunks(raw):
             continue
         try:
             vlan = int(token)
-        except ValueError:
-            raise NetParseError("trunks contains non-integer %r" % token)
+        except ValueError as exc:
+            raise NetParseError("trunks contains non-integer %r" % token) from exc
         if not 1 <= vlan <= 4094:
             raise NetParseError("trunk VLAN %d out of range 1-4094" % vlan)
         out.append(vlan)
@@ -159,11 +164,10 @@ def parse_nic(key, value):
     if tag is not None and not 1 <= tag <= 4094:
         raise NetParseError("tag=%d out of range 1-4094" % tag)
     trunks = parse_trunks(opts.get("trunks"))
-    if tag is not None and trunks:
-        # Proxmox permits it; the combination means "access VLAN plus
-        # trunk", which has no single destination equivalent. Surfaced
-        # rather than silently reduced.
-        pass
+    # Proxmox permits an access VLAN together with a trunk. That has no
+    # single destination equivalent, so it is recorded and the planner
+    # refuses the NIC.
+    access_plus_trunk = tag is not None and bool(trunks)
 
     mtu = _int_or_none(opts, "mtu")
     # virtio's `mtu=1` is the sentinel for "inherit the bridge MTU", not a
@@ -176,8 +180,10 @@ def parse_nic(key, value):
     if rate not in (None, ""):
         try:
             rate = float(rate)
-        except ValueError:
-            raise NetParseError("rate=%r is not a number" % rate)
+        except ValueError as exc:
+            raise NetParseError("rate=%r is not a number" % rate) from exc
+        if rate < 0:
+            raise NetParseError("rate=%r is negative" % rate)
     else:
         rate = None
 
@@ -197,6 +203,7 @@ def parse_nic(key, value):
         "queues": _int_or_none(opts, "queues"),
         "firewall": _bool_flag(opts, "firewall"),
         "link_down": _bool_flag(opts, "link_down"),
+        "access_plus_trunk": access_plus_trunk,
         # Compatibility with the existing manifest/OVF schema. Now carries
         # the segment, so tagged NICs no longer collapse together.
         "net": segment_id(bridge, tag, trunks) or "",
@@ -238,19 +245,18 @@ def parse_config(text_or_obj):
     return out
 
 
-def main():
-    raw = sys.stdin.read()
-    stripped = raw.lstrip()
-    payload = json.loads(raw) if stripped.startswith("{") else raw
-    try:
-        nics = parse_config(payload)
-    except NetParseError as exc:
-        print("FATAL: %s" % exc, file=sys.stderr)
-        return 2
-    json.dump(nics, sys.stdout, indent=2, sort_keys=True)
-    sys.stdout.write("\n")
-    return 0
+def group_segments(nics):
+    """Group parsed NICs by segment id.
 
-
-if __name__ == "__main__":
-    sys.exit(main())
+    Unconnected NICs have a None segment and stay in that group. The
+    planner refuses trunk segments; this function only groups.
+    """
+    groups = {}
+    order = []
+    for nic in nics or []:
+        seg = nic.get("segment")
+        if seg not in groups:
+            groups[seg] = []
+            order.append(seg)
+        groups[seg].append(nic.get("key"))
+    return [{"segment": seg, "nic_keys": groups[seg]} for seg in order]

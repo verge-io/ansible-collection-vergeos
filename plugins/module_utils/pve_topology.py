@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+from __future__ import absolute_import, division, print_function
+__metaclass__ = type
+
 """Parse Proxmox host network topology into segment facts.
 
 Pure transformation. Input is a JSON bundle of already-read file contents
@@ -36,15 +43,12 @@ Everything is reported with a `confidence` and a `source`, so a caller can
 refuse to synthesise from a guess while still accepting SDN facts.
 """
 
-import argparse
 import ipaddress
-import json
-import os
 import re
-import sys
 
-# ifupdown2 accepts dashes and underscores interchangeably.
+
 def _norm_key(key):
+    """ifupdown2 accepts dashes and underscores interchangeably."""
     return key.strip().lower().replace("_", "-")
 
 
@@ -152,8 +156,8 @@ def classify_interfaces(ifaces):
         if "bond-slaves" in opts or "ovs-bonds" in opts:
             bonds[name] = {
                 "name": name,
-                "slaves": _opt_all(entry, "bond-slaves")
-                          or _opt_all(entry, "ovs-bonds"),
+                "slaves": (_opt_all(entry, "bond-slaves")
+                           or _opt_all(entry, "ovs-bonds")),
                 "mode": _opt(entry, "bond-mode"),
                 "mtu": _int(_opt(entry, "mtu")),
             }
@@ -212,7 +216,6 @@ def resolve_uplinks(bridge, bonds, depth=0):
     return uniq
 
 
-# ------------------------------------------------------------------ SDN
 def parse_sdn_cfg(text):
     """Parse a PVE section-config file (zones/vnets/subnets .cfg).
 
@@ -287,7 +290,6 @@ def build_sdn(zones_text, vnets_text, subnets_text):
             "subnets_by_vnet": by_vnet}
 
 
-# ------------------------------------------------------------- segments
 def build_segments(bridges, bonds, vlans, sdn):
     """Join everything into segment-keyed facts.
 
@@ -383,35 +385,3 @@ def analyse(bundle):
             % ", ".join(sourced["options"].get("source", []))
         ]
     return result
-
-
-def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--interfaces", help="read /etc/network/interfaces "
-                                         "from this path instead of stdin")
-    ap.add_argument("--sdn-dir", help="directory holding zones/vnets/"
-                                      "subnets .cfg")
-    args = ap.parse_args()
-
-    if args.interfaces or args.sdn_dir:
-        bundle = {"interfaces": "", "sdn": {}}
-        if args.interfaces:
-            with open(args.interfaces) as fh:
-                bundle["interfaces"] = fh.read()
-        if args.sdn_dir:
-            for fname in ("zones.cfg", "vnets.cfg", "subnets.cfg"):
-                path = os.path.join(args.sdn_dir, fname)
-                if os.path.exists(path):
-                    with open(path) as fh:
-                        bundle["sdn"][fname] = fh.read()
-    else:
-        bundle = json.loads(sys.stdin.read() or "{}")
-
-    json.dump(analyse(bundle), sys.stdout, indent=2, sort_keys=True,
-              default=str)
-    sys.stdout.write("\n")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

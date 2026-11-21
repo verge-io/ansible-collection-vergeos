@@ -1,33 +1,31 @@
-"""Gate 3 -- mapping policy.
+# -*- coding: utf-8 -*-
 
-Policy is a choice, so the tests are mostly about the chain being
-genuinely reorderable and each resolver behaving the same way wherever it
-sits. The two invariants that hold under every policy are pinned hardest:
-ambiguity is refused rather than guessed, and synthesis is gated on the
-confidence of the facts behind it.
-"""
-import importlib.util
-import json
-import subprocess
-import sys
-from pathlib import Path
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""Gate 3 -- mapping policy. Plans are proposals. Nothing is created."""
+
+from __future__ import absolute_import, division, print_function
+__metaclass__ = type
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-MOD_PATH = ROOT / "tools" / "netmap.py"
-spec = importlib.util.spec_from_file_location("netmap", MOD_PATH)
-netmap = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(netmap)
-
-PolicyError = netmap.PolicyError
+from ansible_collections.vergeio.vergeos.plugins.module_utils import netmap
+from ansible_collections.vergeio.vergeos.plugins.module_utils.netmap import PolicyError
+from ansible_collections.vergeio.vergeos.plugins.module_utils.netmap_resolve import (
+    VNET_TYPES,
+)
 
 
 def nic(segment="vmbr0.20", tag=20, bridge="vmbr0", mac="AA:BB:CC:DD:EE:01",
-        key="net0", connected=True, trunks=None, model="virtio"):
-    return {"key": key, "mac": mac, "model": model, "bridge": bridge,
-            "tag": tag, "trunks": trunks or [], "segment": segment,
-            "connected": connected}
+        key="net0", connected=True, trunks=None, model="virtio",
+        rate_mbyte_s=None):
+    row = {"key": key, "mac": mac, "model": model, "bridge": bridge,
+           "tag": tag, "trunks": trunks or [], "segment": segment,
+           "connected": connected}
+    if rate_mbyte_s is not None:
+        row["rate_mbyte_s"] = rate_mbyte_s
+    return row
 
 
 AUTHORITATIVE = {
@@ -76,6 +74,13 @@ def test_strict_table_refuses_anything_not_in_it():
     p = {"order": ["explicit"], "explicit": {"vmbr9": "x"}}
     d = only(run([nic()], AUTHORITATIVE, INVENTORY, p))
     assert d["action"] == "refuse"
+
+
+def test_vlan_match_reads_the_api_layer2_id():
+    """network_info returns layer2_id, not the module parameter vlan_id."""
+    inventory = [{"name": "prod-web", "layer2_id": 20, "type": "external"}]
+    d = only(run([nic()], AUTHORITATIVE, inventory, {"order": ["vlan"]}))
+    assert (d["action"], d["target"]) == ("map", "prod-web")
 
 
 def test_map_to_existing_by_vlan():
@@ -252,14 +257,14 @@ def test_address_is_never_emitted_without_its_network():
 
 def test_address_outside_the_subnet_is_blocked():
     segs = {"vmbr0.20": dict(AUTHORITATIVE["vmbr0.20"],
-                             gateway="192.168.99.1")}
+                             gateway="198.51.100.1")}
     d = only(run([nic()], segs, [], {"order": ["synthesize"]}))
     assert d["action"] == "refuse"
 
 
 def test_upstream_gateway_outside_the_subnet_is_blocked():
     p = {"order": ["synthesize"],
-         "synthesize": {"upstream_gateway": "192.168.99.1"}}
+         "synthesize": {"upstream_gateway": "198.51.100.1"}}
     assert only(run([nic()], AUTHORITATIVE, [], p))["action"] == "refuse"
 
 
@@ -315,7 +320,26 @@ def test_trunk_synthesis_is_blocked_by_default():
                                 segment="vmbr0:trunk")}
     d = only(run([n], segs, [], {"order": ["synthesize"]}))
     assert d["action"] == "refuse"
-    assert any("trunk" in (t.get("why") or "") for t in d["tried"])
+    assert d["resolver"] == "trunk"
+    assert "trunk" in d["why"]
+    assert "out of scope" in d["why"]
+
+
+def test_trunk_is_not_mapped_onto_the_bridge_name():
+    """A name match on the bridge would collapse the trunk into one vnet."""
+    n = nic(segment="vmbr0:trunk", bridge="vmbr0", tag=None, trunks=[10, 20])
+    inventory = INVENTORY + [{"name": "vmbr0", "type": "internal"}]
+    d = only(run([n], {}, inventory, {"order": ["name", "synthesize"]}))
+    assert d["action"] == "refuse"
+    assert d["target"] is None
+
+
+def test_allow_trunk_does_not_translate_a_trunk():
+    n = nic(segment="vmbr0:trunk", tag=None, trunks=[10, 20])
+    p = {"order": ["synthesize"], "synthesize": {"allow_trunk": True}}
+    d = only(run([n], AUTHORITATIVE, [], p))
+    assert d["action"] == "refuse"
+    assert "trunk" in d["why"]
 
 
 # ------------------------------------------------- unconnected NICs
@@ -419,42 +443,6 @@ def test_multiple_vms_are_planned_together():
 
 
 # ------------------------------------------------------------ cli shape
-def _write(tmp_path, name, obj):
-    path = tmp_path / name
-    path.write_text(json.dumps(obj))
-    return str(path)
-
-
-def test_cli_emits_a_plan(tmp_path):
-    r = subprocess.run(
-        [sys.executable, str(MOD_PATH),
-         "--vms", _write(tmp_path, "vms.json", {"web01": [nic()]}),
-         "--segments", _write(tmp_path, "seg.json", AUTHORITATIVE),
-         "--inventory", _write(tmp_path, "inv.json", INVENTORY),
-         "--policy", _write(tmp_path, "pol.json", {"order": ["vlan"]})],
-        capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    assert json.loads(r.stdout)["decisions"][0]["target"] == "prod-web"
-
-
-def test_cli_strict_exits_nonzero_on_refusal(tmp_path):
-    r = subprocess.run(
-        [sys.executable, str(MOD_PATH), "--strict",
-         "--vms", _write(tmp_path, "vms.json", {"web01": [nic()]}),
-         "--policy", _write(tmp_path, "pol.json", {"order": ["explicit"]})],
-        capture_output=True, text=True)
-    assert r.returncode == 3
-    assert "REFUSED" in r.stderr
-
-
-def test_cli_reports_policy_errors(tmp_path):
-    r = subprocess.run(
-        [sys.executable, str(MOD_PATH),
-         "--vms", _write(tmp_path, "vms.json", {}),
-         "--policy", _write(tmp_path, "pol.json", {"order": ["nope"]})],
-        capture_output=True, text=True)
-    assert r.returncode == 2
-    assert "FATAL" in r.stderr
 
 
 # ------------------------------------------- shapes the server accepts
@@ -464,7 +452,7 @@ def test_vlan_is_layer2_not_a_network_type():
     tagging is layer2_type + layer2_id, orthogonal to the vnet's role."""
     r = run([nic()], AUTHORITATIVE, [], {"order": ["synthesize"]})
     spec = r["creates"][0]
-    assert spec["network_type"] in netmap.VNET_TYPES
+    assert spec["network_type"] in VNET_TYPES
     assert spec["network_type"] != "vlan"
 
 
@@ -497,36 +485,86 @@ def test_mtu_is_carried_when_known():
 
 
 def test_spec_only_contains_keys_the_module_accepts():
-    """A stray key makes the whole task fail at apply time, after the
-    plan has already been reviewed and approved."""
+    """Proposal keys are network-module parameters. A stray key would be
+    dropped by VergeOS if a later, out-of-scope step ever sent it."""
     accepted = {"name", "state", "description", "network_type", "ip_address",
-                "network", "subnet_mask", "gateway", "dhcp_enabled",
-                "ip_address",
-                "dhcp_start", "dhcp_end", "dhcp_stop", "vlan_id",
-                "layer2_type", "dns_servers", "mtu"}
+                "network", "gateway", "dhcp_enabled", "dhcp_start",
+                "dhcp_end", "vlan_id", "layer2_type", "dns_servers", "mtu",
+                "interface_network", "rate_limit"}
     segs = {"vmbr0.20": dict(AUTHORITATIVE["vmbr0.20"], mtu=9000)}
-    r = run([nic()], segs, [], {"order": ["synthesize"]})
+    r = run([nic(rate_mbyte_s=12)], segs, [], {
+        "order": ["synthesize"],
+        "synthesize": {"interface_network": "ext1 Switch"},
+    })
     assert set(r["creates"][0]) <= accepted, set(r["creates"][0]) - accepted
+    assert "interface_vnet" not in r["creates"][0]
+    assert "dhcp_stop" not in r["creates"][0]
 
 
-# ------------------------------------ the uplink a synthesised vnet lacks
+# ------------------------------------ proposed uplink and rate limit
 def test_synthesised_vnet_is_flagged_as_having_no_uplink():
-    """A vnet's uplink is `interface_vnet`, which the collection's network
-    module does not expose -- a vnet created through it comes back with
-    interface_vnet=null. So the VLAN tag is carried onto nothing and guests
-    land in an isolated layer 2. Claiming the source network was reproduced
-    would be false."""
+    """With no interface_network in the policy the proposal names no
+    uplink. The network module can set one; the plan does not."""
     r = run([nic()], AUTHORITATIVE, [], {"order": ["synthesize"]})
     d = only(r)
     assert d["isolated"] is True
-    assert "no uplink" in d["note"].lower()
+    assert "interface_network" in d["note"]
+    assert "cannot" not in d["note"].lower()
+    assert r["applied"] is False
 
 
 def test_plan_warns_about_isolated_vnets():
     r = run([nic()], AUTHORITATIVE, [], {"order": ["synthesize"]})
     assert r["warnings"]
-    assert "interface_vnet" in r["warnings"][0]
+    assert "interface_network" in r["warnings"][0]
+    assert "cannot set" not in r["warnings"][0]
     assert r["ok"] is True, "a warning is not a refusal"
+
+
+def test_proposed_uplink_is_carried_and_not_marked_isolated():
+    p = {"order": ["synthesize"],
+         "synthesize": {"interface_network": "ext1 Switch"}}
+    r = run([nic()], AUTHORITATIVE, [], p)
+    spec = r["creates"][0]
+    assert spec["interface_network"] == "ext1 Switch"
+    assert "isolated" not in only(r)
+    assert r["warnings"] == []
+    assert r["proposals"] == r["creates"]
+    assert r["applied"] is False
+
+
+def test_rate_limit_is_proposed_on_the_vnet_and_the_decision():
+    r = run([nic(rate_mbyte_s=12)], AUTHORITATIVE, [],
+            {"order": ["synthesize"]})
+    assert r["creates"][0]["rate_limit"] == 12
+    assert only(r)["proposed_rate_limit"] == 12
+
+
+def test_rate_limit_is_carried_when_mapping_an_existing_vnet():
+    d = only(run([nic(rate_mbyte_s=8)], AUTHORITATIVE, INVENTORY,
+                 {"order": ["vlan"]}))
+    assert d["action"] == "map"
+    assert d["proposed_rate_limit"] == 8
+
+
+def test_fractional_rate_becomes_an_integer_cap():
+    d = only(run([nic(rate_mbyte_s=0.4)], AUTHORITATIVE, INVENTORY,
+                 {"order": ["vlan"]}))
+    assert d["proposed_rate_limit"] == 1
+    assert "integer" in d["rate_limit_note"]
+
+
+def test_zero_rate_is_an_explicit_uncap():
+    r = run([nic(rate_mbyte_s=0)], AUTHORITATIVE, [],
+            {"order": ["synthesize"]})
+    assert r["creates"][0]["rate_limit"] == 0
+
+
+def test_conflicting_proposed_rates_are_refused():
+    nics = [nic(key="net0", rate_mbyte_s=10),
+            nic(key="net1", mac="AA:BB:CC:DD:EE:02", rate_mbyte_s=20)]
+    r = run(nics, AUTHORITATIVE, [], {"order": ["synthesize"]})
+    assert any(d["action"] == "refuse" for d in r["decisions"])
 
 
 def test_mapping_to_an_existing_vnet_carries_no_such_warning():

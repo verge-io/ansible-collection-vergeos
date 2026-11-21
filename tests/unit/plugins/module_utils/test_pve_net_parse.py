@@ -1,24 +1,17 @@
-"""Gate 1 -- Proxmox NIC capture.
+# -*- coding: utf-8 -*-
 
-The previous implementation was a single regex that dropped VLAN tags and
-invented a bridge for unconnected NICs. Both are correctness bugs in the
-migration path, not merely missing features, so they are pinned here.
-"""
-import importlib.util
-import json
-import subprocess
-import sys
-from pathlib import Path
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""Gate 1 -- Proxmox NIC capture."""
+
+from __future__ import absolute_import, division, print_function
+__metaclass__ = type
 
 import pytest
 
-MOD_PATH = Path(__file__).parent.parent / "files" / "pve_net_parse.py"
-spec = importlib.util.spec_from_file_location("pve_net_parse", MOD_PATH)
-pnp = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(pnp)
-
-NetParseError = pnp.NetParseError
-
+from ansible_collections.vergeio.vergeos.plugins.module_utils import pve_net_parse as pnp
+from ansible_collections.vergeio.vergeos.plugins.module_utils.pve_net_parse import NetParseError
 
 def one(value, key="net0"):
     return pnp.parse_nic(key, value)
@@ -234,25 +227,14 @@ def test_config_with_no_nics_is_empty_not_an_error():
     assert pnp.parse_config("name: x\nmemory: 512\n") == []
 
 
-# ------------------------------------------------------------ cli shape
-def _run(payload):
-    return subprocess.run([sys.executable, str(MOD_PATH)],
-                          input=payload, capture_output=True, text=True)
+def test_negative_rate_is_refused():
+    with pytest.raises(NetParseError):
+        one("virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0,rate=-1")
 
 
-def test_cli_accepts_qm_config_text():
-    r = _run(QM_CONFIG)
-    assert r.returncode == 0, r.stderr
-    assert len(json.loads(r.stdout)) == 4
+def test_access_vlan_plus_trunk_is_recorded():
+    n = one("virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0,tag=20,trunks=30;40")
+    assert n["access_plus_trunk"] is True
+    assert n["segment"] == "vmbr0:trunk"
 
 
-def test_cli_accepts_json_object():
-    r = _run(json.dumps({"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0"}))
-    assert r.returncode == 0, r.stderr
-    assert json.loads(r.stdout)[0]["segment"] == "vmbr0"
-
-
-def test_cli_fails_loudly_on_bad_input():
-    r = _run("net0: garbage\n")
-    assert r.returncode == 2
-    assert "FATAL" in r.stderr

@@ -1,0 +1,238 @@
+---
+# Read-only probe for the network translation planner (#62).
+#
+#   ansible-playbook verify-network-translation.yml
+#
+# Reads existing vnets and plans against that list. Creates nothing, so
+# there is nothing on VergeOS to clean up. Does not select a tenant.
+# Diagram files are local and removed at the end.
+#
+# Auth is the environment: VERGEOS_HOST, VERGEOS_USERNAME, VERGEOS_PASSWORD.
+# Optional proposal addresses (they must be one subnet):
+#   NETMAP_PROBE_CIDR, NETMAP_PROBE_GATEWAY,
+#   NETMAP_PROBE_DHCP_START, NETMAP_PROBE_DHCP_END
+- name: Network translation plan against a live VergeOS
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    probe_cidr: "{{ lookup('env', 'NETMAP_PROBE_CIDR') | default('192.0.2.0/24', true) }}"
+    probe_gateway: "{{ lookup('env', 'NETMAP_PROBE_GATEWAY') | default('192.0.2.1', true) }}"
+    probe_dhcp_start: "{{ lookup('env', 'NETMAP_PROBE_DHCP_START') | default('192.0.2.10', true) }}"
+    probe_dhcp_end: "{{ lookup('env', 'NETMAP_PROBE_DHCP_END') | default('192.0.2.40', true) }}"
+    probe_proposal: zz-netmap-proposal-not-created
+    probe_rate: 12
+  tasks:
+    - name: Make a local directory for diagram files
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: netmap
+      register: scratch
+
+    - name: Plan and check the guard
+      block:
+        - name: Parse a captured NIC config, including a trunk
+          vergeio.vergeos.proxmox_net_config:
+            config: |
+              net0: virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0,tag=20,rate=12
+              net1: virtio=AA:BB:CC:DD:EE:02,bridge=vmbr0,trunks=10;20
+          register: parsed
+
+        - name: The parser changed nothing and kept the trunk as its own segment
+          ansible.builtin.assert:
+            that:
+              - not parsed.changed
+              - not parsed.applied
+              - parsed.nics | length == 2
+              - parsed.nics[1].segment == 'vmbr0:trunk'
+
+        - name: Parse a captured host network
+          vergeio.vergeos.proxmox_host_network:
+            interfaces: |
+              auto vmbr0
+              iface vmbr0 inet static
+                  address 192.0.2.10/24
+                  bridge-ports eno1
+                  bridge-vlan-aware yes
+            nics: "{{ parsed.nics }}"
+            diagram_path: "{{ scratch.path }}/topology.mmd"
+          register: topology
+
+        - name: The topology diagram is local data and the host bridge was read
+          ansible.builtin.assert:
+            that:
+              - not topology.changed
+              - not topology.applied
+              - topology.diagram_written
+              - topology.segments.vmbr0.uplinks == ['eno1']
+              - "'flowchart' in topology.diagram_mermaid"
+
+        - name: Read existing vnets
+          vergeio.vergeos.network_info:
+            insecure: true
+          register: before
+
+        - name: The read changed nothing and returned a list
+          ansible.builtin.assert:
+            that:
+              - not before.changed
+              - before.networks is defined
+              - before.networks | length > 0
+            fail_msg: network_info returned no vnets to plan against
+
+        - name: The proposal name is not already a vnet
+          ansible.builtin.assert:
+            that:
+              - probe_proposal not in (before.networks | map(attribute='name') | list)
+
+        - name: Remember an existing vnet name to map onto
+          ansible.builtin.set_fact:
+            existing_name: "{{ before.networks[0].name }}"
+
+        - name: Refuse a trunk before any other planning
+          vergeio.vergeos.network_map:
+            vms:
+              web01:
+                - key: net1
+                  mac: "AA:BB:CC:DD:EE:02"
+                  model: virtio
+                  bridge: vmbr0
+                  trunks: [10, 20]
+                  segment: "vmbr0:trunk"
+                  connected: true
+            networks: "{{ before.networks }}"
+            policy:
+              order: [name, synthesize]
+          register: trunked
+
+        - name: The trunk is refused and nothing was created
+          ansible.builtin.assert:
+            that:
+              - not trunked.changed
+              - not trunked.applied
+              - not trunked.ok
+              - trunked.decisions[0].action == 'refuse'
+              - "'trunk' in trunked.decisions[0].why"
+              - "'out of scope' in trunked.decisions[0].why"
+
+        - name: Plan a map and a proposal against the vnets just read
+          vergeio.vergeos.network_map:
+            vms:
+              web01:
+                - key: net0
+                  mac: "AA:BB:CC:DD:EE:01"
+                  model: virtio
+                  bridge: vmbr0
+                  tag: 20
+                  trunks: []
+                  segment: vmbr0.20
+                  connected: true
+                  rate_mbyte_s: "{{ probe_rate }}"
+                - key: net2
+                  mac: "AA:BB:CC:DD:EE:03"
+                  model: virtio
+                  bridge: vmbr9
+                  tag: 99
+                  trunks: []
+                  segment: vmbr9.99
+                  connected: true
+                  rate_mbyte_s: "{{ probe_rate }}"
+            segments:
+              vmbr9.99:
+                segment: vmbr9.99
+                bridge: vmbr9
+                tag: 99
+                cidr: "{{ probe_cidr }}"
+                gateway: "{{ probe_gateway }}"
+                dhcp:
+                  start: "{{ probe_dhcp_start }}"
+                  end: "{{ probe_dhcp_end }}"
+                source: sdn
+                confidence: authoritative
+            networks: "{{ before.networks }}"
+            policy:
+              order: [explicit, synthesize]
+              explicit:
+                vmbr0.20: "{{ existing_name }}"
+              synthesize:
+                name_template: "{{ probe_proposal }}"
+                interface_network: "{{ existing_name }}"
+            diagram_path: "{{ scratch.path }}/mapping.mmd"
+          register: planned
+
+        - name: The plan proposes one vnet and maps the other
+          ansible.builtin.assert:
+            that:
+              - not planned.changed
+              - not planned.applied
+              - planned.ok
+              - planned.creates | length == 1
+              - planned.creates[0].name == probe_proposal
+              - planned.creates[0].interface_network == existing_name
+              - planned.creates[0].rate_limit | int == probe_rate | int
+              - planned.decisions | selectattr('action', 'equalto', 'map') | list | length == 1
+              - planned.decisions | selectattr('action', 'equalto', 'create') | list | length == 1
+              - "'proposal' in planned.diagram_mermaid"
+              - probe_proposal in planned.diagram_mermaid
+              - existing_name in planned.diagram_mermaid
+
+        - name: The mapping diagram was written locally
+          ansible.builtin.stat:
+            path: "{{ scratch.path }}/mapping.dot"
+          register: mapping_dot
+
+        - name: Both diagram files exist
+          ansible.builtin.assert:
+            that:
+              - planned.diagram_written
+              - mapping_dot.stat.exists
+
+        - name: Guard a live attach while the captured source is running
+          vergeio.vergeos.network_guard:
+            plan: "{{ planned.plan }}"
+            source_states:
+              web01: running
+            attach_mode: live
+          register: guard_live
+
+        - name: Live attach over a running source is refused
+          ansible.builtin.assert:
+            that:
+              - not guard_live.changed
+              - not guard_live.applied
+              - not guard_live.ok
+              - guard_live.results | selectattr('verdict', 'equalto', 'refuse') | list | length == 2
+
+        - name: Detached mode approves without naming an attach target
+          vergeio.vergeos.network_guard:
+            plan: "{{ planned.plan }}"
+            source_states:
+              web01: running
+            attach_mode: detached
+          register: guard_detached
+
+        - name: Detached evaluation attaches nothing
+          ansible.builtin.assert:
+            that:
+              - not guard_detached.changed
+              - guard_detached.ok
+              - guard_detached.results | selectattr('attach_to') | list | length == 0
+
+        - name: Read vnets again
+          vergeio.vergeos.network_info:
+            insecure: true
+          register: after
+
+        - name: The vnet list is unchanged and the proposal was not created
+          ansible.builtin.assert:
+            that:
+              - not after.changed
+              - (before.networks | map(attribute='name') | sort) == (after.networks | map(attribute='name') | sort)
+              - probe_proposal not in (after.networks | map(attribute='name') | list)
+
+      always:
+        - name: Remove the local diagram directory
+          ansible.builtin.file:
+            path: "{{ scratch.path }}"
+            state: absent
+          when: scratch.path is defined

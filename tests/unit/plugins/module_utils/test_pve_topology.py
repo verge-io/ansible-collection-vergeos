@@ -1,27 +1,17 @@
-"""Gate 2 -- host topology.
+# -*- coding: utf-8 -*-
 
-A bridge name is not a network definition. These tests pin what the host
-can actually tell us about a segment, and -- just as important -- where it
-cannot, so a later mapper refuses to synthesise from a guess.
-"""
-import importlib.util
-import json
-import subprocess
-import sys
-from pathlib import Path
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""Gate 2 -- host topology. Fixture-tested; no Proxmox node is available."""
+
+from __future__ import absolute_import, division, print_function
+__metaclass__ = type
 
 import pytest
 
-MOD_PATH = Path(__file__).parent.parent / "files" / "pve_topology.py"
-spec = importlib.util.spec_from_file_location("pve_topology", MOD_PATH)
-top = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(top)
-
-NET_MOD = Path(__file__).parent.parent / "files" / "pve_net_parse.py"
-nspec = importlib.util.spec_from_file_location("pve_net_parse", NET_MOD)
-pnp = importlib.util.module_from_spec(nspec)
-nspec.loader.exec_module(pnp)
-
+from ansible_collections.vergeio.vergeos.plugins.module_utils import pve_net_parse as pnp
+from ansible_collections.vergeio.vergeos.plugins.module_utils import pve_topology as top
 
 INTERFACES = """\
 # managed by ifupdown2
@@ -40,8 +30,8 @@ iface bond0 inet manual
 
 auto vmbr0
 iface vmbr0 inet static
-        address 192.168.1.10/24
-        gateway 192.168.1.1
+        address 192.0.2.10/24
+        gateway 192.0.2.1
         bridge-ports bond0
         bridge-stp off
         bridge-fd 0
@@ -143,7 +133,7 @@ def test_host_address_is_not_reported_as_the_segment_subnet(result):
     are routinely different networks. Conflating them would synthesise
     the wrong subnet."""
     seg = result["segments"]["vmbr0"]
-    assert seg["host_addresses"] == ["192.168.1.10/24"]
+    assert seg["host_addresses"] == ["192.0.2.10/24"]
     assert "cidr" not in seg
 
 
@@ -291,32 +281,5 @@ def test_unknown_bridge_is_absent_rather_than_invented(result):
 
 
 # ------------------------------------------------------------ cli shape
-def test_cli_reads_a_bundle_on_stdin():
-    r = subprocess.run([sys.executable, str(MOD_PATH)],
-                       input=json.dumps(BUNDLE), capture_output=True,
-                       text=True)
-    assert r.returncode == 0, r.stderr
-    assert "webvnet" in json.loads(r.stdout)["segments"]
 
 
-def test_cli_reads_files_from_disk(tmp_path):
-    ifpath = tmp_path / "interfaces"
-    ifpath.write_text(INTERFACES)
-    sdn = tmp_path / "sdn"
-    sdn.mkdir()
-    (sdn / "zones.cfg").write_text(ZONES)
-    (sdn / "vnets.cfg").write_text(VNETS)
-    (sdn / "subnets.cfg").write_text(SUBNETS)
-    r = subprocess.run([sys.executable, str(MOD_PATH),
-                        "--interfaces", str(ifpath), "--sdn-dir", str(sdn)],
-                       capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    assert json.loads(r.stdout)["segments"]["webvnet"]["cidr"] == \
-        "10.0.20.0/24"
-
-
-def test_cli_on_empty_input_is_empty_not_a_crash():
-    r = subprocess.run([sys.executable, str(MOD_PATH)], input="",
-                       capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    assert json.loads(r.stdout)["segments"] == {}

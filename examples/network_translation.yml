@@ -1,0 +1,67 @@
+---
+# Plan a captured Proxmox network and draw it.
+# Nothing in this play contacts VergeOS or Proxmox.
+- name: Plan a network translation from captured config
+  hosts: localhost
+  gather_facts: false
+  vars:
+    captured_config: |
+      net0: virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0,tag=20,rate=12
+      net1: virtio=AA:BB:CC:DD:EE:02,bridge=vmbr0,trunks=10;20
+    captured_interfaces: |
+      auto vmbr0
+      iface vmbr0 inet manual
+          bridge-ports eno1
+          bridge-vlan-aware yes
+  tasks:
+    - name: Parse the captured VM NICs
+      vergeio.vergeos.proxmox_net_config:
+        config: "{{ captured_config }}"
+      register: parsed
+
+    - name: Parse the captured host network
+      vergeio.vergeos.proxmox_host_network:
+        interfaces: "{{ captured_interfaces }}"
+        nics: "{{ parsed.nics }}"
+      register: topology
+
+    - name: Build the plan against an empty vnet list
+      vergeio.vergeos.network_map:
+        vms:
+          web01: "{{ parsed.nics }}"
+        segments:
+          vmbr0.20:
+            segment: vmbr0.20
+            bridge: vmbr0
+            tag: 20
+            cidr: 192.0.2.0/24
+            gateway: 192.0.2.1
+            source: sdn
+            confidence: authoritative
+        networks: []
+        policy:
+          order: [vlan, synthesize]
+          synthesize:
+            interface_network: "ext1 Switch"
+            name_template: "{segment}"
+      register: plan
+
+    - name: Evaluate the plan while the source is running
+      vergeio.vergeos.network_guard:
+        plan: "{{ plan.plan }}"
+        source_states:
+          web01: running
+        attach_mode: live
+      register: guard
+
+    - name: Show that the run changed nothing and refused the trunk
+      ansible.builtin.assert:
+        that:
+          - not parsed.changed
+          - not topology.changed
+          - not plan.changed
+          - not plan.applied
+          - not guard.changed
+          - not guard.applied
+          - plan.decisions | selectattr('resolver', 'equalto', 'trunk') | list | length == 1
+          - not guard.ok

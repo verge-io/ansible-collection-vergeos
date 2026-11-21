@@ -1,10 +1,17 @@
-#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+from __future__ import absolute_import, division, print_function
+__metaclass__ = type
+
 """Gate the network plan before anything is attached.
 
 Pure evaluation: takes a netmap plan, the source VMs' power states, and an
 inventory of NICs that already exist in VergeOS, and returns the plan
 again with every attachment either APPROVED or REFUSED, each with a
-reason.
+reason. The verdict is data. Nothing is attached.
 
 Why this is a separate stage
 ---------------------------
@@ -23,8 +30,8 @@ outage lands on exactly the workloads the rehearsal existed to protect.
 
 Hence three attach modes, defaulting to the safe one:
 
-  detached  NICs are created but connected to nothing. The plan's intended
-            target is recorded for a later run. Safe at any time.
+  detached  The verdict approves leaving the NIC unconnected. The plan's
+            intended target is recorded. Safe at any time. Nothing is created.
   bubble    Everything lands on one isolated vnet. Safe if -- and only if
             -- that vnet really is isolated, which this module cannot
             verify and therefore states as an operator assertion.
@@ -36,9 +43,6 @@ The override is per-VM by design. A global "yes" would be ticked once and
 then apply forever, to VMs nobody was thinking about at the time.
 """
 
-import argparse
-import json
-import sys
 
 ATTACH_MODES = ("detached", "bubble", "live")
 
@@ -105,18 +109,22 @@ def assess(plan, source_states=None, existing_nics=None, options=None):
     seen_macs = {}
     results = []
 
+    context = {
+        "mode": mode,
+        "bubble": bubble,
+        "overrides": overrides,
+        "source_states": source_states,
+        "existing": existing,
+        "seen_macs": seen_macs,
+    }
     for decision in plan.get("decisions", []):
-        results.append(_gate(decision, mode, bubble, overrides,
-                             source_states, existing, seen_macs))
+        results.append(_gate(decision, context))
 
-    # A synthesised vnet takes the SOURCE SUBNET'S GATEWAY as its own
-    # address, because in VergeOS the vnet is the router for that subnet.
-    # That address is currently still held by the live source router. The
-    # vnet is harmless while it has no uplink -- which today it always does,
-    # since the collection cannot set interface_vnet -- but the moment an
-    # uplink is attached by hand, two routers answer for the same IP. It is
-    # a warning rather than a refusal precisely because the collision is
-    # not possible until that manual step.
+    # A proposal may take the source subnet's gateway as its own address,
+    # because in VergeOS the vnet is the router for that subnet. That
+    # address is still held by the live source router. This guard does
+    # not create the vnet. The warning says what applying the proposal
+    # would do.
     address_warnings = []
     for spec in plan.get("creates", []):
         addr = spec.get("ip_address")
@@ -125,14 +133,34 @@ def assess(plan, source_states=None, existing_nics=None, options=None):
         holders = sorted({r["vm"] for r in results
                           if r.get("verdict") == "approve"
                           and r.get("attach_to") == spec.get("name")})
-        running = [vm for vm in holders if not source_is_down(vm,
-                                                              source_states)[0]]
-        if running:
+        uplink = (spec.get("interface_network") or "").strip()
+        if uplink:
+            # The proposal names an uplink, so applying the vnet (not
+            # just attaching a NIC) would put this address on the fabric.
+            interested = sorted({r["vm"] for r in results
+                                 if r.get("intended_target") == spec.get("name")
+                                 or r.get("attach_to") == spec.get("name")})
+        else:
+            interested = holders
+        running = [vm for vm in interested if not source_is_down(
+            vm, source_states)[0]]
+        if not running:
+            continue
+        if uplink:
             address_warnings.append(
-                "vnet %r will hold %s, which is the source subnet's gateway "
-                "and is still answered by the live source for %s. Harmless "
-                "while the vnet has no uplink; a duplicate gateway the "
-                "moment one is attached."
+                "proposal %r would hold %s and names uplink %r. Applying "
+                "it while the source for %s is still up would be a "
+                "duplicate gateway on that uplink. This plan does not "
+                "create or attach anything."
+                % (spec["name"], addr, uplink, ", ".join(running)))
+        elif holders:
+            address_warnings.append(
+                "proposal %r would hold %s, which is the source subnet's "
+                "gateway and is still answered by the live source for %s. "
+                "The proposal names no uplink, so the address would stay "
+                "off the fabric until one is added. A duplicate gateway "
+                "the moment an uplink is attached. This plan does not "
+                "create the vnet."
                 % (spec["name"], addr, ", ".join(running)))
 
     refused = [r for r in results if r["verdict"] == "refuse"]
@@ -147,6 +175,7 @@ def assess(plan, source_states=None, existing_nics=None, options=None):
                          if r["verdict"] == "approve" and r["attach_to"]}
 
     return {
+        "applied": False,
         "attach_mode": mode,
         "bubble_network": bubble,
         "results": results,
@@ -161,8 +190,13 @@ def assess(plan, source_states=None, existing_nics=None, options=None):
     }
 
 
-def _gate(decision, mode, bubble, overrides, source_states, existing,
-          seen_macs):
+def _gate(decision, context):
+    mode = context["mode"]
+    bubble = context["bubble"]
+    overrides = context["overrides"]
+    source_states = context["source_states"]
+    existing = context["existing"]
+    seen_macs = context["seen_macs"]
     base = {k: decision.get(k) for k in
             ("vm", "nic", "mac", "model", "segment", "action", "target",
              "resolver")}
@@ -231,45 +265,3 @@ def _gate(decision, mode, bubble, overrides, source_states, existing,
                "attaching now would put a duplicate MAC/IP on the wire "
                "alongside the running source. Stop the source, or name %r "
                "in live_attach_running_override." % (why, vm))
-
-
-def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--plan", required=True, help="JSON plan from netmap.py")
-    ap.add_argument("--source-states", help="JSON {vm_name: power_state}")
-    ap.add_argument("--existing-nics", help="JSON list from vm_nic_info")
-    ap.add_argument("--options", help="JSON guard options")
-    ap.add_argument("--attach-mode", choices=ATTACH_MODES,
-                    help="override the plan's attach_mode")
-    ap.add_argument("--strict", action="store_true",
-                    help="exit non-zero when any NIC is refused")
-    args = ap.parse_args()
-
-    def load(path, default):
-        if not path:
-            return default
-        with open(path) as fh:
-            return json.load(fh)
-
-    options = load(args.options, {})
-    if args.attach_mode:
-        options["attach_mode"] = args.attach_mode
-
-    try:
-        verdict = assess(load(args.plan, {}), load(args.source_states, {}),
-                         load(args.existing_nics, []), options)
-    except GuardError as exc:
-        print("FATAL: %s" % exc, file=sys.stderr)
-        return 2
-
-    json.dump(verdict, sys.stdout, indent=2, sort_keys=True, default=str)
-    sys.stdout.write("\n")
-    if args.strict and not verdict["ok"]:
-        print("REFUSED: %d NIC attachment(s) blocked"
-              % len(verdict["refusals"]), file=sys.stderr)
-        return 3
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
