@@ -69,7 +69,13 @@ VM, leaves another untagged, and checks the cloud snapshot. The untagged
 VM must not be in it. Membership stays empty until `find_vms` runs
 (pyVergeOS #201), and `create(wait=True)` can return while a `fields=all`
 read still says the snapshot is building (pyVergeOS #202), so the ladder
-polls that read and calls `find_vms` before it reads `cloud_snapshot_vms`.
+polls that read before `find_vms`. The same `still building` refusal can
+come back from `find_vms` after that read has settled, and
+`cloud_snapshot_vms` can stay empty for several seconds after the POST.
+The helper retries the refusal and polls until the read is non-empty, and
+the ladder polls again before the assert. Released pyVergeOS is enough.
+pyVergeOS #210 does the same wait inside `list()` and `get_vms()` and is
+not in a release. The ladder does not call those methods.
 
 ## Orphans are always report-only
 

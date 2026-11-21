@@ -27,8 +27,13 @@ Verbs, all of them JSON on stdout:
       POST cloud_snapshot_actions {action: find_vms, cloud_snapshot: N}.
       Membership stays empty until that runs (pyVergeOS #201), and the
       action has nothing to fill in while the snapshot is still building.
-      The VM names come from
-      GET cloud_snapshot_vms?filter=cloud_snapshot eq N and is_snapshot eq false.
+      The same ValidationError is retried, for the same --timeout.
+      The POST returns before cloud_snapshot_vms rows exist (on the lab,
+      6 to 8 seconds later), so the VM names are read from
+      GET cloud_snapshot_vms?filter=cloud_snapshot eq N and is_snapshot eq false
+      until that list is non-empty or --timeout. This does not call
+      CloudSnapshotVMManager.list() or get_vms(), so a released pyVergeOS
+      and one that contains the unreleased #210 poll behave the same.
 
   delete --name NAME
       Delete every cloud snapshot of that name. Missing is success.
@@ -164,12 +169,51 @@ def wait_until_settled(sdk, key, timeout):
         time.sleep(2)
 
 
-def find_vms(sdk, key):
-    """Fill cloud_snapshot_vms. The list stays empty until this runs (#201)."""
-    sdk._request(
-        'POST', 'cloud_snapshot_actions',
-        json_data={'action': 'find_vms', 'cloud_snapshot': int(key)},
-    )
+def _retry_while_building(operation, timeout):
+    """Retry ``operation`` on ValidationError 'System snapshot is still building'.
+
+    Listed rows can already read normal while the platform still refuses
+    the POST, so this does not poll them. Any other error is re-raised.
+    ``timeout`` of 0 has no deadline.
+    """
+    start = time.time()
+    delay = 2
+    while True:
+        try:
+            return operation()
+        except _validation_error_type() as exc:
+            if not _system_snapshot_busy(exc):
+                raise
+            elapsed = time.time() - start
+            if timeout > 0 and elapsed >= timeout:
+                raise TimeoutError(
+                    'system snapshot still building after %s seconds (%s)'
+                    % (timeout, exc))
+            pause = delay
+            if timeout > 0:
+                pause = min(delay, max(timeout - elapsed, 0))
+            time.sleep(pause)
+            if delay < 30:
+                delay = min(delay * 2, 30)
+
+
+def find_vms(sdk, key, timeout):
+    """POST find_vms. cloud_snapshot_vms stays empty until this runs (#201).
+
+    The POST raises ValidationError 'System snapshot is still building'
+    after create() was accepted and the fields=all read has left
+    building. That error is retried the same way as create(). The POST
+    goes through ``_request``, not ``cloud_snapshots.find_vms()``, so
+    an SDK that retries inside that method is not required and is not
+    asked twice.
+    """
+    def post():
+        sdk._request(
+            'POST', 'cloud_snapshot_actions',
+            json_data={'action': 'find_vms', 'cloud_snapshot': int(key)},
+        )
+
+    _retry_while_building(post, timeout)
 
 
 def member_names(sdk, key):
@@ -181,6 +225,25 @@ def member_names(sdk, key):
         },
     ))
     return [str(row.get('name') or '') for row in rows]
+
+
+def wait_for_members(sdk, key, timeout):
+    """Poll cloud_snapshot_vms until a row exists.
+
+    find_vms returns before the platform fills those rows. On the lab
+    they appeared 6 to 8 seconds later. An empty read is not a finished
+    membership. ``timeout`` of 0 has no deadline.
+    """
+    start = time.time()
+    while True:
+        names = member_names(sdk, key)
+        if names:
+            return names
+        if timeout > 0 and (time.time() - start) > timeout:
+            raise TimeoutError(
+                'cloud snapshot %s membership still empty after %s seconds'
+                % (key, timeout))
+        time.sleep(2)
 
 
 def _wait_timeout_type():
@@ -205,34 +268,18 @@ def _create_snapshot(sdk, name, include_tag, timeout):
     then raises ValidationError 'System snapshot is still building' until
     that finishes. Rows already on the system can read status normal from
     fields=all while the platform still refuses, so waiting on those rows
-    does not see it. Only this error is retried, and only for ``timeout``
-    seconds. Every other error is re-raised unchanged.
+    does not see it.
     """
-    start = time.time()
-    delay = 2
-    while True:
-        try:
-            return sdk.cloud_snapshots.create(
-                name=name,
-                include_tags=[include_tag],
-                retention_seconds=3600,
-                wait=True,
-                wait_timeout=timeout,
-            )
-        except _validation_error_type() as exc:
-            if not _system_snapshot_busy(exc):
-                raise
-            elapsed = time.time() - start
-            if timeout > 0 and elapsed >= timeout:
-                raise TimeoutError(
-                    'system snapshot still building after %s seconds (%s)'
-                    % (timeout, exc))
-            pause = delay
-            if timeout > 0:
-                pause = min(delay, max(timeout - elapsed, 0))
-            time.sleep(pause)
-            if delay < 30:
-                delay = min(delay * 2, 30)
+    return _retry_while_building(
+        lambda: sdk.cloud_snapshots.create(
+            name=name,
+            include_tags=[include_tag],
+            retention_seconds=3600,
+            wait=True,
+            wait_timeout=timeout,
+        ),
+        timeout,
+    )
 
 
 def create_partial(sdk, name, include_tag, timeout=300):
@@ -260,11 +307,11 @@ def create_partial(sdk, name, include_tag, timeout=300):
         raise ValueError('cloud snapshot create returned no $key')
     key = int(key)
     status = wait_until_settled(sdk, key, timeout)
-    find_vms(sdk, key)
+    find_vms(sdk, key, timeout)
     return {
         'key': key,
         'status': status,
-        'members': member_names(sdk, key),
+        'members': wait_for_members(sdk, key, timeout),
     }
 
 

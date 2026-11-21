@@ -40,6 +40,7 @@ import re
 import tempfile
 
 import pytest
+import yaml
 from ansible.inventory.manager import InventoryManager
 from ansible.parsing.dataloader import DataLoader
 
@@ -218,6 +219,40 @@ def test_recipe_ladders_do_not_read_failed_when_suppressed_exception():
         assert 'ignore_errors: true' in body, (
             "%s no longer records refusals with ignore_errors, so `.failed` "
             "is not a usable signal (#172)." % name)
+
+
+def _walk(node, acc):
+    if isinstance(node, dict):
+        if isinstance(node.get('name'), str):
+            acc.append(node)
+        for value in node.values():
+            _walk(value, acc)
+    elif isinstance(node, list):
+        for item in node:
+            _walk(item, acc)
+
+
+def test_protect_partial_polls_membership_before_the_assert():
+    """#224. cloud_snapshot_vms stays empty for seconds after find_vms.
+
+    Task 2q asserts on that read. A single GET in the empty window
+    reports the tagged VM as absent. 2p has to poll until a row exists.
+    """
+    path = os.path.join(_live_dir(), 'verify-protect-partial.yml')
+    with open(path) as fh:
+        plays = yaml.safe_load(fh)
+    tasks = []
+    _walk(plays, tasks)
+    read = next(
+        task for task in tasks
+        if task['name'] == '2p. Read membership over HTTP, after find_vms')
+    assert 'until' in read
+    assert int(read['retries']) >= 1
+    assert int(read['delay']) >= 1
+    until = read['until']
+    text = '\n'.join(until) if isinstance(until, list) else str(until)
+    assert 'length' in text
+    assert 'members.json' in text
 
 
 def test_unquoted_jinja_is_not_an_inventory():

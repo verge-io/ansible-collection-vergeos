@@ -32,3 +32,9 @@ pyvergeos>=1.2.8
 # is not in a release. Do not raise this floor to pick it up. A period
 # that sets any of those parameters fails with a named error on an
 # older SDK. A period that sets none of them is still all-or-nothing.
+#
+# The partial-snapshot ladder retries find_vms and polls
+# cloud_snapshot_vms itself (issue #224). pyVergeOS #210 does that
+# inside CloudSnapshotVMManager.list() and get_vms() and is on dev,
+# not in a release. Do not raise this floor to pick it up. The ladder
+# does not call those methods.

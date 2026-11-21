@@ -8,9 +8,10 @@
 The ladder is the thing that talks to VergeOS. These tests pin the order
 that ladder depends on: poll GET cloud_snapshots/N?fields=all after
 create(wait=True), call find_vms only once that status has left building,
-and only then read cloud_snapshot_vms. cloud_snapshots.get() is not that
-check. They also pin the filter and the POST body, which are easy to
-"tidy" into something the platform does not fill in.
+retry that POST on ValidationError 'System snapshot is still building',
+and read cloud_snapshot_vms until a row exists. cloud_snapshots.get() is
+not that check. They also pin the filter and the POST body, which are
+easy to "tidy" into something the platform does not fill in.
 """
 
 from __future__ import (absolute_import, division, print_function)
@@ -256,6 +257,212 @@ def test_still_building_past_the_deadline_is_reported(monkeypatch):
         probe.create_partial(
             client, 'zz-partial-snap', 'zz-partial', timeout=5)
     assert len(attempts) == 2
+
+
+def _install_request(client, handler):
+    real = client._request
+
+    def request(method, path, params=None, json_data=None):
+        outcome = handler(method, path, params, json_data)
+        if outcome is not None:
+            return outcome
+        return real(method, path, params=params, json_data=json_data)
+
+    client._request = request
+
+
+def test_find_vms_retries_while_the_system_snapshot_is_building(monkeypatch):
+    """create() can be accepted while find_vms is still refused (#224)."""
+    class Busy(Exception):
+        pass
+
+    client = Client()
+    posts = []
+
+    def handler(method, path, _params, json_data):
+        if method == 'POST' and path == 'cloud_snapshot_actions':
+            posts.append(dict(json_data))
+            if len(posts) < 8:
+                raise Busy('System snapshot is still building')
+        return None
+
+    _install_request(client, handler)
+    monkeypatch.setattr(probe, '_validation_error_type', lambda: Busy)
+    slept = []
+    monkeypatch.setattr(probe.time, 'sleep', slept.append)
+    monkeypatch.setattr(probe.time, 'time', lambda: 0)
+
+    probe.find_vms(client, 9, timeout=30)
+
+    assert len(posts) == 8
+    assert posts[-1] == {'action': 'find_vms', 'cloud_snapshot': 9}
+    assert slept == [2, 4, 8, 16, 30, 30, 30]
+
+
+def test_find_vms_does_not_retry_a_different_validation_error(monkeypatch):
+    class Busy(Exception):
+        pass
+
+    client = Client()
+    posts = []
+
+    def handler(_method, path, _params, _json_data):
+        if path == 'cloud_snapshot_actions':
+            posts.append(1)
+            raise Busy('snapshot is locked')
+        return None
+
+    _install_request(client, handler)
+    monkeypatch.setattr(probe, '_validation_error_type', lambda: Busy)
+
+    with pytest.raises(Busy, match='locked'):
+        probe.find_vms(client, 9, timeout=30)
+    assert posts == [1]
+
+
+def test_find_vms_does_not_retry_an_error_that_is_not_validation(monkeypatch):
+    class Busy(Exception):
+        pass
+
+    client = Client()
+    posts = []
+
+    def handler(_method, _path, _params, _json_data):
+        posts.append(1)
+        raise RuntimeError('connection reset')
+
+    _install_request(client, handler)
+    monkeypatch.setattr(probe, '_validation_error_type', lambda: Busy)
+
+    with pytest.raises(RuntimeError, match='connection reset'):
+        probe.find_vms(client, 9, timeout=30)
+    assert posts == [1]
+
+
+def test_find_vms_still_building_past_the_deadline_is_reported(monkeypatch):
+    class Busy(Exception):
+        pass
+
+    client = Client()
+    posts = []
+
+    def handler(_method, _path, _params, _json_data):
+        posts.append(1)
+        raise Busy('System snapshot is still building')
+
+    _install_request(client, handler)
+    monkeypatch.setattr(probe, '_validation_error_type', lambda: Busy)
+    ticks = iter([0, 0, 400])
+    monkeypatch.setattr(probe.time, 'time', lambda: next(ticks))
+
+    with pytest.raises(TimeoutError, match='still building'):
+        probe.find_vms(client, 9, timeout=5)
+    assert len(posts) == 2
+
+
+def test_create_retries_find_vms_then_waits_for_members(monkeypatch):
+    """The POST and the membership read are separate waits (#224)."""
+    class Busy(Exception):
+        pass
+
+    client = Client(statuses=['normal'])
+    client._members = []
+    posts = []
+    reads = []
+
+    def handler(method, path, _params, json_data):
+        if method == 'POST' and path == 'cloud_snapshot_actions':
+            posts.append(dict(json_data))
+            if len(posts) < 2:
+                raise Busy('System snapshot is still building')
+        if path == 'cloud_snapshot_vms':
+            reads.append(1)
+            if len(reads) >= 3:
+                client._members = [{
+                    'name': 'zz-partial-in',
+                    'is_snapshot': False,
+                    'cloud_snapshot': 9,
+                }]
+        return None
+
+    _install_request(client, handler)
+    monkeypatch.setattr(probe, '_validation_error_type', lambda: Busy)
+
+    result = probe.create_partial(
+        client, 'zz-partial-snap', 'zz-partial', timeout=30)
+
+    assert len(posts) == 2
+    assert posts[0] == {'action': 'find_vms', 'cloud_snapshot': 9}
+    assert len(reads) == 3
+    assert result['members'] == ['zz-partial-in']
+    assert result['key'] == 9
+    assert result['status'] == 'normal'
+    actions = [
+        call['path'] for call in client.calls
+        if call['path'] == 'cloud_snapshot_actions']
+    assert actions == ['cloud_snapshot_actions']
+
+
+def test_create_does_not_read_members_when_find_vms_is_refused(monkeypatch):
+    class Busy(Exception):
+        pass
+
+    client = Client(statuses=['normal'])
+    posts = []
+
+    def handler(_method, path, _params, _json_data):
+        if path == 'cloud_snapshot_actions':
+            posts.append(1)
+            raise Busy('snapshot is locked')
+        return None
+
+    _install_request(client, handler)
+    monkeypatch.setattr(probe, '_validation_error_type', lambda: Busy)
+
+    with pytest.raises(Busy, match='locked'):
+        probe.create_partial(
+            client, 'zz-partial-snap', 'zz-partial', timeout=30)
+    assert posts == [1]
+    assert all(call['path'] != 'cloud_snapshot_vms' for call in client.calls)
+
+
+def test_membership_is_polled_until_a_row_exists():
+    client = Client()
+    client._members = []
+    reads = []
+    real = client._request
+
+    def request(method, path, params=None, json_data=None):
+        if path == 'cloud_snapshot_vms':
+            reads.append(1)
+            if len(reads) >= 3:
+                client._members = [{
+                    'name': 'zz-partial-in',
+                    'is_snapshot': False,
+                    'cloud_snapshot': 9,
+                }]
+        return real(method, path, params=params, json_data=json_data)
+
+    client._request = request
+
+    names = probe.wait_for_members(client, 9, timeout=30)
+
+    assert names == ['zz-partial-in']
+    assert len(reads) == 3
+    assert [call['path'] for call in client.calls] == [
+        'cloud_snapshot_vms', 'cloud_snapshot_vms', 'cloud_snapshot_vms']
+
+
+def test_empty_membership_past_the_deadline_is_an_error(monkeypatch):
+    client = Client()
+    client._members = []
+    ticks = iter([0, 0, 50])
+    monkeypatch.setattr(probe.time, 'time', lambda: next(ticks))
+
+    with pytest.raises(TimeoutError, match='membership still empty'):
+        probe.wait_for_members(client, 9, timeout=5)
+    assert [call['path'] for call in client.calls] == [
+        'cloud_snapshot_vms', 'cloud_snapshot_vms']
 
 
 def test_a_wait_timeout_still_polls_the_row_it_created(monkeypatch):

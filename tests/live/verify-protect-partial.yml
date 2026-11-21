@@ -25,7 +25,17 @@
 # raises ValidationError 'System snapshot is still building' until that
 # finishes. Listed rows can already read normal on fields=all, so the
 # helper retries only that error, for --timeout seconds, and re-raises
-# every other error.
+# every other error. find_vms raises the same error after create() was
+# accepted and the fields=all read has left building. That POST is
+# retried the same way.
+#
+# find_vms returns before cloud_snapshot_vms rows exist. On the lab
+# they appeared 6 to 8 seconds later. The helper polls that GET until
+# it is non-empty or --timeout. Task 2p polls again (30 retries, 2
+# seconds apart) before the assert. An empty list is not "the untagged
+# VM is absent". The helper POSTs find_vms itself. It does not call
+# CloudSnapshotVMManager.list() or get_vms(), so this does not need
+# pyVergeOS #210, which is on dev and not in a release.
 #
 # The helper tests/live/partial_snapshot_probe.py does that order.
 # This playbook then repeats the membership GET itself, so a bug in
@@ -256,6 +266,10 @@
             url: >-
               {{ api_base }}/cloud_snapshot_vms?filter={{ member_q }}&fields=name,original_key,is_snapshot,cloud_snapshot
           register: members
+          until:
+            - members.json | default([]) | length > 0
+          retries: 30
+          delay: 2
           changed_when: false
 
         - name: "2q. The tagged VM is in the snapshot and the other is not"
