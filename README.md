@@ -100,12 +100,16 @@ Every module in `plugins/modules/`. A read-only module only gathers facts.
 | `nas_nfs_share` | Manage NFS shares on VergeOS NAS volumes | no |
 | `nas_volume` | Manage NAS volumes in VergeOS | no |
 | `network` | Manage networks in VergeOS | no |
+| `network_guard` | Evaluate a network map plan against the blast-radius guard | yes |
 | `network_info` | Gather information about networks in VergeOS | yes |
+| `network_map` | Build a read-only network map plan against existing VergeOS vnets | yes |
 | `nic` | Manage network interfaces for VMs in VergeOS | no |
 | `node_info` | Gather information about VergeOS nodes | yes |
 | `node_maintenance` | Put a VergeOS node into or out of maintenance mode | no |
 | `permission` | Manage VergeOS permissions for a user or group | no |
 | `physical_drive_info` | Gather SMART and vSAN health for VergeOS physical drives | yes |
+| `proxmox_host_network` | Parse captured Proxmox host networks into topology segments | yes |
+| `proxmox_net_config` | Parse captured Proxmox VM NICs into network segments | yes |
 | `site_info` | Gather site preflight facts for a VergeOS system | yes |
 | `snapshot_profile` | Manage snapshot profiles in VergeOS | no |
 | `tag` | Manage tags and VM tag assignments in VergeOS | no |
@@ -132,6 +136,10 @@ Every module in `plugins/modules/`. A read-only module only gathers facts.
 | `vnet_rule_info` | Gather information about firewall rules on a VergeOS network | yes |
 | `windows_unattend` | Manage Windows unattend.xml configuration for VMs in VergeOS | no |
 <!-- module-index: end -->
+
+## Network translation
+
+`proxmox_net_config`, `proxmox_host_network`, `network_map` and `network_guard` plan a Proxmox-to-VergeOS network mapping and draw it. They are read-only. They do not migrate data, and they do not create or attach vnets. Trunk ports are refused. See [docs/NETWORK-TRANSLATION.md](docs/NETWORK-TRANSLATION.md).
 
 ## Roles
 

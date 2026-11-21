@@ -100,6 +100,7 @@ removes its record; the sweep fails if a `zz-*` import row is still there.
 | `verify-vm-snapshot.yml` | `vm_snapshot` — never-expire and in-place restore (#119, #128), and a snapshot key from another VM refused on restore and delete (#161) |
 | `verify-network-power.yml` | `network` powering a vnet on and off — a rule staged on a stopped router, started, and read back live (#97) |
 | `verify-network-policy.yml` | the `network_policy` role, enforcing a rule set with one apply (#44) |
+| `verify-network-translation.yml` | network translation plan and diagrams; reads existing vnets and creates nothing (#62) |
 | `verify-rbac.yml` | `group` / `group_info` / `permission` and the `rbac` role (#34) |
 | `verify-member.yml` | `member` add/converge/remove, and that the right membership row is taken (#92) |
 | `verify-user-groups.yml` | `user` `groups` add/converge, and that `role` is rejected instead of discarded (#120) |
