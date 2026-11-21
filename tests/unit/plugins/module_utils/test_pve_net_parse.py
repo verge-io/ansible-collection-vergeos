@@ -13,6 +13,7 @@ import pytest
 from ansible_collections.vergeio.vergeos.plugins.module_utils import pve_net_parse as pnp
 from ansible_collections.vergeio.vergeos.plugins.module_utils.pve_net_parse import NetParseError
 
+
 def one(value, key="net0"):
     return pnp.parse_nic(key, value)
 
@@ -236,5 +237,3 @@ def test_access_vlan_plus_trunk_is_recorded():
     n = one("virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0,tag=20,trunks=30;40")
     assert n["access_plus_trunk"] is True
     assert n["segment"] == "vmbr0:trunk"
-
-

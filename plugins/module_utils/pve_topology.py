@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 # GNU General Public License v3.0+ (see LICENSES/GPL-3.0-or-later.txt or https://www.gnu.org/licenses/gpl-3.0.txt)
 # SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -99,8 +97,8 @@ def parse_interfaces(text):
         key = _norm_key(fields[0])
         value = " ".join(fields[1:])
         current["options"].setdefault(key, []).append(value)
-    for name in ifaces:
-        ifaces[name]["auto"] = name in autos
+    for name, iface in ifaces.items():
+        iface["auto"] = name in autos
     return ifaces
 
 

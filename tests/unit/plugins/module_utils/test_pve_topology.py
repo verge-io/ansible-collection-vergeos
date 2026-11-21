@@ -52,36 +52,36 @@ iface vmbr1 inet manual
 
 ZONES = """\
 vlan: prodzone
-	bridge vmbr0
-	ipam pve
-	mtu 9000
+    bridge vmbr0
+    ipam pve
+    mtu 9000
 
 simple: dmzzone
-	ipam pve
+    ipam pve
 """
 
 VNETS = """\
 vnet: webvnet
-	zone prodzone
-	tag 20
-	alias Production Web
-	vlanaware 1
+    zone prodzone
+    tag 20
+    alias Production Web
+    vlanaware 1
 
 vnet: dmzvnet
-	zone dmzzone
-	alias DMZ
+    zone dmzzone
+    alias DMZ
 """
 
 SUBNETS = """\
 subnet: prodzone-10.0.20.0-24
-	vnet webvnet
-	gateway 10.0.20.1
-	snat 1
-	dhcp-range start-address=10.0.20.100,end-address=10.0.20.200
+    vnet webvnet
+    gateway 10.0.20.1
+    snat 1
+    dhcp-range start-address=10.0.20.100,end-address=10.0.20.200
 
 subnet: dmzzone-172.16.5.0-24
-	vnet dmzvnet
-	gateway 172.16.5.1
+    vnet dmzvnet
+    gateway 172.16.5.1
 """
 
 BUNDLE = {"interfaces": INTERFACES,
@@ -278,8 +278,3 @@ def test_segment_keys_match_the_nic_parser():
 
 def test_unknown_bridge_is_absent_rather_than_invented(result):
     assert "vmbr99" not in result["segments"]
-
-
-# ------------------------------------------------------------ cli shape
-
-

@@ -14,6 +14,7 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils import netguard
 from ansible_collections.vergeio.vergeos.plugins.module_utils import netmap
 from ansible_collections.vergeio.vergeos.plugins.module_utils.netguard import GuardError
 
+
 def decision(vm="web01", nic="net0", mac="AA:BB:CC:DD:EE:01", action="map",
              target="prod-web", segment="vmbr0.20"):
     return {"vm": vm, "nic": nic, "mac": mac, "model": "virtio",
