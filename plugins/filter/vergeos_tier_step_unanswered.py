@@ -6,39 +6,6 @@
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
-DOCUMENTATION = r'''
----
-name: vergeos_tier_step_unanswered
-short_description: Determine whether a drive tier step has no corresponding question
-version_added: "2.3.0"
-description:
-  - Check whether a drive creation step failed because C(preferred_tier) was
-    empty and the recipe defines no storage tier question to supply it.
-options:
-  _input:
-    description: The failure message or list of messages returned by the module.
-    type: raw
-    required: true
-  questions:
-    description: The recipe's question rows.
-    type: list
-    elements: dict
-    required: true
-'''
-
-EXAMPLES = r'''
-- name: Check if failure was caused by a missing drive tier question
-  ansible.builtin.debug:
-    msg: "{{ result.msg | vergeio.vergeos.vergeos_tier_step_unanswered(questions) }}"
-'''
-
-RETURN = r'''
-_value:
-  description:
-    - C(true) if the preferred tier was empty and no question supplies it, C(false) otherwise.
-  type: bool
-'''
-
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
     drive_tier_has_no_question,
 )

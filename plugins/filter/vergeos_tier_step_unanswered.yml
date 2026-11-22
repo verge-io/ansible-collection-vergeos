@@ -1,0 +1,45 @@
+DOCUMENTATION:
+  name: vergeos_tier_step_unanswered
+  short_description: Report an empty preferred_tier with no tier question
+  version_added: "2.3.0"
+  description:
+    - Return C(true) when a drive step failed because C(preferred_tier)
+      was empty and the recipe defines no storage tier question to
+      supply it.
+    - The message matches only when it contains the platform text
+      "value '' is not in list for field 'preferred_tier'".
+    - A list or tuple of messages is joined with spaces before that check.
+    - A question supplies a tier when it is a storage tier question rather
+      than the drive step that reads C(preferred_tier). A name that starts
+      with C(CREATE_), C(EDIT_), C(GET_), C(CHANGE_), C(DELETE_), or
+      C(API_) is a step. An empty question list means no question supplies
+      the tier.
+  positional: _input, questions
+  options:
+    _input:
+      description:
+        - The failure message, or a list of messages, returned by
+          M(vergeio.vergeos.vm_recipe_deploy).
+      type: raw
+      required: true
+    questions:
+      description:
+        - The recipe's question rows, as M(vergeio.vergeos.vm_recipe_info)
+          returns them in C(questions).
+      type: list
+      elements: dict
+      required: true
+EXAMPLES: |
+  - name: A drive step set preferred_tier and this recipe has no tier question
+    ansible.builtin.debug:
+      msg: >-
+        {{ result.msg | vergeio.vergeos.vergeos_tier_step_unanswered(
+             recipe.questions) }}
+RETURN:
+  _value:
+    description:
+      - C(true) when the message reports an empty C(preferred_tier) and
+        no question supplies a storage tier.
+      - C(false) for any other message, and when a tier question is present.
+    type: bool
+    returned: always

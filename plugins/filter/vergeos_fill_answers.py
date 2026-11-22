@@ -6,67 +6,6 @@
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
-DOCUMENTATION = r'''
----
-name: vergeos_fill_answers
-short_description: Fill recipe answers from question metadata
-version_added: "2.3.0"
-description:
-  - Build the plain and secret answer dicts for one recipe.
-  - C(secrets) contains only credential values the caller already supplied.
-    A published credential default is not copied. The no_log placeholders
-    C(VALUE_SPECIFIED_IN_NO_LOG_PARAMETER), C($REDACTED$), and eight
-    asterisks are not values.
-  - C(unanswered_secrets) names required credentials that were left unset,
-    including one whose published default was redacted.
-    This filter does not invent a password for them.
-options:
-  _input:
-    description: Answers already chosen, keyed by question name.
-    type: dict
-    required: true
-  questions:
-    description: The recipe's question rows.
-    type: list
-    elements: dict
-    required: true
-  options:
-    description: Valid values for table-backed questions, keyed by question name.
-    type: dict
-    required: false
-  files:
-    description:
-      - Files already on the system, as C(file_info) returns them.
-      - Used for an ISO question only when that question has no list
-        choices of its own and its type or table accepts a file.
-      - The filter does not download, upload, or create a file.
-    type: list
-    elements: dict
-    required: false
-  tiers:
-    description:
-      - Storage tier numbers present on the system, as C(site_info)
-        returns them in C(storage_tiers).
-      - Used when a tier question has no choices of its own.
-      - The filter does not create a tier.
-    type: list
-    elements: int
-    required: false
-'''
-
-EXAMPLES = r'''
-- name: Fill what this recipe still needs
-  ansible.builtin.debug:
-    msg: "{{ (base | vergeio.vergeos.vergeos_fill_answers(questions, options)).plain }}"
-'''
-
-RETURN = r'''
-_value:
-  description:
-    - Mapping with C(plain) and C(secrets).
-  type: dict
-'''
-
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
     fill_recipe_answers,
 )

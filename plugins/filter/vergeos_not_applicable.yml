@@ -1,0 +1,49 @@
+DOCUMENTATION:
+  name: vergeos_not_applicable
+  short_description: Report a recipe that is not downloaded or published
+  version_added: "2.3.0"
+  description:
+    - Return C(true) when a recipe cannot be simulated because it is not
+      on this VergeOS system.
+    - C(_input) is a recipe row from M(vergeio.vergeos.vm_recipe_info),
+      or a module failure message.
+    - A string is true only when it contains C(not downloaded or published).
+      O(message) is ignored in that case.
+    - A recipe row is true when O(message) contains that text, or when
+      C(downloaded) is boolean false, integer C(0), or one of the strings
+      C(0), C(false), and C(False).
+    - A row that does not say either way is false. This filter does not
+      download the recipe.
+  positional: _input, message
+  options:
+    _input:
+      description:
+        - A recipe dictionary row, or a module failure message string.
+      type: raw
+      required: true
+    message:
+      description:
+        - Failure message to check when C(_input) is a recipe dictionary.
+        - Ignored when C(_input) is already a string.
+      type: str
+      required: false
+EXAMPLES: |
+  - name: A recipe row that is not on this system
+    ansible.builtin.debug:
+      msg: "{{ recipe | vergeio.vergeos.vergeos_not_applicable }}"
+
+  - name: A simulate that came back not downloaded or published
+    ansible.builtin.debug:
+      msg: "{{ result.msg | vergeio.vergeos.vergeos_not_applicable }}"
+
+  - name: The same check with the row and the failure message
+    ansible.builtin.debug:
+      msg: "{{ recipe | vergeio.vergeos.vergeos_not_applicable(result.msg) }}"
+RETURN:
+  _value:
+    description:
+      - C(true) when the recipe is not downloaded or not published.
+      - C(false) when the row does not say, and when a message does not
+        contain the platform's not-downloaded reason.
+    type: bool
+    returned: always
