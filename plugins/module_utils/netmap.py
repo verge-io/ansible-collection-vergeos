@@ -51,6 +51,7 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.netmap_resolve imp
     PolicyError,
     normalise,
     proposed_rate_limit,
+    vlan_id_for_match,
 )
 
 DEFAULT_POLICY = {
@@ -122,19 +123,7 @@ def index_inventory(networks):
     entries = []
     for net in networks or []:
         name = net.get("name") or ""
-        # network_info returns the API row, where the VLAN id is layer2_id.
-        # vlan_id is the network module's parameter name for the same column.
-        vlan = net.get("vlan_id")
-        if vlan is None:
-            vlan = net.get("vlan")
-        if vlan is None:
-            vlan = net.get("vlanid")
-        if vlan is None:
-            vlan = net.get("layer2_id")
-        try:
-            vlan = int(vlan)
-        except (TypeError, ValueError):
-            vlan = None
+        vlan = vlan_id_for_match(net)
         entry = {"name": name, "vlan": vlan,
                  "type": net.get("network_type") or net.get("type"),
                  "network": net.get("network"),

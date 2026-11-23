@@ -175,6 +175,45 @@
               - "'proposal' in planned.diagram_mermaid"
               - probe_proposal in planned.diagram_mermaid
               - existing_name in planned.diagram_mermaid
+              - planned.plan.warnings == []
+
+        - name: A proposal with no uplink keeps the safety note on the plan
+          vergeio.vergeos.network_map:
+            vms:
+              web01:
+                - key: net2
+                  mac: "AA:BB:CC:DD:EE:03"
+                  model: virtio
+                  bridge: vmbr9
+                  tag: 99
+                  trunks: []
+                  segment: vmbr9.99
+                  connected: true
+            segments:
+              vmbr9.99:
+                segment: vmbr9.99
+                bridge: vmbr9
+                tag: 99
+                cidr: "{{ probe_cidr }}"
+                gateway: "{{ probe_gateway }}"
+                source: sdn
+                confidence: authoritative
+            networks: "{{ before.networks }}"
+            policy:
+              order: [synthesize]
+              synthesize:
+                name_template: "{{ probe_proposal }}"
+          register: isolated
+
+        - name: The uplink note is on the plan and nothing was created
+          ansible.builtin.assert:
+            that:
+              - not isolated.changed
+              - not isolated.applied
+              - isolated.creates | length == 1
+              - isolated.creates[0].name == probe_proposal
+              - isolated.plan.warnings | length == 1
+              - "'interface_network' in isolated.plan.warnings[0]"
 
         - name: The mapping diagram was written locally
           ansible.builtin.stat:

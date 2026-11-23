@@ -138,11 +138,15 @@ def test_write_diagrams_writes_both_files(tmp_path):
         assert "digraph" in handle.read()
 
 
-class _Module(object):
+class _Module:
     def __init__(self, params, check_mode):
         self.params = params
         self.check_mode = check_mode
         self.result = None
+        self.warnings = []
+
+    def warn(self, warning):
+        self.warnings.append(warning)
 
     def exit_json(self, **kwargs):
         self.result = kwargs
@@ -190,4 +194,47 @@ def test_deliver_strict_fails_without_claiming_a_change():
     except SystemExit:
         pass
     assert module.result["changed"] is False
+    assert "refused" in module.result["msg"]
+
+
+def _deliver(module, result, strict=False):
+    try:
+        net_diagram.deliver(module, result, "flowchart LR\n", "digraph g {\n}\n",
+                            strict=strict)
+    except SystemExit:
+        return module
+    raise AssertionError("deliver returned")
+
+
+def test_deliver_emits_warnings_and_keeps_plan_warnings():
+    module = _Module({"diagram_path": None}, check_mode=False)
+    _deliver(module, {
+        "ok": True,
+        "warnings": ["proposed vnet names no uplink"],
+        "plan": {"warnings": ["proposed vnet names no uplink"]},
+    })
+    assert "warnings" not in module.result
+    assert module.result["plan"]["warnings"] == ["proposed vnet names no uplink"]
+    assert module.warnings == ["proposed vnet names no uplink"]
+    assert module.result["changed"] is False
+
+
+def test_deliver_omits_an_empty_warnings_list():
+    module = _Module({"diagram_path": None}, check_mode=False)
+    _deliver(module, {"ok": True, "warnings": [], "plan": {"warnings": []}})
+    assert "warnings" not in module.result
+    assert module.warnings == []
+    assert module.result["plan"]["warnings"] == []
+
+
+def test_deliver_strict_failure_does_not_pass_warnings():
+    module = _Module({"diagram_path": None}, check_mode=False)
+    _deliver(
+        module,
+        {"ok": False, "refusals": [{"vm": "web01"}],
+         "warnings": ["proposed vnet names no uplink"]},
+        strict=True,
+    )
+    assert "warnings" not in module.result
+    assert module.warnings == ["proposed vnet names no uplink"]
     assert "refused" in module.result["msg"]

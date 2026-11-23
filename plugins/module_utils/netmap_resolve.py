@@ -76,6 +76,56 @@ def r_alias(nic, facts, inv, policy):
     return None
 
 
+_EXPLICIT_VLAN_KEYS = ("vlan_id", "vlan", "vlanid")
+
+
+def _layer2_type(net):
+    raw = net.get("layer2_type")
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip().lower()
+    return text or None
+
+
+def _as_vlan_number(value):
+    """Integer VLAN id. A bool is not a VLAN id (``int(True)`` is 1)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def vlan_id_for_match(net):
+    """VLAN id a Proxmox tag may match, or None.
+
+    ``layer2_type: vlan`` matches. The id is the first explicit VLAN
+    field present (``vlan_id``, then ``vlan``, then ``vlanid``), and
+    otherwise ``layer2_id``.
+
+    ``layer2_type`` of ``vxlan``, ``none``, or any other value does not
+    match. On a VXLAN network ``layer2_id`` is the VXLAN id. A stated
+    type other than ``vlan`` is never a VLAN match, including when the
+    row also carries ``vlan_id``.
+
+    When ``layer2_type`` is missing, ``layer2_id`` is unused. An
+    explicit ``vlan_id`` (or ``vlan`` / ``vlanid``) still matches,
+    because those fields name a VLAN id.
+    """
+    if not isinstance(net, dict):
+        return None
+    layer2_type = _layer2_type(net)
+    if layer2_type is not None and layer2_type != "vlan":
+        return None
+    for key in _EXPLICIT_VLAN_KEYS:
+        if net.get(key) is not None:
+            return _as_vlan_number(net.get(key))
+    if layer2_type == "vlan":
+        return _as_vlan_number(net.get("layer2_id"))
+    return None
+
+
 def r_vlan(nic, facts, inv, policy):
     vlan = nic.get("tag")
     if vlan is None:
@@ -94,10 +144,30 @@ def r_vlan(nic, facts, inv, policy):
     return None
 
 
+def _tagged_access(nic, facts):
+    """True for a tagged access port such as ``vmbr7.3001``.
+
+    The bare bridge is a separate layer-2 domain. Trunks are refused
+    before resolvers run.
+    """
+    if nic.get("tag") is not None:
+        return True
+    if (facts or {}).get("tag") is not None:
+        return True
+    bridge = nic.get("bridge") or ""
+    segment = nic.get("segment") or ""
+    prefix = bridge + "."
+    if not bridge or not segment.startswith(prefix):
+        return False
+    return segment[len(prefix):].isdigit()
+
+
 def r_name(nic, facts, inv, policy):
-    for key, label in ((nic.get("segment"), "segment"),
-                       ((facts or {}).get("sdn_vnet"), "SDN vnet"),
-                       (nic.get("bridge"), "bridge")):
+    keys = [(nic.get("segment"), "segment"),
+            ((facts or {}).get("sdn_vnet"), "SDN vnet")]
+    if not _tagged_access(nic, facts):
+        keys.append((nic.get("bridge"), "bridge"))
+    for key, label in keys:
         if not key:
             continue
         cands = inv["by_name"].get(normalise(key), [])

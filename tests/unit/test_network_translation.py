@@ -31,8 +31,13 @@ def _module_path(name):
     return os.path.join(_root(), "plugins", "modules", name + ".py")
 
 
+def _read(path):
+    with open(path) as handle:
+        return handle.read()
+
+
 def _assign(path, name):
-    tree = ast.parse(open(path).read())
+    tree = ast.parse(_read(path))
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
@@ -44,7 +49,7 @@ def _assign(path, name):
 
 def test_modules_are_read_only_and_support_check_mode():
     for name in MODULES:
-        source = open(_module_path(name)).read()
+        source = _read(_module_path(name))
         assert "supports_check_mode=True" in source, name
         assert "get_vergeos_client" not in source, name
         assert "networks.create" not in source, name
@@ -57,18 +62,34 @@ def test_modules_are_read_only_and_support_check_mode():
 
 
 def test_docs_say_this_does_not_migrate_or_apply():
-    text = open(os.path.join(_root(), "docs", "NETWORK-TRANSLATION.md")).read().lower()
+    text = _read(os.path.join(_root(), "docs", "NETWORK-TRANSLATION.md")).lower()
     assert "do not migrate" in text
     assert "do not change vergeos" in text
     assert "trunk" in text
     assert "out of scope" in text
     assert "fixture-tested" in text
     assert "verify-network-translation.yml" in text
+    assert "when `layer2_type` is missing" in text
+    assert "vxlan" in text
+    assert "vmbr7.3001" in text
+    assert "plan.warnings" in text
+
+
+def test_return_docs_keep_warnings_off_the_top_level():
+    for name in ("network_map", "network_guard", "proxmox_host_network"):
+        block = yaml.safe_load(_assign(_module_path(name), "RETURN"))
+        assert "warnings" not in block, name
+    plan = yaml.safe_load(_assign(_module_path("network_map"), "RETURN"))
+    notes = yaml.safe_load(_assign(_module_path("network_map"), "DOCUMENTATION"))
+    warnings = plan["plan"]["contains"]["warnings"]
+    text = " ".join(warnings["description"])
+    assert "uplink" in text.lower()
+    assert "RV(plan.warnings)" in " ".join(notes["notes"])
 
 
 def test_live_probe_is_read_only():
     path = os.path.join(_root(), "tests", "live", "verify-network-translation.yml")
-    text = open(path).read()
+    text = _read(path)
     assert "vergeio.vergeos.network_info:" in text
     assert "vergeio.vergeos.network:" not in text
     assert "vergeio.vergeos.vm:" not in text

@@ -25,6 +25,10 @@ description:
     C(live) mode. There is no global override.
   - This is a planning and visualization feature. It does not migrate data,
     create vnets, or attach NICs. Cutover is out of scope.
+  - Safety notes, including a proposal that would hold a live source
+    gateway, are emitted with the module warning facility. Notes already
+    recorded on the plan stay on that plan's C(warnings). This module
+    does not return a top-level C(warnings) key.
 options:
   plan:
     description:
@@ -84,6 +88,8 @@ notes:
   - Read-only. Always reports C(changed=false). Supports C(check_mode).
   - Does not migrate data and does not apply the plan.
   - Trunk refusals in the plan stay refusals. The guard does not rehabilitate them.
+  - Safety notes are emitted with the module warning facility, not a
+    top-level C(warnings) return key.
 author:
   - VergeIO (@vergeio)
 '''
@@ -121,11 +127,6 @@ refusals:
   returned: success
   type: list
   elements: dict
-warnings:
-  description: Warnings carried from the plan, plus proposal warnings such as a duplicate gateway.
-  returned: success
-  type: list
-  elements: str
 ok:
   description: False when any verdict is refuse.
   returned: success

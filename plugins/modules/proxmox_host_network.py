@@ -26,6 +26,9 @@ description:
     data or change the source hypervisor or VergeOS.
   - Host topology is fixture-tested. This collection has no Proxmox node
     to test against.
+  - When the interfaces file sources other files, each one is reported
+    with the module warning facility. This module does not return a
+    top-level C(warnings) key.
 options:
   interfaces:
     description:
@@ -53,6 +56,8 @@ notes:
   - Does not migrate data and does not apply changes.
   - Trunk translation is out of scope.
   - Cutover, applying a plan to VergeOS, is out of scope.
+  - A sourced interfaces file is reported with the module warning facility.
+    There is no top-level C(warnings) return key.
 author:
   - VergeIO (@vergeio)
 '''
@@ -92,11 +97,6 @@ sdn:
   description: Parsed SDN zones, vnets and subnets.
   returned: success
   type: dict
-warnings:
-  description: Present when the interfaces file sources other files that were not provided.
-  returned: when the interfaces file has a source line
-  type: list
-  elements: str
 diagram_mermaid:
   description: Mermaid flowchart of the source topology.
   returned: success

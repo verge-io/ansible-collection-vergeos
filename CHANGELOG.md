@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`network_map`: a VLAN tag matches a VLAN network** (#232). The `vlan` resolver indexed every `layer2_id` as a VLAN id. On a VXLAN network that column is the VXLAN id, so tags 1 and 2 were planned onto DMZ and Core when those networks used VXLAN ids 1 and 2. A tag now matches a network whose `layer2_type` is `vlan` (the id is `vlan_id` when set, otherwise `layer2_id`). A VXLAN id stays unmatched, including `layer2_type: none` and any other layer 2 type. When `layer2_type` is missing, `layer2_id` is left unused and an explicit `vlan_id` (or `vlan` / `vlanid`) still matches.
+
+- **`network_map`: a tagged access port stays off the bridge name** (#233). After the `vlan` resolver abstained, the `name` resolver tried the bare bridge, so `vmbr7.3001`, `vmbr7.3002`, and untagged `vmbr7` were planned onto one vnet named `vmbr7`. A tagged access port matches its segment or its SDN vnet. The bare bridge name is reserved for the untagged bridge segment. Trunks were already refused before that fallback.
+
+- **Network translation modules emit warnings with `module.warn()`** (#235). `network_map`, `network_guard`, and `proxmox_host_network` passed a top-level `warnings` key to `exit_json`. ansible-core 2.21 and later deprecates that key and 2.23 removes it, which would have hidden the safety notes. Each note is now emitted with `AnsibleModule.warn`. `network_map` still records the same notes on `plan.warnings`.
+
 - **`network_guard`: `existing_nics` accepts `vm_nic_info` output and unconfirmed MACs** (#234). `index_existing_nics()` only read `mac_address` or `mac` together with `vm_name` or `vm`. When `vm_nic_info` output was passed, its rows (which use `macaddress`, `machine`, and `vnet_name`) were skipped, allowing duplicate MACs to be approved on live attachments. `index_existing_nics()` now recognizes `macaddress`, `machine` (as VM identifier), and `vnet_name`. Furthermore, an existing NIC whose VM name is unspecified or unconfirmed is refused rather than treated as absent evidence of conflict.
 
 - **Each recipe filter has its own documentation** (#226). `ansible-doc` shows the description, arguments, and return value for `vergeos_not_applicable` and `vergeos_tier_step_unanswered`. Filter documentation carries `version_added` 2.3.0.

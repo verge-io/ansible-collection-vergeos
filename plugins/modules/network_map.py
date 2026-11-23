@@ -21,6 +21,15 @@ description:
     C(vlan), C(name). C(synthesize) is omitted until the policy adds it,
     so proposing new vnets is opt-in.
   - Ambiguity is a refusal that names every candidate and stops the chain.
+  - The C(vlan) resolver matches a Proxmox VLAN tag to a network whose
+    C(layer2_type) is C(vlan). The id is C(vlan_id) when that field is
+    set, otherwise C(layer2_id). A VXLAN network's C(layer2_id) is a
+    VXLAN id and is left unmatched. When C(layer2_type) is absent,
+    C(layer2_id) is left unused and an explicit C(vlan_id) (or C(vlan)
+    / C(vlanid)) still matches.
+  - The C(name) resolver matches a tagged access port, such as
+    C(vmbr7.3001), by its segment or SDN vnet. The bare bridge name is
+    reserved for the untagged bridge segment.
   - A synthesized entry in RV(creates) is a proposal. It is shaped like
     M(vergeio.vergeos.network) parameters, including C(interface_network)
     and C(rate_limit) when the policy and the captured NIC supply them.
@@ -77,6 +86,9 @@ notes:
     proposed values only.
   - Trunk ports are refused with an error that names the trunk VLANs.
   - Applying the plan during migration is out of scope.
+  - Safety notes are emitted with the module warning facility and recorded
+    on RV(plan.warnings). This module does not return a top-level
+    C(warnings) key.
 author:
   - VergeIO (@vergeio)
 '''
@@ -102,9 +114,18 @@ EXAMPLES = r'''
 
 RETURN = r'''
 plan:
-  description: The plan. RV(creates) inside it are proposals, not created vnets.
+  description:
+    - The plan. RV(creates) inside it are proposals, not created vnets.
   returned: success
   type: dict
+  contains:
+    warnings:
+      description:
+        - Safety notes, such as a proposal that names no uplink.
+        - A warning is not a refusal. The same notes are emitted with the module warning facility.
+      returned: success
+      type: list
+      elements: str
 decisions:
   description: One row per NIC. C(action) is map, create, detach, bubble or refuse.
   returned: success
@@ -128,11 +149,6 @@ refusals:
   returned: success
   type: list
   elements: dict
-warnings:
-  description: Plan warnings. A warning is not a refusal. A missing proposed uplink is a warning.
-  returned: success
-  type: list
-  elements: str
 ok:
   description: False when any NIC was refused.
   returned: success

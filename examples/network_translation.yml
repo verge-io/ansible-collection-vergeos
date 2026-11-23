@@ -64,4 +64,5 @@
           - not guard.changed
           - not guard.applied
           - plan.decisions | selectattr('resolver', 'equalto', 'trunk') | list | length == 1
+          - plan.plan.warnings == []
           - not guard.ok

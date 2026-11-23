@@ -44,17 +44,46 @@ Ambiguity is a refusal that names both candidates and stops the chain.
 Two vnets on one VLAN are not a guess, and they are not a reason to
 synthesize a third.
 
-`vlan` matching reads `vlan_id` or the API column `layer2_id`, which is
-what `network_info` returns.
+`vlan` matching compares a Proxmox VLAN tag with a VergeOS network
+whose `layer2_type` is `vlan`. The id is `vlan_id` when that field is
+set, otherwise the API column `layer2_id`. `network_info` returns
+`layer2_type` and `layer2_id`.
+
+A VXLAN network stays out of that match. Its `layer2_id` is a VXLAN id,
+so tags 1 and 2 stay off Core and DMZ when those networks use VXLAN ids
+1 and 2. `layer2_type: none` and any other layer 2 type are treated the
+same way. A stated type other than `vlan` stays unmatched even when the
+row also carries `vlan_id`.
+
+When `layer2_type` is missing, `layer2_id` is left unused. The number
+may be a VXLAN id on a row that omitted the type. An explicit `vlan_id`
+still matches in that case, as do the `vlan` and `vlanid` spellings.
+Those fields name a VLAN id.
+
+The `name` resolver tries the segment, then the SDN vnet. It tries the
+bare bridge only for an untagged segment. A tagged access port such as
+`vmbr7.3001` stays off a vnet named `vmbr7`. VLAN 3001, VLAN 3002, and
+the untagged `vmbr7` segment are three layer 2 domains. The untagged
+segment can still match by its own name. A trunk is refused before this
+resolver runs.
 
 A proposal uses the `network` module's parameter names. `interface_network`
 is the proposed uplink (the module stores it as `interface_vnet`).
 `rate_limit` is the captured Proxmox `rate`, in MB/s, as an integer.
 `0` means explicitly uncapped. A positive fraction that would round to
 0 is proposed as 1. Neither field is sent to VergeOS. When the policy
-names no `interface_network`, the proposal says so and the plan warns.
-That warning is not a claim that the `network` module is unable to set
-an uplink.
+names no `interface_network`, the proposal says so and the note is
+recorded on `plan.warnings`. The same note is emitted with Ansible's
+module warning facility. That note is not a claim that the `network`
+module is unable to set an uplink.
+
+`network_map`, `network_guard`, and `proxmox_host_network` do not pass
+a top-level `warnings` key to `exit_json`. ansible-core 2.21 and later
+deprecates that key, and 2.23 removes it. `network_guard` emits its own
+safety notes, such as a proposal that would hold a live source gateway,
+the same way. Notes already on the plan stay on `plan.warnings`. When a
+captured interfaces file sources other files, `proxmox_host_network`
+emits that with the module warning facility.
 
 ## Guard
 

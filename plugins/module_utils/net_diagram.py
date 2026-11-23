@@ -27,6 +27,23 @@ def diagram_paths(path):
     return path + ".mmd", path + ".dot"
 
 
+def _emit_warnings(module, payload):
+    """Hand safety notes to ``module.warn`` and drop the return key.
+
+    ansible-core 2.21 and later deprecates a ``warnings`` argument to
+    ``exit_json`` and ``fail_json``, and 2.23 removes it. Nested copies
+    such as ``plan.warnings`` stay on the payload.
+    """
+    warnings = payload.pop("warnings", None)
+    if not warnings:
+        return
+    if isinstance(warnings, str):
+        module.warn(warnings)
+        return
+    for message in warnings:
+        module.warn(message)
+
+
 def deliver(module, result, mermaid, dot, strict=False):
     """Return a read-only result, optionally writing the pictures.
 
@@ -35,6 +52,7 @@ def deliver(module, result, mermaid, dot, strict=False):
     still includes the result so the refusal is visible.
     """
     payload = dict(result)
+    _emit_warnings(module, payload)
     payload["diagram_mermaid"] = mermaid
     payload["diagram_dot"] = dot
     payload["changed"] = False

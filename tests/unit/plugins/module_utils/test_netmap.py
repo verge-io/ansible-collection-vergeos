@@ -77,10 +77,89 @@ def test_strict_table_refuses_anything_not_in_it():
 
 
 def test_vlan_match_reads_the_api_layer2_id():
-    """network_info returns layer2_id, not the module parameter vlan_id."""
-    inventory = [{"name": "prod-web", "layer2_id": 20, "type": "external"}]
+    """network_info returns layer2_type and layer2_id, not vlan_id."""
+    inventory = [{"name": "prod-web", "layer2_type": "vlan", "layer2_id": 20,
+                  "type": "external"}]
     d = only(run([nic()], AUTHORITATIVE, inventory, {"order": ["vlan"]}))
     assert (d["action"], d["target"]) == ("map", "prod-web")
+
+
+def test_vlan_match_accepts_a_string_layer2_id():
+    inventory = [{"name": "prod-web", "layer2_type": "VLAN", "layer2_id": "20"}]
+    d = only(run([nic()], {}, inventory, {"order": ["vlan"]}))
+    assert (d["action"], d["target"]) == ("map", "prod-web")
+
+
+def test_vlan_layer2_type_prefers_an_explicit_vlan_id():
+    inventory = [{"name": "prod-web", "layer2_type": "vlan",
+                  "vlan_id": 20, "layer2_id": 99}]
+    d = only(run([nic()], {}, inventory, {"order": ["vlan"]}))
+    assert d["target"] == "prod-web"
+    other = only(run([nic(segment="vmbr0.99", tag=99)], {}, inventory,
+                     {"order": ["vlan"]}))
+    assert other["action"] == "refuse"
+
+
+@pytest.mark.parametrize("key", ["vlan_id", "vlan", "vlanid"])
+def test_explicit_vlan_field_matches_when_layer2_type_is_missing(key):
+    """A missing layer2_type leaves layer2_id unused. vlan_id still matches."""
+    inventory = [{"name": "prod-web", key: 20, "layer2_id": 99}]
+    d = only(run([nic()], {}, inventory, {"order": ["vlan"]}))
+    assert (d["action"], d["target"]) == ("map", "prod-web")
+
+
+def test_bare_layer2_id_without_layer2_type_is_not_a_vlan_match():
+    """layer2_id alone may be a VXLAN id. It is not treated as a VLAN."""
+    inventory = [{"name": "prod-web", "layer2_id": 20, "type": "external"}]
+    d = only(run([nic()], AUTHORITATIVE, inventory, {"order": ["vlan"]}))
+    assert d["action"] == "refuse"
+    assert d["target"] is None
+    assert "matches an existing vnet" not in d["why"]
+
+
+def test_a_boolean_vlan_id_is_not_vlan_one():
+    inventory = [{"name": "DMZ", "vlan_id": True}]
+    d = only(run([nic(segment="vmbr0.1", tag=1, bridge="vmbr0")],
+                 {}, inventory, {"order": ["vlan"]}))
+    assert d["action"] == "refuse"
+
+
+def test_non_vlan_layer2_type_stays_unmatched_even_with_vlan_id():
+    inventory = [{"name": "flat", "layer2_type": "none",
+                  "layer2_id": 20, "vlan_id": 20}]
+    d = only(run([nic()], {}, inventory, {"order": ["vlan"]}))
+    assert d["action"] == "refuse"
+    assert d["target"] is None
+
+
+def test_low_vlan_tags_do_not_map_onto_vxlan_core_and_dmz():
+    """Core and DMZ style networks carry VXLAN ids 1 and 2.
+
+    A guest on VLAN 1, 2, or 13 must stay off those networks. A real
+    VLAN 20 still matches, and a VXLAN network that happens to use id
+    20 does not make the match ambiguous.
+    """
+    inventory = [
+        {"name": "DMZ", "type": "external", "layer2_type": "vxlan",
+         "layer2_id": 1},
+        {"name": "Core", "type": "internal", "layer2_type": "vxlan",
+         "layer2_id": 2},
+        {"name": "internal", "type": "internal", "layer2_type": "vxlan",
+         "layer2_id": 13},
+        {"name": "also-twenty", "type": "internal", "layer2_type": "VXLAN",
+         "layer2_id": 20},
+        {"name": "prod-web", "type": "external", "layer2_type": "vlan",
+         "layer2_id": 20},
+    ]
+    for tag in (1, 2, 13, 3000):
+        d = only(run([nic(segment="vmbr0.%d" % tag, tag=tag, bridge="vmbr0")],
+                     {}, inventory))
+        assert d["action"] == "refuse", (tag, d)
+        assert d["target"] is None
+        assert "matches an existing vnet" not in d["why"]
+    mapped = only(run([nic()], {}, inventory))
+    assert (mapped["action"], mapped["target"], mapped["resolver"]) == \
+        ("map", "prod-web", "vlan")
 
 
 def test_map_to_existing_by_vlan():
@@ -332,6 +411,79 @@ def test_trunk_is_not_mapped_onto_the_bridge_name():
     d = only(run([n], {}, inventory, {"order": ["name", "synthesize"]}))
     assert d["action"] == "refuse"
     assert d["target"] is None
+
+
+def test_tagged_access_ports_are_not_mapped_onto_the_bridge_name():
+    """vmbr7.3001, vmbr7.3002 and untagged vmbr7 are three layer-2 domains.
+
+    Default policy, one vnet named after the bridge. The tagged ports
+    must refuse. The untagged segment may still match by name.
+    """
+    inventory = [{"name": "vmbr7", "type": "internal"}]
+    nics = [
+        nic(key="net0", mac="AA:BB:CC:DD:EE:01",
+            segment="vmbr7.3001", tag=3001, bridge="vmbr7"),
+        nic(key="net1", mac="AA:BB:CC:DD:EE:02",
+            segment="vmbr7.3002", tag=3002, bridge="vmbr7"),
+        nic(key="net2", mac="AA:BB:CC:DD:EE:03",
+            segment="vmbr7", tag=None, bridge="vmbr7"),
+    ]
+    by_segment = {d["segment"]: d for d in run(nics, {}, inventory)["decisions"]}
+    for segment in ("vmbr7.3001", "vmbr7.3002"):
+        decided = by_segment[segment]
+        assert decided["action"] == "refuse", decided
+        assert decided["target"] is None
+        assert all(step["result"] == "abstained" for step in decided["tried"])
+        assert "bridge name" not in decided["why"]
+    untagged = by_segment["vmbr7"]
+    assert (untagged["action"], untagged["target"], untagged["resolver"]) == \
+        ("map", "vmbr7", "name")
+    assert "segment name" in untagged["why"]
+
+
+def test_tagged_access_port_matches_its_own_segment_name():
+    inventory = [
+        {"name": "vmbr7", "type": "internal"},
+        {"name": "vmbr7.3001", "type": "internal"},
+    ]
+    d = only(run([nic(segment="vmbr7.3001", tag=3001, bridge="vmbr7")],
+                 {}, inventory, {"order": ["name"]}))
+    assert (d["action"], d["target"]) == ("map", "vmbr7.3001")
+    assert d["why"].startswith("segment name")
+
+
+def test_tagged_segment_form_does_not_fall_back_to_the_bridge():
+    inventory = [{"name": "vmbr7", "type": "internal"}]
+    d = only(run([nic(segment="vmbr7.3001", tag=None, bridge="vmbr7")],
+                 {}, inventory, {"order": ["name"]}))
+    assert d["action"] == "refuse"
+    assert d["target"] is None
+
+
+def test_segment_facts_tag_blocks_the_bridge_name_fallback():
+    segs = {"webvnet": {"tag": 3001}}
+    inventory = [{"name": "vmbr7", "type": "internal"}]
+    d = only(run([nic(segment="webvnet", tag=None, bridge="vmbr7")],
+                 segs, inventory, {"order": ["name"]}))
+    assert d["action"] == "refuse"
+    assert d["target"] is None
+
+
+def test_tagged_access_port_can_match_an_sdn_vnet_name():
+    segs = {"vmbr7.3001": {"tag": 3001, "sdn_vnet": "webvnet"}}
+    inventory = [{"name": "vmbr7"}, {"name": "webvnet"}]
+    d = only(run([nic(segment="vmbr7.3001", tag=3001, bridge="vmbr7")],
+                 segs, inventory, {"order": ["name"]}))
+    assert (d["action"], d["target"]) == ("map", "webvnet")
+    assert "SDN vnet" in d["why"]
+
+
+def test_untagged_nic_still_falls_back_to_the_bridge_name():
+    inventory = [{"name": "vmbr1", "type": "internal"}]
+    d = only(run([nic(segment="other", tag=None, bridge="vmbr1")],
+                 {}, inventory, {"order": ["name"]}))
+    assert (d["action"], d["target"]) == ("map", "vmbr1")
+    assert "bridge name" in d["why"]
 
 
 def test_allow_trunk_does_not_translate_a_trunk():
