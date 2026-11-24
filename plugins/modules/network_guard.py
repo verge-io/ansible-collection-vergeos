@@ -34,6 +34,9 @@ options:
     description:
       - Plan from M(vergeio.vergeos.network_map), or the registered result
         of that task.
+      - A decision may include C(machine), the VergeOS machine key of that
+        VM. M(vergeio.vergeos.vm_nic_info) returns the same key on each NIC
+        and, as a string, in its C(machine) result.
     type: dict
     required: true
   source_states:
@@ -48,12 +51,19 @@ options:
       - NICs that already exist in VergeOS, as a read-only list. A MAC
         owned by a different VM is a refusal. Re-reading the same VM is
         not a conflict.
-      - Accepts the output of M(vergeio.vergeos.vm_nic_info) (keys
-        C(macaddress), C(machine), C(vnet_name) or C(vnet)), as well as
-        generic rows with C(mac_address) or C(mac), C(vm_name) or C(vm),
-        and C(network).
-      - If a row contains a MAC address without a VM identifier, it is
-        treated as an unconfirmed VM conflict and refused.
+      - Rows from M(vergeio.vergeos.vm_nic_info) use C(macaddress),
+        C(vnet_name) or C(vnet), C(machine), and C(vm_name). C(machine)
+        is the integer machine key, not the VM name. C(name) is the NIC
+        name. C(vm_name) is the VM that holds the MAC. The NIC resource
+        has no VM name column, so C(vm_name) is set by that module from
+        the VM it resolved.
+      - A row with only C(machine) is the same VM when the decision's
+        C(machine) is that key, including when one side is the integer
+        and the other is the decimal string. Otherwise the MAC is refused
+        and the message names the machine key.
+      - Generic rows may use C(mac_address) or C(mac), C(vm_name) or
+        C(vm), and C(network).
+      - A MAC with no VM name and no machine key is refused.
     type: list
     elements: dict
   attach_mode:

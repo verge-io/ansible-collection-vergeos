@@ -61,8 +61,51 @@ def normalise_mac(mac):
     return (mac or "").strip().upper().replace("-", ":")
 
 
+# Name columns. ``name`` is the NIC name. ``machine`` is the machine key.
+_VM_NAME_KEYS = ("vm_name", "vm", "machine_name")
+
+
+def machine_key(value):
+    """Integer machine key, or None.
+
+    ``bool`` is an ``int`` subclass and is not a key. A numeric string is
+    a key: ``vm_nic_info`` returns the VM's machine as ``str(key)``.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text.isdigit():
+            return None
+        return int(text)
+    return None
+
+
+def _vm_name(entry):
+    for key in _VM_NAME_KEYS:
+        val = entry.get(key)
+        if isinstance(val, str) and val != "":
+            return val
+    return ""
+
+
+def _network_name(entry):
+    for key in ("network", "vnet_name", "vnet"):
+        val = entry.get(key)
+        if val is not None and val != "":
+            return str(val)
+    return ""
+
+
 def index_existing_nics(nics):
-    """Map MAC -> list of {vm, network} already present in VergeOS."""
+    """Map a MAC to holders already present in VergeOS.
+
+    A holder is ``vm`` (VM name), ``machine`` (integer key, or None), and
+    ``network``. On a ``vm_nic_info`` row, ``machine`` is the key and
+    ``vm_name`` is the VM. ``name`` is the NIC.
+    """
     out = {}
     for entry in nics or []:
         mac = normalise_mac(
@@ -72,23 +115,42 @@ def index_existing_nics(nics):
         )
         if not mac:
             continue
-        vm = ""
-        for k in ("vm_name", "vm", "machine_name", "machine"):
-            val = entry.get(k)
-            if val is not None and val != "":
-                vm = str(val)
-                break
-        network = ""
-        for k in ("network", "vnet_name", "vnet"):
-            val = entry.get(k)
-            if val is not None and val != "":
-                network = str(val)
-                break
         out.setdefault(mac, []).append({
-            "vm": vm,
-            "network": network,
+            "vm": _vm_name(entry),
+            "machine": machine_key(entry.get("machine")),
+            "network": _network_name(entry),
         })
     return out
+
+
+def _same_vm(holder, vm, planned_machine):
+    """True when this holder is the VM the plan is about.
+
+    A VM name on the row wins. With no name, the machine keys match when
+    the plan carries the planned VM's key.
+    """
+    if holder["vm"] and holder["vm"] == vm:
+        return True
+    if holder["vm"]:
+        return False
+    return (planned_machine is not None
+            and holder["machine"] is not None
+            and holder["machine"] == planned_machine)
+
+
+def _holder_where(holder):
+    if holder["vm"] and holder["network"]:
+        return " on VM %r (network %r)" % (holder["vm"], holder["network"])
+    if holder["vm"]:
+        return " on VM %r" % holder["vm"]
+    if holder["machine"] is not None and holder["network"]:
+        return " on machine key %s (network %r)" % (
+            holder["machine"], holder["network"])
+    if holder["machine"] is not None:
+        return " on machine key %s" % holder["machine"]
+    if holder["network"]:
+        return " (network %r)" % holder["network"]
+    return ""
 
 
 def source_is_down(vm, states):
@@ -231,6 +293,7 @@ def _gate(decision, context):
 
     mac = normalise_mac(decision.get("mac"))
     vm = decision.get("vm")
+    planned_machine = machine_key(decision.get("machine"))
 
     # Duplicate MAC inside the wave itself. Two migrated VMs on one MAC is
     # a self-inflicted collision that no source-side check would catch.
@@ -242,23 +305,12 @@ def _gate(decision, context):
                        % (mac, prior[0], prior[1]))
         seen_macs[mac] = (vm, decision.get("nic"))
 
-    # Same MAC already live in VergeOS on a different VM. Re-running
-    # against the same VM is idempotent and allowed. An existing MAC
-    # whose VM is unknown cannot be confirmed as the same VM, so it
-    # is refused -- absence of evidence is not evidence of absence.
     for holder in existing.get(mac, []):
-        if holder["vm"] and holder["vm"] == vm:
+        if _same_vm(holder, vm, planned_machine):
             continue
-        location = ""
-        if holder["vm"] and holder["network"]:
-            location = " on VM %r (network %r)" % (holder["vm"], holder["network"])
-        elif holder["vm"]:
-            location = " on VM %r" % holder["vm"]
-        elif holder["network"]:
-            location = " (network %r)" % holder["network"]
         return out("refuse", None,
                    "MAC %s already exists in VergeOS%s; attaching would duplicate it"
-                   % (mac, location))
+                   % (mac, _holder_where(holder)))
 
     if mode == "detached":
         return out("approve", None,
