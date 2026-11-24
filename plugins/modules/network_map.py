@@ -27,6 +27,12 @@ description:
     VXLAN id and is left unmatched. When C(layer2_type) is absent,
     C(layer2_id) is left unused and an explicit C(vlan_id) (or C(vlan)
     / C(vlanid)) still matches.
+  - A segment tag is a VLAN id when C(sdn_zone_type) is C(vlan) or
+    C(qinq), and when the segment names no SDN zone. On a C(vxlan) or
+    C(evpn) zone that tag is a VXLAN id. The C(vlan) resolver does not
+    use it, and it is not matched to a VergeOS VXLAN network. A tag
+    on the NIC itself is still the guest access VLAN. A synthesized
+    proposal follows the same rule for C(vlan_id).
   - The C(name) resolver matches a tagged access port, such as
     C(vmbr7.3001), by its segment or SDN vnet. The bare bridge name is
     reserved for the untagged bridge segment.

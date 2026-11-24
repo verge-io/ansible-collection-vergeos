@@ -60,6 +60,14 @@ may be a VXLAN id on a row that omitted the type. An explicit `vlan_id`
 still matches in that case, as do the `vlan` and `vlanid` spellings.
 Those fields name a VLAN id.
 
+A segment tag is that VLAN id only when `sdn_zone_type` is `vlan` or
+`qinq`, or when the segment names no SDN zone. On a `vxlan` or `evpn`
+zone the tag is a VXLAN id. The `vlan` resolver leaves it unmatched,
+and it is not compared with a VergeOS network's VXLAN id. The other
+resolvers, or the unmapped path, decide the NIC. A tag set on the NIC
+itself is still the guest access VLAN. A synthesized proposal uses the
+same rule when it sets `vlan_id`.
+
 The `name` resolver tries the segment, then the SDN vnet. It tries the
 bare bridge only for an untagged segment. A tagged access port such as
 `vmbr7.3001` stays off a vnet named `vmbr7`. VLAN 3001, VLAN 3002, and

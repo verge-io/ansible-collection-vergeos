@@ -71,6 +71,8 @@ def test_docs_say_this_does_not_migrate_or_apply():
     assert "verify-network-translation.yml" in text
     assert "when `layer2_type` is missing" in text
     assert "vxlan" in text
+    assert "sdn_zone_type" in text
+    assert "evpn" in text
     assert "vmbr7.3001" in text
     assert "plan.warnings" in text
 

@@ -25,6 +25,7 @@ answers or abstains, and the first answer wins:
   explicit     operator's own segment -> vnet table. Always authoritative.
   alias        match an existing vnet by the source's SDN alias.
   vlan         match an existing vnet carrying the same VLAN id.
+               A VXLAN or EVPN zone tag is a VXLAN id and is skipped.
   name         match an existing vnet by (normalised) segment or bridge name.
   synthesize   emit a create-spec for a vnet the source implies.
 
