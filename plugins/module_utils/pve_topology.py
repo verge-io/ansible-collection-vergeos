@@ -32,7 +32,7 @@ Two sources are merged:
     subnet, because on a VLAN-aware bridge they are routinely different.
 
   * /etc/pve/sdn/*.cfg -- when Proxmox SDN is in use this is far richer:
-    zones carry the underlying bridge, vnets carry the VLAN tag, and
+    zones carry the underlying bridge and type, vnets carry the tag, and
     subnets carry CIDR, gateway and DHCP ranges. That is exactly the
     information synthesis needs, and it is authoritative rather than
     inferred.

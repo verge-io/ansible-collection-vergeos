@@ -11,6 +11,8 @@ __metaclass__ = type
 import pytest
 
 from ansible_collections.vergeio.vergeos.plugins.module_utils import netmap
+from ansible_collections.vergeio.vergeos.plugins.module_utils import pve_net_parse as pnp
+from ansible_collections.vergeio.vergeos.plugins.module_utils import pve_topology as top
 from ansible_collections.vergeio.vergeos.plugins.module_utils.netmap import PolicyError
 from ansible_collections.vergeio.vergeos.plugins.module_utils.netmap_resolve import (
     VNET_TYPES,
@@ -162,6 +164,129 @@ def test_low_vlan_tags_do_not_map_onto_vxlan_core_and_dmz():
         ("map", "prod-web", "vlan")
 
 
+def _overlay_inventory():
+    return [
+        {"name": "vlan-3001", "layer2_type": "vlan", "layer2_id": 3001},
+        {"name": "vxlan-3001", "layer2_type": "vxlan", "layer2_id": 3001},
+    ]
+
+
+def _sdn_segment(zone, tag=3001):
+    return {"segment": "vnet1", "sdn_vnet": "vnet1", "sdn_zone_type": zone,
+            "tag": tag, "source": "sdn", "confidence": "sdn"}
+
+
+@pytest.mark.parametrize("zone,matches", [
+    ("vlan", True),
+    ("VLAN", True),
+    ("qinq", True),
+    ("vxlan", False),
+    ("VXLAN", False),
+    ("evpn", False),
+    ("EVPN", False),
+    ("simple", False),
+])
+def test_zone_type_decides_whether_a_shared_tag_is_a_vlan(zone, matches):
+    """VLAN, QinQ, VXLAN and EVPN can all use tag 3001. Only VLAN ids match."""
+    d = only(run(
+        [nic(segment="vnet1", tag=None, bridge="vnet1")],
+        {"vnet1": _sdn_segment(zone)}, _overlay_inventory(),
+        {"order": ["vlan"]}))
+    if matches:
+        assert (d["action"], d["target"], d["resolver"]) == \
+            ("map", "vlan-3001", "vlan")
+    else:
+        assert d["action"] == "refuse", (zone, d)
+        assert d["target"] is None
+        assert d["resolver"] == "fallback"
+        assert "matches an existing vnet" not in d["why"]
+
+
+def test_linux_vlan_segment_tag_still_matches_without_a_zone():
+    segs = {"vmbr0.3001": {"segment": "vmbr0.3001", "bridge": "vmbr0",
+                           "tag": 3001, "source": "interfaces",
+                           "confidence": "name-only"}}
+    d = only(run(
+        [nic(segment="vmbr0.3001", tag=None, bridge="vmbr0")],
+        segs, _overlay_inventory(), {"order": ["vlan"]}))
+    assert (d["action"], d["target"], d["resolver"]) == \
+        ("map", "vlan-3001", "vlan")
+
+
+def test_overlay_vnet_matches_by_name_after_the_vlan_resolver_abstains():
+    inventory = _overlay_inventory() + [{"name": "vxnet1", "type": "internal"}]
+    d = only(run(
+        [nic(segment="vxnet1", tag=None, bridge="vxnet1")],
+        {"vxnet1": {"segment": "vxnet1", "sdn_vnet": "vxnet1",
+                    "sdn_zone_type": "vxlan", "tag": 3001}},
+        inventory))
+    assert (d["action"], d["target"], d["resolver"]) == \
+        ("map", "vxnet1", "name")
+
+
+def test_sdn_vxlan_and_evpn_tags_are_not_planned_onto_a_vlan():
+    """The captured SDN files from issue #238. Same tag, three zone types."""
+    interfaces = (
+        "auto vmbr0\n"
+        "iface vmbr0 inet manual\n"
+        "    bridge-ports eno1\n"
+        "    bridge-stp off\n"
+        "    bridge-fd 0\n"
+        "    bridge-vlan-aware yes\n"
+    )
+    zones = (
+        "vlan: vlz1\n"
+        "        bridge vmbr0\n"
+        "\n"
+        "vxlan: vxz1\n"
+        "        peers 192.0.2.1,192.0.2.2\n"
+        "        mtu 1450\n"
+        "\n"
+        "evpn: evz1\n"
+        "        controller evpnctl\n"
+        "        vrf-vxlan 4000\n"
+        "        mtu 1450\n"
+    )
+    vnets = (
+        "vnet: vlnet1\n"
+        "        zone vlz1\n"
+        "        tag 3001\n"
+        "\n"
+        "vnet: vxnet1\n"
+        "        zone vxz1\n"
+        "        tag 3001\n"
+        "\n"
+        "vnet: evnet1\n"
+        "        zone evz1\n"
+        "        tag 3001\n"
+    )
+    qm = (
+        "net0: virtio=AA:BB:CC:00:01:01,bridge=vlnet1\n"
+        "net1: virtio=AA:BB:CC:00:01:02,bridge=vxnet1\n"
+        "net2: virtio=AA:BB:CC:00:01:03,bridge=evnet1\n"
+    )
+    segments = top.analyse({
+        "interfaces": interfaces,
+        "sdn": {"zones.cfg": zones, "vnets.cfg": vnets, "subnets.cfg": ""},
+    })["segments"]
+    assert segments["vlnet1"]["sdn_zone_type"] == "vlan"
+    assert segments["vxnet1"]["sdn_zone_type"] == "vxlan"
+    assert segments["evnet1"]["sdn_zone_type"] == "evpn"
+    assert segments["vlnet1"]["tag"] == segments["vxnet1"]["tag"] == 3001
+    by_nic = {d["nic"]: d for d in run(
+        pnp.parse_config(qm), segments, _overlay_inventory())["decisions"]}
+    assert (by_nic["net0"]["action"], by_nic["net0"]["target"],
+            by_nic["net0"]["resolver"]) == ("map", "vlan-3001", "vlan")
+    for key in ("net1", "net2"):
+        decided = by_nic[key]
+        assert decided["action"] == "refuse", decided
+        assert decided["target"] is None
+        assert decided["resolver"] == "fallback"
+        assert "matches an existing vnet" not in decided["why"]
+        assert any(step["resolver"] == "vlan" and step["result"] == "abstained"
+                   for step in decided["tried"])
+
+
 def test_map_to_existing_by_vlan():
     p = {"order": ["vlan"]}
     d = only(run([nic()], AUTHORITATIVE, INVENTORY, p))
@@ -296,6 +421,26 @@ def test_synthesis_with_no_facts_at_all_is_blocked():
     p = {"order": ["synthesize"], "synthesize": {"require_confidence": "any"}}
     d = only(run([nic(segment="vmbr7", bridge="vmbr7", tag=None)], {}, [], p))
     assert d["action"] == "refuse"
+
+
+def _authoritative_sdn(zone):
+    return {"segment": "vnet1", "sdn_vnet": "vnet1", "sdn_zone_type": zone,
+            "tag": 3001, "cidr": "10.0.20.0/24", "gateway": "10.0.20.1",
+            "source": "sdn", "confidence": "authoritative"}
+
+
+def test_synthesis_keeps_a_vlan_zone_tag_and_drops_an_overlay_vni():
+    policy = {"order": ["synthesize"]}
+    guest = [nic(segment="vnet1", tag=None, bridge="vnet1")]
+    vlan = run(guest, {"vnet1": _authoritative_sdn("vlan")}, [], policy)
+    assert vlan["creates"][0]["layer2_type"] == "vlan"
+    assert vlan["creates"][0]["vlan_id"] == 3001
+    for zone in ("vxlan", "evpn"):
+        result = run(guest, {"vnet1": _authoritative_sdn(zone)}, [], policy)
+        spec = result["creates"][0]
+        assert result["decisions"][0]["action"] == "create", zone
+        assert "layer2_type" not in spec, zone
+        assert "vlan_id" not in spec, zone
 
 
 def test_synthesised_spec_carries_subnet_address_and_dhcp():

@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`network_map`: an SDN VXLAN or EVPN tag is not matched as a VLAN** (#238). In Proxmox SDN the vnet `tag` is a VLAN id on a VLAN or QinQ zone and a VXLAN id on a VXLAN or EVPN zone. The `vlan` resolver read that tag for every zone, so an overlay NIC was planned onto a VergeOS VLAN network that used the same number. A segment tag is now a VLAN id only for a `vlan` or `qinq` zone, and for a segment that names no SDN zone. VXLAN and EVPN tags are left for the other resolvers or the unmapped path. They are not matched to a VergeOS VXLAN id. A synthesized proposal uses the same rule for `vlan_id`.
+
 - **`network_map`: a VLAN tag matches a VLAN network** (#232). The `vlan` resolver indexed every `layer2_id` as a VLAN id. On a VXLAN network that column is the VXLAN id, so tags 1 and 2 were planned onto DMZ and Core when those networks used VXLAN ids 1 and 2. A tag now matches a network whose `layer2_type` is `vlan` (the id is `vlan_id` when set, otherwise `layer2_id`). A VXLAN id stays unmatched, including `layer2_type: none` and any other layer 2 type. When `layer2_type` is missing, `layer2_id` is left unused and an explicit `vlan_id` (or `vlan` / `vlanid`) still matches.
 
 - **`network_map`: a tagged access port stays off the bridge name** (#233). After the `vlan` resolver abstained, the `name` resolver tried the bare bridge, so `vmbr7.3001`, `vmbr7.3002`, and untagged `vmbr7` were planned onto one vnet named `vmbr7`. A tagged access port matches its segment or its SDN vnet. The bare bridge name is reserved for the untagged bridge segment. Trunks were already refused before that fallback.

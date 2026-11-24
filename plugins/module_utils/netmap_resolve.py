@@ -126,10 +126,34 @@ def vlan_id_for_match(net):
     return None
 
 
+_VLAN_ZONE_TYPES = ("vlan", "qinq")
+
+
+def _sdn_zone_type(facts):
+    raw = (facts or {}).get("sdn_zone_type")
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip().lower()
+    return text or None
+
+
+def vlan_tag_for_match(nic, facts):
+    """VLAN id a resolver may use, or None.
+
+    A tag on the NIC is the guest access VLAN. A segment tag is a VLAN
+    id on a VLAN or QinQ zone, and on a segment that names no SDN zone.
+    On a VXLAN or EVPN zone the segment tag is a VXLAN id.
+    """
+    if nic.get("tag") is not None:
+        return nic.get("tag")
+    zone = _sdn_zone_type(facts)
+    if zone is not None and zone not in _VLAN_ZONE_TYPES:
+        return None
+    return (facts or {}).get("tag")
+
+
 def r_vlan(nic, facts, inv, policy):
-    vlan = nic.get("tag")
-    if vlan is None:
-        vlan = (facts or {}).get("tag")
+    vlan = vlan_tag_for_match(nic, facts)
     if vlan is None:
         return None
     if nic.get("trunks"):
@@ -287,7 +311,7 @@ def r_synthesize(nic, facts, inv, policy):
             "network_type %r is not a VergeOS vnet type (%s); VLANs are "
             "expressed with layer2_type, not a type"
             % (ntype, ", ".join(VNET_TYPES)))
-    vlan = nic.get("tag") if nic.get("tag") is not None else facts.get("tag")
+    vlan = vlan_tag_for_match(nic, facts)
     spec = {"name": name, "state": "present", "network_type": ntype}
     if vlan is not None:
         spec["layer2_type"] = "vlan"
