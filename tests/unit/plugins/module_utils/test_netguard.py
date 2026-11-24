@@ -220,36 +220,85 @@ def test_blank_macs_do_not_collide_with_each_other():
     assert all(r["verdict"] == "approve" for r in v["results"])
 
 
-def test_existing_nics_from_vm_nic_info_is_refused_on_different_vm():
-    """vm_nic_info returns macaddress, machine, and vnet_name."""
-    existing = [{
+def _vm_nic_info_row(**over):
+    """One NIC as vm_nic_info returns it.
+
+    ``machine`` is the integer machine key. ``name`` is the NIC. The VM
+    name, when the module set it, is ``vm_name``.
+    """
+    row = {
         "$key": 1,
         "name": "eth0",
         "vnet": 3,
         "vnet_name": "External",
         "macaddress": "52:54:00:11:22:33",
-        "machine": 18,
-    }]
+        "machine": 69,
+    }
+    row.update(over)
+    return row
+
+
+def test_existing_nics_from_vm_nic_info_is_refused_on_different_vm():
+    """A different VM is named from vm_name, not from the machine key."""
+    existing = [_vm_nic_info_row(vm_name="db01")]
     d = decision(vm="web01", mac="52:54:00:11:22:33")
+    d["machine"] = 69
     v = netguard.assess(make_plan([d]), {"web01": "stopped"},
                         existing, options={"attach_mode": "live"})
     r = one(v)
     assert r["verdict"] == "refuse"
-    assert "18" in r["why"]
+    assert "VM 'db01'" in r["why"]
     assert "External" in r["why"]
+    assert "machine key" not in r["why"]
+    assert "VM '69'" not in r["why"]
     assert "already exists in VergeOS" in r["why"]
 
 
-def test_existing_nics_from_vm_nic_info_is_idempotent_on_same_vm():
-    existing = [{
-        "macaddress": "52:54:00:11:22:33",
-        "machine": "web01",
-        "vnet_name": "External",
-    }]
+@pytest.mark.parametrize("row_machine,plan_machine", [
+    (69, 69),
+    (69, "69"),
+    ("69", 69),
+])
+def test_existing_nics_from_vm_nic_info_is_idempotent_on_same_vm(
+        row_machine, plan_machine):
+    """The row's machine is an integer key, matched to the planned VM's key.
+
+    A decimal string is the same key. vm_nic_info returns that form from
+    its top-level machine result.
+    """
+    existing = [_vm_nic_info_row(machine=row_machine)]
+    assert "vm_name" not in existing[0]
+    assert existing[0]["machine"] == row_machine
+    d = decision(vm="web01", mac="52:54:00:11:22:33")
+    d["machine"] = plan_machine
+    v = netguard.assess(make_plan([d]), {"web01": "stopped"},
+                        existing, options={"attach_mode": "live"})
+    assert one(v)["verdict"] == "approve"
+
+
+def test_vm_name_on_a_vm_nic_info_row_approves_the_same_vm():
+    """vm_name is the VM. The integer machine key is not compared to the name."""
+    existing = [_vm_nic_info_row(vm_name="web01")]
     d = decision(vm="web01", mac="52:54:00:11:22:33")
     v = netguard.assess(make_plan([d]), {"web01": "stopped"},
                         existing, options={"attach_mode": "live"})
     assert one(v)["verdict"] == "approve"
+
+
+@pytest.mark.parametrize("planned", [None, 70])
+def test_row_with_only_a_machine_key_is_refused(planned):
+    """No VM name, and the key is not the planned VM's key."""
+    existing = [_vm_nic_info_row()]
+    d = decision(vm="web01", mac="52:54:00:11:22:33")
+    if planned is not None:
+        d["machine"] = planned
+    v = netguard.assess(make_plan([d]), {"web01": "stopped"},
+                        existing, options={"attach_mode": "live"})
+    r = one(v)
+    assert r["verdict"] == "refuse"
+    assert "machine key 69" in r["why"]
+    assert "External" in r["why"]
+    assert "on VM" not in r["why"]
 
 
 def test_existing_nic_without_vm_name_is_refused():
@@ -278,10 +327,20 @@ def test_index_existing_nics_key_variations():
         {"macaddress": "52-54-00-11-22-33", "machine": 42, "vnet_name": "vnet-a"},
         {"mac_address": "52:54:00:11:22:44", "vm_name": "db01", "network": "vnet-b"},
         {"mac": "52:54:00:11:22:55", "vnet": 5},
+        {"macaddress": "52:54:00:11:22:66", "vm_name": "web01",
+         "machine": "69", "vnet_name": "External"},
+        {"mac": "52:54:00:11:22:77", "machine": "web01", "name": "eth0"},
     ])
-    assert indexed["52:54:00:11:22:33"] == [{"vm": "42", "network": "vnet-a"}]
-    assert indexed["52:54:00:11:22:44"] == [{"vm": "db01", "network": "vnet-b"}]
-    assert indexed["52:54:00:11:22:55"] == [{"vm": "", "network": "5"}]
+    assert indexed["52:54:00:11:22:33"] == [
+        {"vm": "", "machine": 42, "network": "vnet-a"}]
+    assert indexed["52:54:00:11:22:44"] == [
+        {"vm": "db01", "machine": None, "network": "vnet-b"}]
+    assert indexed["52:54:00:11:22:55"] == [
+        {"vm": "", "machine": None, "network": "5"}]
+    assert indexed["52:54:00:11:22:66"] == [
+        {"vm": "web01", "machine": 69, "network": "External"}]
+    assert indexed["52:54:00:11:22:77"] == [
+        {"vm": "", "machine": None, "network": ""}]
 
 
 # ------------------------------------------------- upstream interaction

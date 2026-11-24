@@ -94,6 +94,20 @@ def test_reports_the_vms_nics():
     result = exited(run(FakeClient(vm)))
     assert [n['name'] for n in result['nics']] == ['eth0', 'eth1']
     assert result['machine'] == '18'
+    assert [n['vm_name'] for n in result['nics']] == ['web-01', 'web-01']
+
+
+def test_nic_rows_keep_the_machine_key_and_name_the_vm():
+    vm = FakeVM({'name': 'web-01', 'machine': 18}, nics=[
+        nic('eth0', machine=18),
+        nic('eth1', vnet=None, vnet_name=None, machine=18),
+    ])
+    result = exited(run(FakeClient(vm)))
+    assert result['nics'][0]['machine'] == 18
+    assert result['nics'][0]['vm_name'] == 'web-01'
+    assert result['detached'][0]['name'] == 'eth1'
+    assert result['detached'][0]['vm_name'] == 'web-01'
+    assert result['machine'] == '18'
 
 
 def test_an_attached_nic_is_not_detached():
