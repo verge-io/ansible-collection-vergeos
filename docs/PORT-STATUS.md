@@ -183,7 +183,7 @@ refuses that stub.
 
 ## Related
 
-- `docs/SDK-COMPATIBILITY.md`: floor `pyvergeos>=1.2.8`, verified through 1.7.1
+- `docs/SDK-COMPATIBILITY.md`: floor `pyvergeos>=1.2.8`, live-verified through 1.7.1; pyVergeOS 1.8.0 is published and contains #200 and #210
 - `docs/PYVERGEOS-GAPS.md`: the 2026/09/09 index diff, and what 1.6.1 changed
 - `docs/WHY-TESTS-MISSED-THESE.md`: why fixtures built from the same wrong field names passed
 - `docs/KNOWN-BUGS.md`: B8, and where the register lives

@@ -32,8 +32,8 @@ Verbs, all of them JSON on stdout:
       6 to 8 seconds later), so the VM names are read from
       GET cloud_snapshot_vms?filter=cloud_snapshot eq N and is_snapshot eq false
       until that list is non-empty or --timeout. This does not call
-      CloudSnapshotVMManager.list() or get_vms(), so a released pyVergeOS
-      and one that contains the unreleased #210 poll behave the same.
+      CloudSnapshotVMManager.list() or get_vms(), so a pre-1.8.0 SDK and
+      1.8.0 (which contains the #210 poll) behave the same on this path.
 
   delete --name NAME
       Delete every cloud snapshot of that name. Missing is success.
@@ -353,8 +353,8 @@ def show_period(sdk, profile_name, period_name):
         raise ValueError(
             'this pyVergeOS cannot read a period tag scope '
             '(snapshot_type, partial_tag_keys, quiesce_tag_keys). '
-            'Those landed in PR #200, which is on dev and not in a '
-            'release yet.')
+            'Those landed in PR #200, which is released in pyVergeOS '
+            '1.8.0.')
     return {
         'profile_key': profile_key,
         'period_key': int(dict(found)['$key']),

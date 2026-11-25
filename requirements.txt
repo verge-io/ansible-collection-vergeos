@@ -1,6 +1,9 @@
-# Floor verified through pyVergeOS 1.7.1. See docs/SDK-COMPATIBILITY.md for
-# the history behind it. `>=1.2.8` installs 1.6.1 or later from PyPI, which
-# carries the quote_value() brace fix (pyVergeOS#100).
+# Floor verified through pyVergeOS 1.7.1. pyVergeOS 1.8.0 is the
+# published release that contains tag-scoped snapshot periods (PR #200)
+# and the CloudSnapshotVMManager find_vms wait (PR #210). See
+# docs/SDK-COMPATIBILITY.md for the history. `>=1.2.8` installs 1.8.0
+# from PyPI today, and still carries the quote_value() brace fix
+# (pyVergeOS#100).
 pyvergeos>=1.2.8
 #
 # physical_drive_info uses PhysicalDriveManager(node_key=...) only when the
@@ -9,13 +12,12 @@ pyvergeos>=1.2.8
 #
 # snapshot_profile periods accept include_tags, exclude_tags, and
 # quiesce_tags only when the installed SDK has them (pyVergeOS #200,
-# commit 2645e6767e60f2dce52e756bcd846922f537f2b4 on dev). That change
-# is not in a release. Do not raise this floor to pick it up. A period
+# released in 1.8.0). Do not raise this floor to pick them up. A period
 # that sets any of those parameters fails with a named error on an
 # older SDK. A period that sets none of them is still all-or-nothing.
 #
 # The partial-snapshot ladder retries find_vms and polls
 # cloud_snapshot_vms itself (issue #224). pyVergeOS #210 does that
-# inside CloudSnapshotVMManager.list() and get_vms() and is on dev,
-# not in a release. Do not raise this floor to pick it up. The ladder
-# does not call those methods.
+# inside CloudSnapshotVMManager.list() and get_vms() and is released
+# in 1.8.0. Do not raise this floor to pick it up. The ladder does
+# not call those methods.

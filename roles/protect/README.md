@@ -58,8 +58,7 @@ already stored. Omission means the role does not manage that scope, which
 is what keeps an older playbook from rewriting periods. To change the set,
 write the new set.
 
-This needs a pyVergeOS build that contains PR #200. That change is on
-`dev` and is not in a release yet, so the collection floor stays
+This needs pyVergeOS 1.8.0 (PR #200). The collection floor stays
 `pyvergeos>=1.2.8`. On an older SDK the snapshot profile task fails and
 names the gap, instead of writing a field VergeOS would drop and then
 reporting success.
@@ -75,7 +74,7 @@ come back from `find_vms` after that read has settled, and
 The helper retries the refusal and polls until the read is non-empty, and
 the ladder polls again before the assert. Released pyVergeOS is enough.
 pyVergeOS #210 does the same wait inside `list()` and `get_vms()` and is
-not in a release. The ladder does not call those methods.
+released in 1.8.0. The ladder does not call those methods.
 
 ## Orphans are always report-only
 

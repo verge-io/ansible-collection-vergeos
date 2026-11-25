@@ -14,11 +14,14 @@ on.
 | 1.2.7 | Previous floor. Last release published before the brace fix. `quote_value()` still did not escape `{` |
 | **1.2.8** | `quote_value()` escapes `{` (pyVergeOS#100, PR #114). Prepared in pyVergeOS#122 and **not published to PyPI** |
 | **1.6.1** | First release PyPI publishes at or above 1.2.8. Contains the brace fix, plus the 1.4 through 1.6 refactors (declarative accessors, int-coercion on polymorphic refs, `cluster_status` and `machine_drive_stats`, partial snapshots, snapshot-wait) |
-| **1.7.1** | Releases the parent_drive node walk (pyVergeOS#143, PR #144). Verified through this version |
+| **1.7.1** | Releases the parent_drive node walk (pyVergeOS#143, PR #144). Live ladders were last verified through this version |
+| **1.8.0** | Releases tag-scoped snapshot profile periods (PR #200) and the CloudSnapshotVMManager find_vms wait (PR #210 / issue #209). Published to PyPI on 2026-11-25 (`e8a82298`) |
 
-`>=1.2.8` therefore installs **1.6.1** from PyPI today. There is no 1.3, 1.4
-or 1.5 package, and there is no 1.2.8 package. 1.7.1 is the release that
-contains the #143 node walk; the floor stays `>=1.2.8`.
+`>=1.2.8` therefore installs **1.8.0** from PyPI today. There is no 1.3, 1.4
+or 1.5 package, and there is no 1.2.8 package. 1.6.1 was the first published
+release at or above the floor. 1.7.1 is the release that contains the #143
+node walk; 1.8.0 is the release that contains #200 and #210. The floor stays
+`>=1.2.8`.
 
 ## What was tested
 
@@ -186,16 +189,15 @@ period did not. Released builds through 1.7.1 have no `include_tags` on
 `periods.create()`.
 
 PR #200 adds those three parameters to `periods.create()`, `update()`,
-`save()`, and `SnapshotProfile.add_period()`. It is commit
-`2645e6767e60f2dce52e756bcd846922f537f2b4` on pyVergeOS `dev`, and it is
-not in a release. The collection calls them from `snapshot_profile` and
+`save()`, and `SnapshotProfile.add_period()`. That change is in pyVergeOS
+1.8.0 (`e8a82298`). The collection calls them from `snapshot_profile` and
 from the `protect` role. When the installed method does not accept
 `include_tags`, a period that sets any of the three fails and names #200.
 A period that sets none of them does not pass the keywords, so the
-all-or-nothing schedule is unchanged on 1.7.1.
+all-or-nothing schedule is unchanged on 1.7.1 and earlier.
 
-The floor stays `pyvergeos>=1.2.8`. Bump it when a release contains #200,
-not before. Issue #67.
+The floor stays `pyvergeos>=1.2.8`. Tag parameters need 1.8.0; a period
+that sets none of them still works on the floor. Issue #67.
 
 ## Consequences
 
@@ -204,8 +206,13 @@ not before. Issue #67.
   and 1.6.1 is the published release that carries it.
 - Do not describe #143 as unreleased. The parent_drive node walk is released
   as of pyVergeOS 1.7.1. Releases through 1.6.1 still filter `node eq <key>`.
+- Do not describe #200 or #210 as unreleased. Tag-scoped periods and the
+  CloudSnapshotVMManager find_vms wait are released as of pyVergeOS 1.8.0.
+  Releases through 1.7.1 do not have them.
 - Client-side name matching stays, for ambiguous names (#72), not because
   braces are still stripped.
+- The live ladders that established this floor were last run against 1.7.1.
+  This page does not record a new 1.8.0 matrix.
 
 ## Reproducing
 
