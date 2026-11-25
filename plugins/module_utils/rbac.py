@@ -237,117 +237,17 @@ def membership_changes(have_users, have_groups, want_users, want_groups,
     }
 
 
-# ── the post-delete group membership defect (VergeOS platform) ──────────────
-#
-# Deleting a GROUP arms a defect in the platform for a few seconds. A group
-# created during that window is created successfully and looks entirely
-# normal, but every attempt to add a member to it fails:
-#
-#   HTTP 404 Error creating member in system table:
-#            error setting field 'members.group': No such file or directory
-#
-# Measured on VergeOS 26.1.8, and two plausible-sounding explanations were
-# tested and DISPROVED, so they are recorded to stop them being re-invented:
-#
-#   NOT identity reuse. The group that reclaimed the deleted group's identity
-#   worked; a later group with a brand new identity failed:
-#       delete A(id 7) -> create C(id 7) add OK -> create D(id 9) add FAIL
-#
-#   NOT time-healing. The affected group never recovers on its own. Retried at
-#   10s, 30s and 60s: still failing. An earlier fix here retried the member add
-#   six times over ten seconds; it identified the error correctly every time
-#   and every attempt failed.
-#
-#   NOT "each new group arms itself". This was a previous conclusion here and
-#   it is wrong. Creating a later group makes the affected one work again, and
-#   that new group is healthy unless it was itself created inside an open
-#   window:
-#       delete, create A, create B            -> A OK,  B DEFECT
-#       delete, create A, wait 10s, create B  -> A OK,  B OK
-#
-#   NOT "creating another group REPAIRS it". Also wrong, and this one matters:
-#   the later group only MASKS the defect. Delete that specific group and the
-#   affected group fails again. 5/5 runs; a never-affected group put through
-#   the identical sequence stays fine 3/3:
-#       G1 defective -> create G2 -> G1 OK -> delete G2 -> G1 DEFECT again
-#   The masking is durable while G2 exists (still OK after 60s), and it is
-#   exactly G2 that matters -- deleting some other, newer group has no effect.
-#
-# What it actually is, as far as can be seen from outside: a group created
-# inside the window is PERMANENTLY defective. The group created next after it
-# masks that, and only until that masking group is itself deleted.
-#
-#   delete, create A, create B, create C (all inside) -> only C is affected
-#
-# Existing memberships are never lost -- they stay listed and usable. Only new
-# member inserts fail. So an affected group can work for days and then start
-# rejecting members after an unrelated group deletion.
-#
-# This is why the fix below REBUILDS the group rather than creating a decoy:
-# a group recreated outside the window is genuinely healthy and survives later
-# group create/delete cycles (verified).
-#
-# The window, six runs at each delay, from a settled system:
-#
-#   wait 1 / 2 / 2.5 / 3s -> 6/6 affected
-#   wait 3.5s             -> 2/6 affected     <- the edge is jittery
-#   wait 4 / 5s           -> 0/6 affected
-#
-# so the boundary is a little under 4s and is not sharp. Hence the 6s constant
-# below rather than 4.
-#
-# It is timed from the DELETE -- a create does not restart it:
-#
-#   delete, wait 2s, create A, wait 2.5s, create B -> A OK, B OK
-#   (B is 4.5s after the delete but only 2.5s after A)
-#
-# Group deletion specifically arms it, and nothing else does. Each of these is
-# a separate run from a quiet system, member add attempted immediately:
-#
-#   create Y                                 OK
-#   create X, create Y                       OK
-#   create X, DELETE X, create Y             DEFECT
-#   create X, wait 4s, create Y              OK
-#   create X, DELETE X, wait 4s, create Y    OK
-#   create USER, create Y                    OK
-#   create USER, delete USER, create Y       OK
-#   create Y, update Y                       OK
-#
-# and creating another group is the only thing that clears it once armed:
-#
-#   nothing / wait 60s / create a user / update the group / update another
-#   group / list groups / add a member to a DIFFERENT group   -> still DEFECT
-#   create another group                                      -> OK
-#
-# which is why the fix below rebuilds the group rather than waiting or
-# retrying. It reproduces over raw HTTP with nothing but the Python standard
-# library -- no pyvergeos anywhere in the picture -- which is how we know the
-# defect is in the platform rather than in the SDK or in this collection. The
-# sequences above are the reproduction; each line is a separate run from a
-# quiet system with the member add attempted immediately.
-#
-# Blast radius is narrow: on an affected group, rename, read, list members,
-# grant permissions and delete all work. Only the member insert fails, and the
-# group is indistinguishable from a healthy one in the API -- every field
-# matches.
-#
-# It is also unique to this one link. The same create/delete/create/insert-a-
-# child sequence was run against 15 parent/child pairs across 9 object types
-# (users, vnets, vms, tenants, tags, snapshot profiles, DNS views ...) and only
-# groups -> members reproduces. Sharper still: one armed group written into two
-# columns of the SAME members table, in the same second --
-#
-#   as members.member (a member of another group)  -> OK
-#   as members.group  (the group holding a member) -> DEFECT
-#
-# so the group record is reachable; only the members.group lookup fails, which
-# is the field the error names.
+# Platform defect (seen on 26.1.8): deleting a group opens a window of a few
+# seconds during which a newly created group looks normal but rejects every
+# member insert with the error below. The affected group never recovers on its
+# own; another group created later only masks it until that group is deleted.
+# Only group deletion arms the window, only groups -> members is affected, and
+# it reproduces over raw HTTP without the SDK. The fix therefore rebuilds the
+# group outside the window instead of retrying or waiting.
 MEMBER_IDENTITY_MARKER = "error setting field 'members.group'"
 
-# How long to let the platform settle after a group delete before creating a
-# group that will take members. 4s was never affected in 12 runs and 3.5s was
-# affected in 2 of 6, so the boundary is jittery; 6 leaves margin without being
-# slow enough to notice.
+# Settle time after a group delete before creating a group that takes members.
+# Measured boundary is a little under 4s and jittery; 6 leaves margin.
 GROUP_IDENTITY_SETTLE_SECONDS = 6.0
 
 

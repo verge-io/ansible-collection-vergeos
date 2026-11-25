@@ -6,7 +6,7 @@ Ansible collection for managing VergeOS virtualization infrastructure via the Ve
 
 - **Python**: >= 3.9
 - **Ansible**: >= 2.15.0
-- **pyvergeos**: >= 1.2.8 (VergeOS Python SDK). The brace-escaping fix is in 1.2.8; the first release PyPI actually publishes at or above that is 1.6.1. See [docs/SDK-COMPATIBILITY.md](docs/SDK-COMPATIBILITY.md).
+- **pyvergeos**: >= 1.2.8 (VergeOS Python SDK). The brace-escaping fix is in 1.2.8; the first release PyPI actually publishes at or above that is 1.6.1, and the pin currently resolves to 1.8.0. See [docs/SDK-COMPATIBILITY.md](docs/SDK-COMPATIBILITY.md).
 
 ## Installation
 

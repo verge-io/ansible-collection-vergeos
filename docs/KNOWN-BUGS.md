@@ -26,20 +26,20 @@ Partial cloud snapshots need `include_tags`, `exclude_tags`, and
 does, since the 1.6.1 line (pyVergeOS #129). The period parameters are the
 gap.
 
-pyVergeOS PR #200, commit `2645e6767e60f2dce52e756bcd846922f537f2b4` on
-`dev`, adds them. `periods.create()`, `update()`, `save()`, and
-`SnapshotProfile.add_period()` take the three names. They write `type`
-(`full`, `partial_include`, `partial_exclude`), `partial_tag_args`, and
-`quiesce_tag_args`. `partial_tags` and `quiesce_tags` are read-only rows.
-The tag keys come back as `partial_tag_keys` and `quiesce_tag_keys`, from
-`partial_tags[refs[tag]]` and `quiesce_tags[refs[tag]]`.
+pyVergeOS PR #200, released in 1.8.0, adds them. `periods.create()`,
+`update()`, `save()`, and `SnapshotProfile.add_period()` take the three
+names. They write `type` (`full`, `partial_include`, `partial_exclude`),
+`partial_tag_args`, and `quiesce_tag_args`. `partial_tags` and
+`quiesce_tags` are read-only rows. The tag keys come back as
+`partial_tag_keys` and `quiesce_tag_keys`, from `partial_tags[refs[tag]]`
+and `quiesce_tags[refs[tag]]`.
 
-That PR is not in a release. `snapshot_profile` calls the parameters. When
-a period sets any of them and the installed `periods.create()` does not
-accept `include_tags`, the module fails and names #200. A period that sets
-none of them is still the all-or-nothing schedule, on the current floor.
-`requirements.txt` stays `pyvergeos>=1.2.8` until a release contains #200.
-Issue #67.
+`snapshot_profile` calls the parameters. When a period sets any of them
+and the installed `periods.create()` does not accept `include_tags`, the
+module fails and names #200. A period that sets none of them is still the
+all-or-nothing schedule, on the current floor. `requirements.txt` stays
+`pyvergeos>=1.2.8` so older SDKs remain usable; 1.8.0 is the release that
+contains #200. Issue #67.
 
 ## B8 (number skipped)
 

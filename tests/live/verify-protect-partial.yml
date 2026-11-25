@@ -35,7 +35,7 @@
 # seconds apart) before the assert. An empty list is not "the untagged
 # VM is absent". The helper POSTs find_vms itself. It does not call
 # CloudSnapshotVMManager.list() or get_vms(), so this does not need
-# pyVergeOS #210, which is on dev and not in a release.
+# pyVergeOS #210, which is released in 1.8.0.
 #
 # The helper tests/live/partial_snapshot_probe.py does that order.
 # This playbook then repeats the membership GET itself, so a bug in
@@ -45,9 +45,9 @@
 # environment. no_log hides the whole result, so a failed command is
 # reported from its stderr. The helper scrubs that line.
 #
-# Not run from CI. Needs a pyVergeOS dev build that contains PR #200
-# for the period half. The one-shot snapshot uses include_tags, which
-# released pyVergeOS already has. Do not drop the include tag: that
+# Not run from CI. Needs pyVergeOS 1.8.0 (PR #200) for the period
+# half. The one-shot snapshot uses include_tags, which released
+# pyVergeOS already has. Do not drop the include tag: that
 # call snapshots the whole cloud.
 - name: Protect partial-snapshot ladder
   hosts: localhost
