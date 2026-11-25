@@ -42,16 +42,8 @@ STAGES = ('checked', 'downloaded', 'installed')
 APPLIED = 'applied'
 
 
-# Model property -> the raw row's field name. Read off a live VergeOS 26.1.8
-# update_settings row, not inferred: the raw row drops the "is_" prefix
-# entirely and uses *_display for the two names.
-#
-#   raw: installed, reboot_required, applying_updates, auto_update,
-#        branch_display, source_display
-#
-# The first version of this file used the property names for the fallback too,
-# which made the fallback dead code -- it looked like a safety net and could
-# never fire.
+# Model property -> raw row field name, read off a live update_settings row:
+# the raw row drops the "is_" prefix and uses *_display for the two names.
 RAW_FIELD = {
     'is_installed': 'installed',
     'is_reboot_required': 'reboot_required',
