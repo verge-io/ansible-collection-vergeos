@@ -38,6 +38,7 @@
           - billing_export_result.files | length == 2
           - billing_export_result.system_rows is defined
           - billing_export_result.tenant_rows is defined
+          - billing_export_result.tenants_skipped is defined
         fail_msg: "unexpected summary: {{ billing_export_result }}"
 
     - name: "2. Both CSVs really exist on disk"

@@ -106,6 +106,7 @@ actions:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+    coerce_platform_key,
     get_vergeos_client,
     resolve_one,
     sdk_error_handler,
@@ -165,8 +166,9 @@ def resolve_repository_key(module, client, name):
     is an argument for the check being cheap, not for skipping it.
     """
     try:
-        return dict(resolve_one(module, client.catalog_repositories, name,
-                                'repository'))['$key']
+        raw_key = dict(resolve_one(module, client.catalog_repositories, name,
+                                   'repository'))['$key']
+        return coerce_platform_key(raw_key)
     except NotFoundError:
         module.fail_json(msg="Repository '%s' not found" % name)
 
@@ -211,8 +213,9 @@ def find_catalogs(client, name, repo_key=None):
     matches = [c for c in client.catalogs.list()
                if dict(c).get('name') == name]
     if repo_key is not None:
+        target_repo = coerce_platform_key(repo_key)
         matches = [c for c in matches
-                   if dict(c).get('repository') == repo_key]
+                   if coerce_platform_key(dict(c).get('repository')) == target_repo]
     return matches
 
 
@@ -319,7 +322,7 @@ def main():
                 module.exit_json(changed=True, actions=actions)
             create_args = {
                 CREATE_PARAM_MAP['name']: params['name'],
-                CREATE_PARAM_MAP['repository']: repo_key,
+                CREATE_PARAM_MAP['repository']: coerce_platform_key(repo_key),
             }
             for param, api_field in sorted(CREATE_PARAM_MAP.items()):
                 if param in IDENTITY_PARAMS:

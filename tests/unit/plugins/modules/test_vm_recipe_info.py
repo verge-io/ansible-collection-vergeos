@@ -137,6 +137,21 @@ def test_internal_questions_are_separated_from_answerable_ones():
         'PLUMBING', 'YB_CHECK_ISO', 'YB_VM_KEY']
 
 
+def test_a_hidden_tier_question_stays_answerable():
+    """The drive step reads it as preferred_tier. A create command does not."""
+    client = FakeClient(recipes=[RECIPE], questions=[
+        question('HOSTNAME'),
+        question('SELECT_DATA_TIER', 'hidden', default='',
+                 table='storage_tiers', section_name='$database'),
+        question('CREATE_TIER0_DRIVE_1', 'database_create',
+                 section_name='$database'),
+    ])
+    result = exited(run(client, name='Ubuntu 22.04', questions=True))
+    assert [q['name'] for q in result['questions']] == [
+        'HOSTNAME', 'SELECT_DATA_TIER']
+    assert result['internal_questions'] == ['CREATE_TIER0_DRIVE_1']
+
+
 def test_secret_questions_are_named_so_callers_can_no_log_them():
     client = FakeClient(recipes=[RECIPE], questions=[
         question('PASSWORD', 'password'),

@@ -28,6 +28,14 @@ vm_from_recipe_name: ""
 # other check passes. vm_from_recipe_verify_nics catches it either way.
 vm_from_recipe_answers: {}
 
+# Ordinary answers, the ones that are not credentials. Passed to the module
+# as plain_answers, which is not no_log. A core count of 1 or a boolean no
+# left in vm_from_recipe_answers is masked in later output for the rest of
+# the run on ansible-core 2.22, because that variable is handed to the
+# module's no_log answers parameter. Put the password in
+# vm_from_recipe_answers and everything else here.
+vm_from_recipe_plain_answers: {}
+
 # Drop and report answers this recipe does not define instead of failing. For
 # applying one answer set across recipes with differing question sets. Off by
 # default, because with it on a typo silently vanishes.

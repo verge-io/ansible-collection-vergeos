@@ -4,8 +4,9 @@ galaxy_info:
   description: >-
     Tag-driven protection enrolment for VergeOS. Tag a VM
     protect/<class> and the reconciler ensures the class's tag,
-    snapshot profile and the VM's enrolment all exist. Orphans are
-    always report-only.
+    snapshot profile and the VM's enrolment all exist. A period may
+    name include_tags, exclude_tags, or quiesce_tags; without them
+    the schedule stays all-or-nothing. Orphans are always report-only.
   license: GPL-3.0-or-later
   min_ansible_version: "2.15"
   galaxy_tags:

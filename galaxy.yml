@@ -1,7 +1,7 @@
 ---
 namespace: vergeio
 name: vergeos
-version: 2.2.0
+version: 2.3.0
 readme: README.md
 authors:
   - VergeIO
@@ -57,3 +57,6 @@ build_ignore:
   - .ansible
   # ansible-test's output, same story.
   - tests/output
+  # Local lint config. Not part of the collection a user installs.
+  - .aislop
+  - ruff.toml

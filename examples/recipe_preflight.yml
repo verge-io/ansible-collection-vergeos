@@ -43,10 +43,9 @@
 
     - name: Build the answer set we intend to deploy with
       ansible.builtin.set_fact:
-        candidate_answers:
+        candidate_plain_answers:
           HOSTNAME: "{{ vm_name }}"
           USER: "ops"
-          PASSWORD: "{{ vault_guest_password | default('change-me') }}"
           YB_CPU_CORES: 2
           YB_RAM: 4096
           YB_DRIVE_OS_SIZE: 53687091200
@@ -54,6 +53,8 @@
           YB_NIC_ETH0: "{{ recipe_network }}"
           SELECT_OS_TIER: >-
             {{ recipe.options.SELECT_OS_TIER | map(attribute='$key') | first }}
+        candidate_answers:
+          PASSWORD: "{{ vault_guest_password | default('change-me') }}"
 
     # check_mode on the task itself, rather than asking the operator to
     # remember --check. This playbook is a preflight, so it should not be
@@ -65,6 +66,7 @@
       vergeio.vergeos.vm_recipe_deploy:
         name: "{{ vm_name }}"
         recipe: "{{ recipe_name }}"
+        plain_answers: "{{ candidate_plain_answers }}"
         answers: "{{ candidate_answers }}"
         fail_on_hints: "{{ strict_hints }}"
       check_mode: true

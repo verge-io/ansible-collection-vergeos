@@ -18,6 +18,10 @@
 # protection from a VM whose tag was removed. Those are reported as orphans
 # instead. Removing somebody's backups is not a decision a reconciler should
 # make on its own.
+#
+# A period may also set include_tags, exclude_tags, or quiesce_tags to
+# snapshot a tagged subset instead of the whole cloud. This example leaves
+# them off, which is the all-or-nothing schedule. See the role README.
 - name: Protection reconciler
   hosts: localhost
   gather_facts: false

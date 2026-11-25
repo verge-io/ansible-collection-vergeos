@@ -199,8 +199,16 @@ class TestReadmeModuleIndex:
             assert rows[name]['purpose'] == doc['short_description'], name
 
     def test_readonly_column_matches_the_info_suffix(self):
+        # These plan and draw. They do not use the _info suffix because
+        # they transform captured config rather than query one object.
+        read_only = {
+            'network_guard',
+            'network_map',
+            'proxmox_host_network',
+            'proxmox_net_config',
+        }
         for name, row in self._rows().items():
-            expect = 'yes' if name.endswith('_info') else 'no'
+            expect = 'yes' if name.endswith('_info') or name in read_only else 'no'
             assert row['readonly'] == expect, name
 
 

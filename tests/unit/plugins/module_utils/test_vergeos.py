@@ -133,6 +133,57 @@ class TestGetVergeosClient:
         mock_module.fail_json.assert_called_once()
         assert 'pyvergeos' in mock_module.fail_json.call_args[1]['msg']
 
+    @pytest.mark.parametrize(
+        'exc_name, detail, prefix, other',
+        [
+            ('AuthenticationError', 'Login required',
+             'Authentication failed', 'Connection failed'),
+            ('VergeConnectionError', 'certificate verify failed',
+             'Connection failed', 'Authentication failed'),
+        ],
+    )
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.HAS_PYVERGEOS', True)
+    @patch('ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos.VergeClient')
+    def test_constructor_auth_and_connection_errors_fail_cleanly(
+            self, mock_client_class, exc_name, detail, prefix, other):
+        """A constructor failure is fail_json, not an unhandled traceback.
+
+        VergeClient connects in __init__. Modules call get_vergeos_client()
+        before their own try, so AuthenticationError (bad password) and
+        VergeConnectionError (unreachable host, TLS) must be reported here.
+        """
+        from ansible_collections.vergeio.vergeos.plugins.module_utils import vergeos
+
+        exc_type = getattr(vergeos, exc_name)
+        mock_client_class.side_effect = exc_type(detail)
+
+        mock_module = MagicMock()
+        # The real fail_json exits. Without that, the helper would return
+        # None after reporting the error and the test would miss a leak.
+        mock_module.fail_json.side_effect = SystemExit(1)
+        mock_module.params = {
+            'host': 'vergeos.example.com',
+            'username': 'admin',
+            'password': 'secret',
+            'insecure': False,
+        }
+
+        with pytest.raises(SystemExit):
+            vergeos.get_vergeos_client(mock_module)
+
+        mock_module.fail_json.assert_called_once()
+        assert mock_module.fail_json.call_args[0] == ()
+        kwargs = mock_module.fail_json.call_args[1]
+        msg = kwargs['msg']
+        assert msg.startswith(prefix)
+        assert detail in msg
+        assert other not in msg
+        # No traceback attached. fail_json's exception kwarg is a traceback,
+        # and an unhandled raise would have escaped as the SDK exception
+        # rather than SystemExit.
+        assert 'exception' not in kwargs
+        assert 'Traceback' not in msg
+
 
 class TestSdkErrorHandler:
     """Tests for sdk_error_handler() function"""
@@ -192,6 +243,84 @@ class TestVergeosArgumentSpec:
         spec = vergeos_argument_spec()
 
         assert spec['insecure'].get('default') is False
+
+
+class TestPlatformKey:
+    """#216: "22" and 22 are the same platform key."""
+
+    def test_a_numeric_string_and_an_int_match(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+            same_platform_key,
+        )
+
+        assert same_platform_key('22', 22)
+        assert same_platform_key(22, '22')
+        assert same_platform_key('22', '22')
+        assert same_platform_key(22, 22)
+        assert same_platform_key(' 22 ', 22)
+
+    def test_a_different_key_does_not_match(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+            same_platform_key,
+        )
+
+        assert not same_platform_key('22', 15)
+        assert not same_platform_key(22, '15')
+        assert not same_platform_key(22, None)
+        assert not same_platform_key('22', '')
+        assert not same_platform_key('22', 'external')
+
+    def test_a_bool_is_not_a_key(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+            same_platform_key,
+        )
+
+        assert not same_platform_key(True, 1)
+        assert not same_platform_key(False, 0)
+        assert same_platform_key(True, True)
+
+    def test_key_property_wins_over_a_disagreeing_dollar_key(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+            platform_key,
+        )
+
+        class _Net(dict):
+            def __init__(self):
+                super().__init__({'$key': '99', 'name': 'ext'})
+                self.key = 22
+
+        assert platform_key(_Net()) == 22
+
+    def test_a_string_dollar_key_is_returned_as_an_int(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+            platform_key,
+        )
+
+        assert platform_key({'$key': '22', 'name': 'ext'}) == 22
+        assert isinstance(platform_key({'$key': '22'}), int)
+
+    def test_a_non_numeric_key_property_falls_back_to_dollar_key(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+            platform_key,
+        )
+
+        class _Net(dict):
+            def __init__(self):
+                super().__init__({'$key': '22', 'name': 'ext'})
+
+            @property
+            def key(self):
+                raise ValueError('Resource has no $key')
+
+        assert platform_key(_Net()) == 22
+
+    def test_a_missing_key_is_none(self):
+        from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
+            platform_key,
+        )
+
+        assert platform_key({'name': 'ext'}) is None
+        assert platform_key(None) is None
 
 
 class TestAliasPlatformKey:

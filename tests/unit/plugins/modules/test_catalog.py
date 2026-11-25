@@ -80,9 +80,8 @@ def run(mock_module, mock_client):
             'ansible_collections.vergeio.vergeos.plugins.modules.catalog')
         with patch.object(mod, 'AnsibleModule', return_value=mock_module), \
              patch.object(mod, 'get_vergeos_client',
-                          return_value=mock_client):
-            with pytest.raises(SystemExit):
-                mod.main()
+                          return_value=mock_client), pytest.raises(SystemExit):
+            mod.main()
 
 
 class TestCreate:
@@ -100,6 +99,20 @@ class TestCreate:
         result = module.exit_json.call_args.kwargs
         assert result['changed'] is True
         assert result['catalog']['key'] == CAT_KEY
+
+    def test_string_repository_key_is_coerced_on_create(self):
+        """Creating with string repository $key sends integer repository."""
+        repo = make_row({'$key': '1', 'name': 'Local'})
+        client = make_client(catalogs=[], repositories=[repo])
+        client.catalogs.create.return_value = make_catalog()
+        module = make_module(base_params())
+
+        run(module, client)
+
+        client.catalogs.create.assert_called_once_with(
+            name='Golden Images', repository=1)
+        assert isinstance(
+            client.catalogs.create.call_args.kwargs['repository'], int)
 
     def test_create_without_repository_fails(self):
         client = make_client(catalogs=[])
@@ -166,6 +179,32 @@ class TestUpdate:
 
 
 class TestMatching:
+    def test_string_repository_key_matches_integer_repository(self):
+        """A string repository $key and integer catalog repository match."""
+        cat = make_catalog(repository=1)
+        repo = make_row({'$key': '1', 'name': 'Local'})
+        client = make_client(catalogs=[cat], repositories=[repo])
+        module = make_module(base_params())
+
+        run(module, client)
+
+        client.catalogs.create.assert_not_called()
+        client.catalogs.update.assert_not_called()
+        assert module.exit_json.call_args.kwargs['changed'] is False
+
+    def test_integer_repository_key_matches_string_repository(self):
+        """An integer repository $key and string catalog repository match."""
+        cat = make_catalog(repository='1')
+        repo = make_row({'$key': 1, 'name': 'Local'})
+        client = make_client(catalogs=[cat], repositories=[repo])
+        module = make_module(base_params())
+
+        run(module, client)
+
+        client.catalogs.create.assert_not_called()
+        client.catalogs.update.assert_not_called()
+        assert module.exit_json.call_args.kwargs['changed'] is False
+
     def test_ambiguous_name_without_repository_refused(self):
         cats = [make_catalog(), make_catalog(key='f' * 40, repository=3)]
         client = make_client(catalogs=cats)

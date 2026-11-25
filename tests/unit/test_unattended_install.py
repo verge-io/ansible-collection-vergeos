@@ -5,6 +5,9 @@ The installer sources user-data as bash only when the first line is not
 address. Those are easy to regress and invisible to syntax-check.
 """
 
+import os
+import subprocess
+import time
 from pathlib import Path
 
 import jinja2
@@ -152,7 +155,129 @@ def test_playbooks_keep_the_acceptance_shape():
     assert "exclude_ips" in discover
     assert "discover_tries" in discover
     assert "retries:" in discover
+    assert "set -euo pipefail" in discover
+    assert "executable: /bin/bash" in discover
+    assert "workers=32" in discover
 
     assert "vergeio.vergeos.tag_category:" in baseline
     assert "vergeio.vergeos.tag:" in baseline
     assert "taggable_vms: true" in baseline
+
+
+_FAKE_CURL = r"""#!/bin/bash
+set -eu
+url=""
+for arg in "$@"; do
+  case "$arg" in
+    https://*) url="$arg" ;;
+  esac
+done
+ip=${url#https://}
+ip=${ip%%/*}
+if [ "${CURL_SLEEP:-0}" != "0" ]; then
+  sleep "$CURL_SLEEP"
+fi
+case " ${MATCH_IPS:-} " in
+  *" $ip "*) printf '%s\n' '{"err":"Login required"}' ;;
+esac
+exit 0
+"""
+
+
+def _discovery_shell():
+    """Scan script from the example, with Ansible vars turned into env vars."""
+    lines = (EXAMPLE / "find_new_system.yml").read_text(encoding="utf-8").splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip() == "cmd: |":
+            start = index + 1
+            break
+    assert start is not None
+    block = []
+    base = None
+    for line in lines[start:]:
+        if not line.strip():
+            block.append("")
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if base is None:
+            base = indent
+        if indent < base:
+            break
+        block.append(line[base:])
+    script = "\n".join(block).strip() + "\n"
+    script = script.replace("{{ discover_subnet }}", "$DISCOVER_SUBNET")
+    script = script.replace(
+        "{{ exclude_ips | join(' ') }}", "${DISCOVER_EXCLUDE}"
+    )
+    assert "{{" not in script
+    assert "{#" not in script
+    assert script.startswith("set -euo pipefail\n")
+    return script
+
+
+def _install_fake_curl(directory):
+    path = directory / "curl"
+    path.write_text(_FAKE_CURL, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _run_discovery(bindir, matches, exclude, sleep):
+    env = os.environ.copy()
+    env["PATH"] = "%s%s%s" % (bindir, os.pathsep, env.get("PATH", ""))
+    env["DISCOVER_SUBNET"] = "192.168.1"
+    env["DISCOVER_EXCLUDE"] = exclude
+    env["MATCH_IPS"] = " ".join(matches)
+    env["CURL_SLEEP"] = sleep
+    return subprocess.run(
+        ["/bin/bash", "-c", _discovery_shell()],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+
+def test_discovery_scan_keeps_the_lowest_address(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _install_fake_curl(bindir)
+    # .10 and .9 must sort numerically. Lexical order would keep .10.
+    cases = (
+        (("192.168.1.10", "192.168.1.2", "192.168.1.9"), "", "192.168.1.2"),
+        (("192.168.1.10", "192.168.1.2"), "192.168.1.2", "192.168.1.10"),
+        (("192.168.1.1", "192.168.1.10"), "192.168.1.1", "192.168.1.10"),
+        (("192.168.1.1", "192.168.1.10"), "192.168.1.10", "192.168.1.1"),
+        (("192.168.1.4", "192.168.1.8"), "192.168.1.4 192.168.1.8", None),
+        (("192.168.1.200",), "", "192.168.1.200"),
+        ((), "", None),
+    )
+    for matches, exclude, expected in cases:
+        result = _run_discovery(bindir, matches, exclude, "0")
+        detail = "matches=%s exclude=%r rc=%s stdout=%r stderr=%r" % (
+            matches,
+            exclude,
+            result.returncode,
+            result.stdout,
+            result.stderr,
+        )
+        if expected is None:
+            assert result.returncode != 0, detail
+            assert result.stdout.strip() == "", detail
+        else:
+            assert result.returncode == 0, detail
+            assert result.stdout.strip() == expected, detail
+
+
+def test_discovery_scan_probes_in_parallel(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _install_fake_curl(bindir)
+    started = time.monotonic()
+    result = _run_discovery(bindir, (), "", "0.05")
+    elapsed = time.monotonic() - started
+    assert result.returncode != 0, result.stderr
+    assert result.stdout.strip() == ""
+    # 254 sequential probes at 0.05s would take at least 12s.
+    assert elapsed < 8, elapsed

@@ -124,6 +124,28 @@ class TestNetworkBlock:
         tenant.network_blocks.create.assert_not_called()
         assert module.exit_json.call_args.kwargs['changed'] is False
 
+    def test_string_network_key_matches_integer_vnet(self):
+        """#216: $key "3" and vnet 3 are the same network."""
+        tenant = make_tenant(blocks=[make_row(BLOCK_ROW)])
+        client = make_client(tenant, network_key='3')
+        module = make_module(block_params())
+
+        run('tenant_network_block', module, client)
+
+        tenant.network_blocks.create.assert_not_called()
+        assert module.exit_json.call_args.kwargs['changed'] is False
+
+    def test_string_network_key_is_sent_as_an_int(self):
+        tenant = make_tenant(blocks=[])
+        tenant.network_blocks.create.return_value = make_row(BLOCK_ROW)
+        client = make_client(tenant, network_key='3')
+        module = make_module(block_params())
+
+        run('tenant_network_block', module, client)
+
+        tenant.network_blocks.create.assert_called_once_with(
+            cidr='203.0.113.0/28', network=3, description='')
+
     def test_existing_other_network_fails_loudly(self):
         row = dict(BLOCK_ROW, vnet=7)
         tenant = make_tenant(blocks=[make_row(row)])
@@ -198,6 +220,28 @@ class TestExternalIp:
 
         tenant.external_ips.create.assert_not_called()
         assert module.exit_json.call_args.kwargs['changed'] is False
+
+    def test_string_network_key_matches_integer_vnet(self):
+        """#216: $key "3" and vnet 3 are the same network."""
+        tenant = make_tenant(ips=[make_row(IP_ROW)])
+        client = make_client(tenant, network_key='3')
+        module = make_module(ip_params())
+
+        run('tenant_external_ip', module, client)
+
+        tenant.external_ips.create.assert_not_called()
+        assert module.exit_json.call_args.kwargs['changed'] is False
+
+    def test_string_network_key_is_sent_as_an_int(self):
+        tenant = make_tenant(ips=[])
+        tenant.external_ips.create.return_value = make_row(IP_ROW)
+        client = make_client(tenant, network_key='3')
+        module = make_module(ip_params())
+
+        run('tenant_external_ip', module, client)
+
+        tenant.external_ips.create.assert_called_once_with(
+            ip='203.0.113.10', network=3, hostname=None, description='')
 
     def test_existing_other_network_fails_loudly(self):
         row = dict(IP_ROW, vnet=7)

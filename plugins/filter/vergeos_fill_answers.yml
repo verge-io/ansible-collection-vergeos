@@ -1,0 +1,132 @@
+DOCUMENTATION:
+  name: vergeos_fill_answers
+  short_description: Fill recipe answers from question metadata
+  version_added: "2.3.0"
+  description:
+    - Build the answer dicts for one recipe from its question rows and the
+      answers the caller already chose.
+    - A supplied answer is kept, including one whose question is internal.
+      A supplied numeric answer below the question minimum is raised to
+      that minimum.
+    - A required question the caller left unset is filled from a concrete
+      default, the question type, its option list, or its minimum.
+    - A required credential is not filled. This filter does not invent a
+      password. C(secrets) holds only credential values the caller already
+      supplied. A published credential default is not copied. The no_log
+      placeholders C(VALUE_SPECIFIED_IN_NO_LOG_PARAMETER), C($REDACTED$),
+      and eight asterisks are not values.
+    - C(unanswered_secrets) names required credentials that were left
+      unset, including one whose published default was replaced by a
+      no_log placeholder.
+    - C(unfilled) names required choices that have no options and no
+      usable default. Nothing is downloaded, uploaded, or created.
+  positional: _input, questions, options, files, tiers
+  options:
+    _input:
+      description:
+        - Answers already chosen, keyed by question name.
+      type: dict
+      required: true
+    questions:
+      description:
+        - The recipe's question rows, as M(vergeio.vergeos.vm_recipe_info)
+          returns them in C(questions).
+      type: list
+      elements: dict
+      required: true
+    options:
+      description:
+        - Valid values for table-backed questions, keyed by question name.
+        - The same shape M(vergeio.vergeos.vm_recipe_info) returns in
+          C(options) when C(resolve_options) is true.
+      type: dict
+      required: false
+    files:
+      description:
+        - Files already on the system, as M(vergeio.vergeos.file_info)
+          returns them.
+        - Used for an ISO question only when that question has no list
+          choices of its own and its type or table accepts a file.
+        - The filter does not download, upload, or create a file.
+      type: list
+      elements: dict
+      required: false
+    tiers:
+      description:
+        - Storage tier numbers present on the system, as
+          M(vergeio.vergeos.site_info) returns them in C(storage_tiers).
+        - Used when a tier question has no choices of its own. The first
+          positive number is the answer.
+        - The filter does not create a tier.
+      type: list
+      elements: int
+      required: false
+EXAMPLES: |
+  - name: Fill what this recipe still needs
+    ansible.builtin.debug:
+      msg:
+        plain: "{{ filled.plain }}"
+        secrets: "{{ filled.secrets }}"
+        unanswered_secrets: "{{ filled.unanswered_secrets }}"
+        unfilled: "{{ filled.unfilled }}"
+    vars:
+      supplied:
+        HOSTNAME: web-01
+        YB_RAM: 1024
+      filled: >-
+        {{ supplied | vergeio.vergeos.vergeos_fill_answers(
+             recipe.questions, recipe.options, iso_files, storage_tiers) }}
+RETURN:
+  _value:
+    description:
+      - The completed answer set.
+    type: dict
+    returned: always
+    contains:
+      plain:
+        description:
+          - Non-credential answers, keyed by question name.
+          - Includes values the caller supplied. A numeric value below the
+            question minimum is raised to that minimum.
+          - Includes values filled for questions the caller left unset.
+        type: dict
+        returned: always
+      secrets:
+        description:
+          - Credential answers the caller already supplied, keyed by
+            question name.
+          - A published default is not copied, and a no_log placeholder
+            is not stored here.
+        type: dict
+        returned: always
+      unanswered_secrets:
+        description:
+          - Names of required credential questions that were left unset.
+          - Includes a question whose published default was replaced by a
+            no_log placeholder. Pass these to
+            M(vergeio.vergeos.vm_recipe_deploy) in C(answers), which is
+            C(no_log). This filter does not invent a password for them.
+        type: list
+        elements: str
+        returned: always
+      unfilled:
+        description:
+          - Required choices that have no options and no usable default,
+            so nothing honest can be sent.
+        type: list
+        elements: dict
+        returned: always
+        contains:
+          name:
+            description: Question variable name.
+            type: str
+            returned: always
+          display:
+            description:
+              - Question label, or the variable name when the row has none.
+            type: str
+            returned: always
+          reason:
+            description: Why the question was left unset.
+            type: str
+            returned: always

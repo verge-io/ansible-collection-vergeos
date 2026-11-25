@@ -14,6 +14,7 @@ and is worse than no check at all.
 """
 
 import functools
+import importlib.util
 import pathlib
 import re
 
@@ -43,7 +44,9 @@ BUILTIN_TESTS = {
 }
 
 EXPRESSION = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.S)
-PIPE = re.compile(r"\|\s*([a-zA-Z_][a-zA-Z0-9_]*)")
+# A pipe may name a filter as `trim` or as `vergeio.vergeos.some_filter`.
+PIPE = re.compile(
+    r"\|\s*([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)")
 # map('f') / select('t') / reject('t') take a plugin name as the FIRST argument.
 FIRST_ARG = re.compile(r"\b(?:map|select|reject)\(\s*'([a-zA-Z_][a-zA-Z0-9_]*)'")
 # selectattr('attr', 'test') -- the SECOND argument is the test. The first is
@@ -65,7 +68,30 @@ def _known():
         for plugin in loader.all():
             names.add(plugin._load_name)
             names.update(getattr(plugin, 'ansible_aliases', ()) or ())
+    names.update(_local_filter_names())
     return names | BUILTIN_FILTERS | BUILTIN_TESTS
+
+
+def _local_filter_names():
+    """Filter names this collection ships.
+
+    The plugin loader only sees them once the collection is installed on
+    the controller path. The unit run is not that install. Read the plugins
+    directly so a playbook can use them before that.
+    """
+    found = set()
+    for path in (ROOT / 'plugins' / 'filter').glob('*.py'):
+        if path.name.startswith('_'):
+            continue
+        spec = importlib.util.spec_from_file_location(
+            'vergeos_filter_' + path.stem, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        filters = getattr(module, 'FilterModule', None)
+        if filters is None:
+            continue
+        found.update(filters().filters())
+    return found
 
 
 def _yaml_files():
@@ -106,9 +132,10 @@ def _used_names(text):
 @pytest.mark.parametrize(
     'path', list(_yaml_files()), ids=lambda p: str(p.relative_to(ROOT)))
 def test_every_jinja_filter_exists(path):
+    known = _known()
     missing = sorted({
         name for name in _used_names(path.read_text(encoding='utf-8'))
-        if name not in _known()
+        if name not in known and name.rsplit('.', 1)[-1] not in known
     })
     assert not missing, (
         "%s uses Jinja filter/test(s) that do not exist: %s"

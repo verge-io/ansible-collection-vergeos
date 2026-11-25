@@ -1,0 +1,7 @@
+# ansible and ansible_collections are the runtime, not pip dependencies.
+# requirements.txt is the SDK floor. Listing them here is how aislop stops
+# calling those imports hallucinated.
+imports:
+  provided:
+    - ansible
+    - ansible_collections

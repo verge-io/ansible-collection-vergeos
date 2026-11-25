@@ -152,6 +152,8 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     get_vergeos_client,
     sdk_error_handler,
     vergeos_argument_spec,
+    platform_key,
+    same_platform_key,
     HAS_PYVERGEOS,
 )
 
@@ -197,13 +199,20 @@ def nic_on_network(nics, target_network):
     here is what made ``state=absent`` delete a NIC on a different network,
     and what made declaring two NICs re-point the same one on every run.
     See issue #118.
+
+    The network key and the NIC's ``vnet`` are the same attachment when one
+    is the string ``"22"`` and the other is the int ``22``. A strict
+    ``==`` never matched, so ``state=present`` added a NIC on every run and
+    ``state=absent`` left the existing one in place (#216). The network's
+    ``.key`` is used when it is a real key; both sides are then compared as
+    integers when they look numeric.
     """
-    target_network_key = dict(target_network).get('$key')
+    target_network_key = platform_key(target_network)
     for nic in nics:
         nic_dict = dict(nic)
         # The SDK may return either 'vnet' or 'network' as the field name.
         nic_network = nic_dict.get('vnet') or nic_dict.get('network')
-        if nic_network == target_network_key:
+        if same_platform_key(nic_network, target_network_key):
             return nic
     return None
 
@@ -296,13 +305,16 @@ def update_nic(module, client, nic, target_network):
     update_data = {}
 
     nic_dict = dict(nic)
-    target_network_key = dict(target_network).get('$key')
+    # Prefer .key, and treat a numeric string and an int as the same network.
+    # The value written is the integer form (#216).
+    target_network_key = platform_key(target_network)
 
     # vnet differs only when nic_index selected a NIC that is not already
-    # on the target network. A NIC found by network is already equal here.
+    # on the target network. A NIC found by network is already equal here,
+    # including when the two sides differ only by type.
     # The SDK may use 'vnet' or 'network' as the field name.
     current_network = nic_dict.get('vnet') or nic_dict.get('network')
-    if current_network != target_network_key:
+    if not same_platform_key(current_network, target_network_key):
         update_data[UPDATE_FIELD_MAP['network']] = target_network_key
         changed = True
 

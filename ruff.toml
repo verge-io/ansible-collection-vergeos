@@ -1,0 +1,22 @@
+# aislop's lint pass shells out to `ruff check`. The defaults disagree with
+# what ansible-test sanity requires of a module, and with the style the
+# rest of this collection already uses. Ignoring them here keeps the score
+# about that, instead of about a shebang sanity will reject if removed.
+
+line-length = 160
+
+[lint]
+ignore = [
+    "EXE001", # shebang is required, and the file must not be executable
+    "UP009",  # the coding cookie is required
+    "UP010",  # __future__ imports are required
+    "UP001",  # __metaclass__ = type is required
+    "I001",   # import order is the ansible boilerplate order
+    "UP031",  # percent formatting, same as every other module
+    "C408",   # argument specs are dict() calls
+    "BLE001", # unexpected errors become fail_json, on purpose
+]
+
+[format]
+# ruff format rewrites the r''' documentation blocks every module uses.
+exclude = ["**"]

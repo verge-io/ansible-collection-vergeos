@@ -13,7 +13,7 @@ Every ladder:
 - proves **idempotence** — a converged re-run reports `changed=false`;
 - proves **check mode** reports the pending change without making it, where
   the module supports it;
-- tears down in `post_tasks:` or `always:`, so a mid-ladder failure still
+- tears down in `always:`, so a mid-ladder failure still
   cleans up, and then asserts **zero leftovers**.
 
 ## Running them
@@ -94,11 +94,13 @@ removes its record; the sweep fails if a `zz-*` import row is still there.
 | `verify-vm-clone.yml` | `vm_clone` — clone from a snapshot, idempotent on the clone name (#42) |
 | `verify-snapshot-profile.yml` | `snapshot_profile` — profiles and their periods (#39) |
 | `verify-protect.yml` | the `protect` role: tag a VM, get it enrolled (#39) |
+| `verify-protect-partial.yml` | the `protect` role: a tag-scoped period snapshots the tagged VM and not the untagged one (#67) |
 | `verify-vnet-rule.yml` | `vnet_rule` / `vnet_apply` — firewall rules and the explicit apply (#44, #19) |
 | `verify-vm-power.yml` | `vm` power waits — a budget that cannot be met fails instead of reporting success after sixty seconds (#114), and `state: absent` on a running VM is refused in check mode too (#127) |
 | `verify-vm-snapshot.yml` | `vm_snapshot` — never-expire and in-place restore (#119, #128), and a snapshot key from another VM refused on restore and delete (#161) |
 | `verify-network-power.yml` | `network` powering a vnet on and off — a rule staged on a stopped router, started, and read back live (#97) |
 | `verify-network-policy.yml` | the `network_policy` role, enforcing a rule set with one apply (#44) |
+| `verify-network-translation.yml` | network translation plan and diagrams; reads existing vnets and creates nothing (#62) |
 | `verify-rbac.yml` | `group` / `group_info` / `permission` and the `rbac` role (#34) |
 | `verify-member.yml` | `member` add/converge/remove, and that the right membership row is taken (#92) |
 | `verify-user-groups.yml` | `user` `groups` add/converge, and that `role` is rejected instead of discarded (#120) |

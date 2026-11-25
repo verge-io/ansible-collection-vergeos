@@ -49,7 +49,14 @@ accumulating duplicates — verified in the ladder.
 ```yaml
 system_rows: 12
 tenant_rows: 3
+tenants_skipped: 0
 files:
   - /var/lib/chargeback/vergeos-billing-system-20260921.csv
   - /var/lib/chargeback/vergeos-billing-tenants-20260921.csv
 ```
+
+`tenants_skipped` is a tenant that disappeared between the tenant list and
+its node or storage read. That row is left out of the CSV. An API error or
+a connection failure fails the export instead of writing the tenant with
+cores, RAM, and storage at zero. An empty allocation is still a zero row:
+the platform returns an empty list for that, and it is not an error.
