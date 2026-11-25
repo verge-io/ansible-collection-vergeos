@@ -62,7 +62,9 @@ options:
         default. A value above zero and under 1 MB (1048576) is refused,
         because a number like C(50) is fifty bytes. The recipe then builds
         the OS drive at the image size and still reports success. 50 GB is
-        C(53687091200).
+        C(53687091200). A question whose own minimum, maximum, or default
+        is itself under 1 MB is a byte count the recipe published, such as
+        a block size of 65536, and that value is accepted.
       - A C(list) question that carries its own choices (for example
         C(YB_IP_ADDR_TYPE) with C(dhcp) and C(static)) is checked locally.
         The value has to be the choice's key, not the label the UI shows.
@@ -85,30 +87,52 @@ options:
         questions that are optional with an empty default whose empty value
         then fails mid-deploy; those are reported in RV(hints), and
         O(fail_on_hints) makes them fatal.
-      - Marked C(no_log), because recipe answers routinely carry a guest
-        password. Ansible scrubs every value in this mapping from the task
-        result, including where that value is only a substring of another
-        field.
-      - When the recipe publishes questions, this module stops masking the
-        answers whose types are not credentials, in its own return values.
-        That includes the return that reports a VM of this name already
-        exists. A tier of C(1) leaves RV(recipe) readable, so a name like
-        Debian 12 (Bookworm) keeps its digits, and C(build) / C(vm_snapshot)
-        stay numbers rather than C(VALUE_SPECIFIED_IN_NO_LOG_PARAMETER). The
-        VM name is readable when the result contains it. C(HOSTNAME) equalling
-        O(name) does not turn it into C(********). A password answer stays
-        masked.
+      - Marked C(no_log), and it has to stay that way. A guest password is a
+        normal answer, and ansible-core writes the module invocation before
+        this module runs and before it can read the recipe's question types.
+        A password in a parameter that is not C(no_log) is in that log, on
+        every supported ansible-core.
+      - Put credentials here. Put ordinary answers in O(plain_answers).
+        ansible-core 2.22 registers every value of a C(no_log) parameter when
+        the module starts and masks that text in later output for the rest
+        of the run, including the play recap. This module cannot take a value
+        back off that list. A short ordinary answer such as C(1), C(0) or
+        C(no) left in this mapping is masked that way. A playbook that still
+        passes its whole answer set here keeps working, and the password
+        stays hidden.
+      - When the recipe publishes questions, this module still stops
+        scrubbing non-credential answers out of its own return on cores that
+        rewrite the result. That includes the return that reports a VM of
+        this name already exists. A tier of C(1) leaves RV(recipe) readable.
+        A password answer stays masked. The mask text depends on the
+        ansible-core version. It may be a run of asterisks,
+        C(VALUE_SPECIFIED_IN_NO_LOG_PARAMETER), C($REDACTED$), or another
+        placeholder.
       - When the recipe publishes no questions, nothing can be classified, so
-        every answer stays masked on a first deploy and on a rerun. A short
-        value such as C(1) is then scrubbed out of RV(recipe), and a
-        C(HOSTNAME) equal to O(name) is masked wherever that name appears.
-        This module's messages identify the VM by key for that reason; use
-        RV(vm_key), or read the name from a separate
-        M(vergeio.vergeos.vm_info) task.
-      - Answer values are never echoed back regardless - RV(answers_sent)
+        every value left here stays masked, on a first deploy and on a rerun.
+        A short value can be scrubbed out of RV(recipe), and a C(HOSTNAME)
+        equal to O(name) is masked wherever that name appears. This module's
+        messages identify the VM by key for that reason; use RV(vm_key), or
+        read the name from a separate M(vergeio.vergeos.vm_info) task.
+      - Answer values are never echoed back regardless. RV(answers_sent)
         reports names only.
     type: dict
     default: {}
+  plain_answers:
+    description:
+      - Ordinary recipe answers, as a mapping of question variable name to
+        value. Not C(no_log).
+      - Use this for answers that are not credentials. On ansible-core 2.22 a
+        short value such as C(1), C(0) or C(no) is then not masked in later
+        output. Names, types and defaults follow the same rules as O(answers).
+        The two mappings are merged. A question named in both is an error.
+      - Do not put a credential here. A password-typed question, or a name
+        that reads like one (C(PASSWORD), C(SECRET), C(TOKEN) and similar),
+        is refused. The value has already been written to the module log,
+        because this parameter is not C(no_log). Pass it in O(answers).
+    type: dict
+    default: {}
+    version_added: "2.3.0"
   prune_unknown:
     description:
       - Drop and report answers this recipe does not define, instead of failing.
@@ -165,6 +189,10 @@ EXAMPLES = r'''
     resolve_options: true
   register: recipe
 
+# PASSWORD is passed in answers, which is no_log. The other answers are
+# passed in plain_answers, which is not. On ansible-core 2.22 a short value
+# in a no_log parameter is masked in later output for the rest of the run.
+#
 # Two answers are worth singling out.
 #
 # YB_NIC_ETH0 is answered explicitly because the recipe's own default builds
@@ -180,10 +208,9 @@ EXAMPLES = r'''
   vergeio.vergeos.vm_recipe_deploy:
     name: "web-01"
     recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
-    answers:
+    plain_answers:
       HOSTNAME: "web-01"
       USER: "ops"
-      PASSWORD: "{{ vault_guest_password }}"
       YB_CPU_CORES: 2
       YB_RAM: 4096                   # MB
       YB_DRIVE_OS_SIZE: 53687091200  # BYTES, not GB. This is 50 GB.
@@ -191,6 +218,8 @@ EXAMPLES = r'''
       YB_NIC_ETH0: "External"
       SELECT_OS_TIER: >-
         {{ recipe.options.SELECT_OS_TIER | map(attribute='$key') | first }}
+    answers:
+      PASSWORD: "{{ vault_guest_password }}"
   register: deployed
 
 - name: Show what was built
@@ -206,13 +235,14 @@ EXAMPLES = r'''
   vergeio.vergeos.vm_recipe_deploy:
     name: "web-02"
     recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
-    answers:
+    plain_answers:
       HOSTNAME: "web-02"
       USER: "ops"
-      PASSWORD: "{{ vault_guest_password }}"
       YB_NIC_ETH0: "External"
       SELECT_OS_TIER: >-
         {{ recipe.options.SELECT_OS_TIER | map(attribute='$key') | first }}
+    answers:
+      PASSWORD: "{{ vault_guest_password }}"
   check_mode: true
   register: preflight
 
@@ -231,10 +261,9 @@ EXAMPLES = r'''
   vergeio.vergeos.vm_recipe_deploy:
     name: "web-03"
     recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
-    answers:
+    plain_answers:
       HOSTNAME: "web-03"
       USER: "ops"
-      PASSWORD: "{{ vault_guest_password }}"
       YB_IP_ADDR_TYPE: dhcp
       YB_NIC_ETH0: "External"
       SELECT_OS_TIER: >-
@@ -245,6 +274,8 @@ EXAMPLES = r'''
       YB_NIC_ETH0_GW: ""
       YB_NIC_ETH0_NS: ""
       YB_NIC_ETH0_INTERNAL_GATEWAY: "External"
+    answers:
+      PASSWORD: "{{ vault_guest_password }}"
     fail_on_hints: true
 '''
 
@@ -284,6 +315,18 @@ answers_sent:
   type: list
   elements: str
   sample: ["HOSTNAME", "SELECT_OS_TIER", "USER"]
+no_log_answers:
+  description:
+    - Names of answers whose values were still C(no_log) after the recipe's
+      question types were applied.
+    - Values are never included. A password-typed question stays in this list.
+      An ordinary answer is removed once its value is no longer masked.
+    - Absent when the recipe could not be resolved. Empty when every supplied
+      answer was ordinary, or when no answer contributed a maskable string.
+  returned: when the recipe was resolved
+  type: list
+  elements: str
+  sample: ["PASSWORD"]
 hints:
   description:
     - Unanswered questions whose default is empty. Not fatal unless
@@ -327,6 +370,14 @@ simulate_result:
 '''
 
 from ansible.module_utils.basic import AnsibleModule
+
+try:
+    from ansible.module_utils.secrets import register_secrets
+except ImportError:
+    # ansible-core before 2.22 has no secrets registry. no_log_values is what
+    # those cores use to scrub a result.
+    register_secrets = None
+
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     get_vergeos_client,
     sdk_error_handler,
@@ -334,6 +385,8 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     HAS_PYVERGEOS,
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    answers_retained_in_no_log,
+    looks_secret,
     maskable_strings,
     resolve_answers,
     scan_simulate,
@@ -384,24 +437,26 @@ def resolve(client, recipe_key, answers, prune_unknown):
 
 
 def narrow_no_log(module, resolved):
-    """Stop masking the answers that are not credentials, in OUR output only.
+    """Stop scrubbing non-credential answers out of this task's return.
 
-    ``answers`` is ``no_log`` and must stay that way -- recipe answers
-    routinely carry passwords, and ansible-core logs a module's invocation
-    before any of its code runs. But ansible-core masks a ``no_log`` value by
-    replacing it as a plain SUBSTRING everywhere in the module's return data,
-    and it treats integers as values, so the ordinary answer
-    ``YB_CPU_CORES: 1`` masked every "1" this module printed:
+    ``answers`` is ``no_log`` and must stay that way. Recipe answers routinely
+    carry passwords, and ansible-core logs the invocation before any module
+    code runs. On cores that rewrite a result, ansible-core also replaces a
+    ``no_log`` value as a plain substring, integers included, so the ordinary
+    answer ``YB_CPU_CORES: 1`` used to turn "requires at least 512" into a
+    string whose digits were gone.
 
-        the recipe requires at least 5********2
+    ansible-core 2.22 registers every ``no_log`` value when the module starts
+    and masks it in later output for the rest of the run. Removing a string
+    from ``module.no_log_values`` does not undo that registration. Ordinary
+    answers belong in ``plain_answers``, which is not ``no_log``, so they are
+    never registered. This function still runs for playbooks that pass those
+    answers in ``answers``: it keeps the return readable on cores that scrub
+    the result. It does not change what 2.22 prints afterwards.
 
-    The refusal was right and unreadable, which is the worst combination --
-    the operator loses the number at the moment they need it.
-
-    Called once the recipe's question TYPES have said which answers are
+    Called once the recipe's question types have said which answers are
     credentials, and before any return that includes the recipe row, including
-    the already-exists return. The decision is made on the platform's own
-    classification rather than on a guess. Three things keep it conservative:
+    the already-exists return. Three things keep it conservative:
 
       * a recipe that publishes no questions cannot be classified, so nothing
         is unmasked at all;
@@ -429,6 +484,77 @@ def narrow_no_log(module, resolved):
     module.no_log_values -= unmaskable
 
 
+def conceal_named_plain_secrets(module, plain):
+    """Hide plain_answers whose names already look like credentials.
+
+    No recipe lookup is required, so this runs before every failure return.
+    A password-typed question whose name does not match is concealed later,
+    once the question types are known.
+    """
+    values = [value for name, value in (plain or {}).items()
+              if looks_secret(name)]
+    conceal_secret_values(module, values)
+
+
+def combine_answers(module):
+    """Merge ``plain_answers`` with the no_log ``answers`` mapping.
+
+    A question named in both is refused. The values are not quoted back: one
+    of them may be a password, and this runs before the recipe is known.
+    Names that already look like credentials are concealed first, so an
+    overlap, a login failure, or an unknown recipe cannot return them.
+    """
+    plain = module.params.get('plain_answers') or {}
+    hidden = module.params.get('answers') or {}
+    conceal_named_plain_secrets(module, plain)
+    overlap = sorted(set(plain) & set(hidden))
+    if overlap:
+        module.fail_json(
+            msg="the same answer was passed in both plain_answers and "
+                "answers: %s. Pass each question in one of them."
+                % ", ".join(repr(name) for name in overlap))
+    merged = dict(plain)
+    merged.update(hidden)
+    return merged, plain
+
+
+def conceal_secret_values(module, values):
+    """Hide strings that were passed outside a no_log parameter.
+
+    On cores before 2.22, adding them to ``no_log_values`` scrubs the result.
+    On 2.22, ``register_secrets`` is what masks later output. The invocation
+    log has already been written by then; this cannot rewrite it.
+    """
+    strings = set()
+    for value in values:
+        strings |= maskable_strings(value)
+    strings.discard('')
+    if not strings:
+        return
+    module.no_log_values.update(strings)
+    if register_secrets is not None:
+        register_secrets(strings)
+
+
+def refuse_plain_credentials(module, plain, resolved):
+    """Refuse a credential that arrived through ``plain_answers``.
+
+    The value is already in the module log. Name the question and stop,
+    rather than sending it on.
+    """
+    secret = set(resolved.get('secret_vars') or [])
+    leaked = [name for name in sorted(plain or {})
+              if name in secret or looks_secret(name)]
+    if not leaked:
+        return
+    conceal_secret_values(module, [plain[name] for name in leaked])
+    module.fail_json(
+        msg="these answers are credentials and were passed in "
+            "plain_answers, which is written to the module log: %s. "
+            "Pass them in answers."
+            % ", ".join(repr(name) for name in leaked))
+
+
 def main():
     argument_spec = vergeos_argument_spec()
     argument_spec.update(
@@ -436,6 +562,7 @@ def main():
         recipe=dict(type='str', required=True),
         catalog=dict(type='str'),
         answers=dict(type='dict', default={}, no_log=True),
+        plain_answers=dict(type='dict', default={}),
         prune_unknown=dict(type='bool', default=False),
         auto_update=dict(type='bool', default=False),
         simulate=dict(type='bool', default=True),
@@ -446,6 +573,10 @@ def main():
         argument_spec=argument_spec,
         supports_check_mode=True,
     )
+
+    # Before the client. A duplicated question name does not need a login,
+    # and one of the two values may be a password.
+    merged, plain = combine_answers(module)
 
     params = module.params
     name = params['name']
@@ -473,9 +604,16 @@ def main():
         # say which answers are credentials. A recipe that publishes none
         # cannot be classified and stays fully masked. See narrow_no_log().
         resolved, _questions = resolve(client, recipe['$key'],
-                                       params['answers'],
+                                       merged,
                                        params['prune_unknown'])
         narrow_no_log(module, resolved)
+        # A credential in plain_answers is already in the invocation log.
+        # Refuse it before the already-exists return, which would otherwise
+        # look like success.
+        refuse_plain_credentials(module, plain, resolved)
+        # Recorded after narrowing. Names only; the values stay in no_log_values.
+        result['no_log_answers'] = answers_retained_in_no_log(
+            merged, module.no_log_values)
 
         # Converge on the VM, not on the recipe instance: some recipes set
         # YB_DETACH_RECIPE, which drops the instance row once the guest agent

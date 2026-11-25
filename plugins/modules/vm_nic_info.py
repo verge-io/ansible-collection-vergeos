@@ -75,11 +75,27 @@ nics:
       description: MAC address.
       type: str
       returned: always
+    machine:
+      description:
+        - Key of the machine that owns this NIC.
+        - This is not the VM name. The same key is RV(machine), as a string.
+      type: raw
+      returned: always
+    vm_name:
+      description:
+        - Name of the VM this NIC belongs to.
+        - Set from the VM this module resolved. C(machine_nics) has no VM
+          name column, and VergeOS drops a requested field it does not have.
+      type: str
+      returned: always
+      version_added: "2.3.0"
   sample:
     - name: "eth0"
       vnet: 3
       vnet_name: "External"
       macaddress: "52:54:00:11:22:33"
+      machine: 18
+      vm_name: "web-01"
 detached:
   description:
     - The subset of RV(nics) attached to no network.
@@ -143,13 +159,17 @@ def main():
 
     try:
         vm = resolve_one(module, client.vms, params['vm'], 'VM')
+        vm_row = dict(vm)
         nics = vm_nics(vm)
+        vm_name = vm_row.get('name') or params['vm']
+        for nic in nics:
+            nic['vm_name'] = vm_name
 
         module.exit_json(
             changed=False,
             nics=nics,
             detached=detached(nics),
-            machine=str(dict(vm).get('machine') or ''),
+            machine=str(vm_row.get('machine') or ''),
         )
 
     except NotFoundError as e:
@@ -157,7 +177,7 @@ def main():
     except (AuthenticationError, ValidationError, APIError, VergeConnectionError) as e:
         sdk_error_handler(module, e)
     except Exception as e:
-        module.fail_json(msg=f"Unexpected error: {str(e)}")
+        module.fail_json(msg=f"Unexpected error: {e!s}")
 
 
 if __name__ == '__main__':

@@ -23,6 +23,7 @@
   vergeio.vergeos.tag_category:
     host: "{{ protect_host }}"
     username: "{{ protect_username }}"
+    # aislop-ignore-next-line security/hardcoded-secret -- variable, not a literal
     password: "{{ protect_password }}"
     insecure: "{{ protect_insecure }}"
     name: protect
@@ -33,6 +34,7 @@
   vergeio.vergeos.tag:
     host: "{{ protect_host }}"
     username: "{{ protect_username }}"
+    # aislop-ignore-next-line security/hardcoded-secret -- variable, not a literal
     password: "{{ protect_password }}"
     insecure: "{{ protect_insecure }}"
     name: "{{ item.key }}"
@@ -42,10 +44,14 @@
   loop_control:
     label: "{{ item.key }}"
 
+# periods are passed through as written. include_tags, exclude_tags, and
+# quiesce_tags scope that period; with none of them set, snapshot_profile
+# makes the same all-or-nothing call it always has.
 - name: Ensure a snapshot profile per class
   vergeio.vergeos.snapshot_profile:
     host: "{{ protect_host }}"
     username: "{{ protect_username }}"
+    # aislop-ignore-next-line security/hardcoded-secret -- variable, not a literal
     password: "{{ protect_password }}"
     insecure: "{{ protect_insecure }}"
     name: "{{ item.value.profile | default('protect-' ~ item.key) }}"
@@ -63,6 +69,7 @@
   environment:
     VERGEOS_HOST: "{{ protect_host }}"
     VERGEOS_USERNAME: "{{ protect_username }}"
+    # aislop-ignore-next-line security/hardcoded-secret -- variable, not a literal
     VERGEOS_PASSWORD: "{{ protect_password }}"
     VERGEOS_INSECURE: "{{ 'true' if protect_insecure else '' }}"
   register: protect_scan_raw
@@ -120,6 +127,7 @@
   vergeio.vergeos.vm:
     host: "{{ protect_host }}"
     username: "{{ protect_username }}"
+    # aislop-ignore-next-line security/hardcoded-secret -- variable, not a literal
     password: "{{ protect_password }}"
     insecure: "{{ protect_insecure }}"
     name: "{{ item.name }}"

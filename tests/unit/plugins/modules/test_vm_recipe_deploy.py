@@ -9,12 +9,15 @@ reported -- so a test asserting "nothing was created" can pass while the
 deploy POST fires on the next line.
 """
 
+import re
+
 import pytest
 from unittest.mock import MagicMock, patch
 
 from ansible.module_utils.common.parameters import remove_values
 
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    credential_answer_concealed,
     maskable_strings,
 )
 from ansible_collections.vergeio.vergeos.plugins.modules import vm_recipe_deploy
@@ -127,6 +130,7 @@ def params(**over):
         'recipe': 'Ubuntu 22.04',
         'catalog': None,
         'answers': {},
+        'plain_answers': {},
         'prune_unknown': False,
         'auto_update': False,
         'simulate': True,
@@ -164,7 +168,8 @@ def collected_no_log(module_params):
     """The no_log strings ansible-core would collect for this call.
 
     password and api_key are no_log on their own. answers is no_log as a
-    whole, which is what makes an ordinary tier of 1 mask every "1".
+    whole. plain_answers is not, so a core count of 1 passed there is not
+    in this set and cannot be registered for the rest of the run.
     """
     values = set()
     for name in ('password', 'api_key', 'answers'):
@@ -317,6 +322,241 @@ def test_existing_vm_still_masks_everything_when_no_questions_are_published():
     assert recipe['vm_snapshot'] == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
     assert recipe['$key'] == 'r********'
     assert '1' in module.no_log_values
+
+
+FUZZ_RECIPE = {
+    'name': 'zz-fuzz-recipe',
+    '$key': 'abc',
+    'catalog_display': 'zz-fuzz-cat',
+    'description': 'fuzz ladder recipe, for the no_log check',
+}
+
+
+def _fuzz_questions(include_note=False):
+    rows = [
+        question('ZZ_HOSTNAME', 'hostname', required=True, default='',
+                 regex='zz-[a-z0-9-]{1,20}', max=24),
+        question('ZZ_RAM_MB', 'num', required=True, default='',
+                 min=512, max=4096),
+        question('ZZ_SECRET', 'password', required=True, default=''),
+        question('YB_CPU_CORES', 'num', required=False, default='1'),
+    ]
+    if include_note:
+        rows.append(question('ZZ_NOTE', 'string', required=False, default='n/a',
+                             min=0, max=0))
+    return rows
+
+
+def test_a_password_answer_stays_no_log_when_the_refusal_quotes_the_recipe():
+    """The RAM refusal quotes zz-fuzz-recipe. That name is not the password.
+
+    ZZ_SECRET stays in no_log_answers. Ordinary answers do not. Dropping the
+    list makes the same message fail the check.
+    """
+    answers = {
+        'ZZ_HOSTNAME': 'zz-fuzz-host',
+        'ZZ_SECRET': 'fuzz',
+        'ZZ_RAM_MB': 256,
+        'YB_CPU_CORES': 1,
+    }
+    client = FakeClient(recipes=[FUZZ_RECIPE], questions=_fuzz_questions())
+    module_params = params(recipe=FUZZ_RECIPE['name'], answers=answers)
+    module = run(client, no_log_values=collected_no_log(module_params),
+                 recipe=FUZZ_RECIPE['name'], answers=answers)
+    result = failed(module)
+    assert 'requires at least 512' in result['msg']
+    assert 'zz-fuzz-recipe' in result['msg']
+    assert result['no_log_answers'] == ['ZZ_SECRET']
+    assert 'fuzz' not in result['msg'].replace(FUZZ_RECIPE['name'], '')
+    assert credential_answer_concealed(result, 'ZZ_SECRET', 'fuzz') is True
+    unmarked = dict(result)
+    unmarked['no_log_answers'] = []
+    assert credential_answer_concealed(unmarked, 'ZZ_SECRET', 'fuzz') is False
+    assert 'fuzz' in module.no_log_values
+    assert 'zz-fuzz-host' not in module.no_log_values
+    assert '256' not in module.no_log_values
+    assert '1' not in module.no_log_values
+    assert client.posts == []
+
+
+def test_an_unclassified_password_is_not_concealed_even_when_the_recipe_is_quoted():
+    """No secret type and no name match. The refusal still quotes the recipe.
+
+    The password value is not kept no_log, so the check is false.
+    """
+    answers = {
+        'ZZ_HOSTNAME': 'zz-fuzz-host',
+        'ZZ_SECRET': 'fuzz',
+        'ZZ_RAM_MB': 256,
+        'YB_CPU_CORES': 1,
+    }
+    client = FakeClient(recipes=[FUZZ_RECIPE], questions=_fuzz_questions())
+    module_params = params(recipe=FUZZ_RECIPE['name'], answers=answers)
+    with patch('ansible_collections.vergeio.vergeos.plugins.module_utils.'
+               'recipe_answers.SECRET_TYPES', frozenset()), \
+         patch('ansible_collections.vergeio.vergeos.plugins.module_utils.'
+               'recipe_answers.SECRET_NAME_RE', re.compile('zzzneverzzz')):
+        module = run(client, no_log_values=collected_no_log(module_params),
+                     recipe=FUZZ_RECIPE['name'], answers=answers)
+    result = failed(module)
+    assert 'zz-fuzz-recipe' in result['msg']
+    assert result['no_log_answers'] == []
+    assert credential_answer_concealed(result, 'ZZ_SECRET', 'fuzz') is False
+    assert 'fuzz' not in module.no_log_values
+
+
+def test_an_ordinary_marker_is_not_no_log_when_the_password_is():
+    answers = {
+        'ZZ_HOSTNAME': 'zz-fuzz-host',
+        'ZZ_SECRET': 'Zz-Fuzz-Scratch-1!',
+        'ZZ_NOTE': 'fuzz',
+        'ZZ_RAM_MB': 256,
+        'YB_CPU_CORES': 1,
+    }
+    client = FakeClient(recipes=[FUZZ_RECIPE],
+                        questions=_fuzz_questions(include_note=True))
+    module_params = params(recipe=FUZZ_RECIPE['name'], answers=answers)
+    module = run(client, no_log_values=collected_no_log(module_params),
+                 recipe=FUZZ_RECIPE['name'], answers=answers)
+    result = failed(module)
+    assert result['no_log_answers'] == ['ZZ_SECRET']
+    assert 'ZZ_NOTE' not in result['no_log_answers']
+    assert credential_answer_concealed(
+        result, 'ZZ_SECRET', 'Zz-Fuzz-Scratch-1!') is True
+    assert credential_answer_concealed(result, 'ZZ_NOTE', 'fuzz') is False
+    assert 'Zz-Fuzz-Scratch-1!' not in result['msg']
+    assert 'fuzz' not in module.no_log_values
+    assert 'Zz-Fuzz-Scratch-1!' in module.no_log_values
+    unmarked = dict(result)
+    unmarked['no_log_answers'] = []
+    assert credential_answer_concealed(
+        unmarked, 'ZZ_SECRET', 'Zz-Fuzz-Scratch-1!') is False
+
+
+def test_plain_answers_is_not_no_log_and_answers_still_is():
+    client = FakeClient()
+    module = run(client, recipe='Nope')
+    spec = module.argument_spec
+    assert spec['answers'].get('no_log') is True
+    assert not spec['plain_answers'].get('no_log')
+
+
+def test_plain_answers_are_absent_from_the_no_log_set():
+    """1, 0 and no are ordinary. They must not be collected as no_log."""
+    module_params = params(
+        plain_answers={'YB_CPU_CORES': 1, 'SELECT_CREATE_UEFI': 0,
+                       'FLAG': 'no'},
+        answers={'PASSWORD': 'hunter2'})
+    values = collected_no_log(module_params)
+    assert '1' not in values
+    assert '0' not in values
+    assert 'no' not in values
+    assert 'hunter2' in values
+    assert 'secret' in values  # the connection password
+
+
+def test_the_same_answer_in_both_parameters_is_refused():
+    client = FakeClient(recipes=[RECIPE])
+    module = run(client, answers={'HOSTNAME': 'web-01'},
+                 plain_answers={'HOSTNAME': 'other'})
+    msg = failed(module)['msg']
+    assert 'HOSTNAME' in msg
+    assert 'plain_answers' in msg
+    assert 'web-01' not in msg
+    assert 'other' not in msg
+    assert client.posts == []
+
+
+def test_a_credential_in_plain_answers_is_refused_and_concealed():
+    client = FakeClient(recipes=[RECIPE],
+                        questions=[question('PASSWORD', 'password'),
+                                   question('HOSTNAME')])
+    with patch.object(vm_recipe_deploy, 'register_secrets') as reg:
+        module = run(client, no_log_values=set(),
+                     plain_answers={'PASSWORD': 'hunter2',
+                                    'HOSTNAME': 'web-01'})
+    msg = failed(module)['msg']
+    assert 'PASSWORD' in msg
+    assert 'hunter2' not in msg
+    assert 'plain_answers' in msg
+    assert client.posts == []
+    assert 'hunter2' in module.no_log_values
+    assert 'web-01' not in module.no_log_values
+    registered = set()
+    for call in reg.call_args_list:
+        registered |= set(call.args[0])
+    assert 'hunter2' in registered
+
+
+def test_a_named_secret_is_concealed_before_the_recipe_is_known():
+    """A missing recipe fails before question types exist. The value must
+    already be hidden, or it rides out in the failure result."""
+    client = FakeClient()
+    with patch.object(vm_recipe_deploy, 'register_secrets') as reg:
+        module = run(client, no_log_values=set(), recipe='Nope',
+                     plain_answers={'PASSWORD': 'hunter2',
+                                    'HOSTNAME': 'web-01'})
+    msg = failed(module)['msg']
+    assert 'no recipe named' in msg
+    assert 'hunter2' not in msg
+    assert 'hunter2' in module.no_log_values
+    assert 'web-01' not in module.no_log_values
+    registered = set()
+    for call in reg.call_args_list:
+        registered |= set(call.args[0])
+    assert registered == {'hunter2'}
+
+
+def test_overlap_conceals_a_secret_that_was_also_passed_in_plain():
+    client = FakeClient(recipes=[RECIPE])
+    with patch.object(vm_recipe_deploy, 'register_secrets'):
+        module = run(client, no_log_values=set(),
+                     answers={'PASSWORD': 'from-answers'},
+                     plain_answers={'PASSWORD': 'from-plain'})
+    msg = failed(module)['msg']
+    assert 'PASSWORD' in msg
+    assert 'from-plain' not in msg
+    assert 'from-answers' not in msg
+    assert 'from-plain' in module.no_log_values
+    assert client.posts == []
+
+
+def test_a_secret_looking_name_in_plain_answers_is_refused():
+    """The name is enough when the recipe does not publish that question."""
+    client = FakeClient(recipes=[RECIPE], questions=[question('HOSTNAME')])
+    with patch.object(vm_recipe_deploy, 'register_secrets'):
+        module = run(client, no_log_values=set(),
+                     plain_answers={'API_TOKEN': 'hunter2',
+                                    'HOSTNAME': 'web-01'})
+    msg = failed(module)['msg']
+    assert 'API_TOKEN' in msg
+    assert 'hunter2' not in msg
+    assert client.posts == []
+
+
+def test_plain_and_secret_answers_are_both_sent():
+    client = FakeClient(recipes=[RECIPE],
+                        questions=[question('HOSTNAME'),
+                                   question('PASSWORD', 'password'),
+                                   question('YB_CPU_CORES', 'num')],
+                        responses=[SIMULATE_405,
+                                   {'$key': 5, 'response': {'vm': 42}}])
+    module_params = params(plain_answers={'HOSTNAME': 'web-01',
+                                          'YB_CPU_CORES': 1},
+                           answers={'PASSWORD': 'hunter2'})
+    module = run(client, no_log_values=collected_no_log(module_params),
+                 plain_answers={'HOSTNAME': 'web-01', 'YB_CPU_CORES': 1},
+                 answers={'PASSWORD': 'hunter2'})
+    result = exited(module)
+    assert result['answers_sent'] == ['HOSTNAME', 'PASSWORD', 'YB_CPU_CORES']
+    sent = client.posts[-1]['answers']
+    assert sent['HOSTNAME'] == 'web-01'
+    assert sent['YB_CPU_CORES'] == 1
+    assert sent['PASSWORD'] == 'hunter2'
+    assert 'hunter2' not in repr(result)
+    assert '1' not in module.no_log_values
+    assert 'web-01' not in module.no_log_values
+    assert 'hunter2' in module.no_log_values
 
 
 def test_existing_vm_converges_even_when_an_answer_would_be_refused():

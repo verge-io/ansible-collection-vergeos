@@ -16,6 +16,31 @@
 # Answer names differ per recipe, so the matrix runs with
 # prune_unknown: true -- keys a given recipe does not define are dropped
 # and reported rather than refused.
+#
+# Required questions the base set does not already answer are filled from
+# that recipe's question metadata (vergeos_fill_answers). Credentials go
+# through `answers`, which is no_log, and are not printed. Other required
+# questions get a value the type, the option list, or the minimum allows.
+# A numeric answer below the question's own minimum is raised to it.
+#
+# A recipe that is not downloaded, or whose simulate says it is not
+# downloaded or published, is NOT APPLICABLE. That counts as expected.
+# Nothing is downloaded.
+#
+# A recipe whose name starts with "Dev " is not customer-facing. It is not
+# simulated. The matrix reports SKIPPED and counts it as expected.
+#
+# INSTALL_ISO is a list. When that list has choices, the answer is one
+# of them: the default, if the default is in the list, otherwise the
+# first https URL. A file from the read-only ISO listing is used only
+# when the question has no choices and its type or table accepts a
+# file. With no usable choice the recipe is BLOCKED. Nothing is
+# downloaded or uploaded.
+#
+# A drive step that sets preferred_tier reads a tier question. An
+# optional question with an empty default is answered from its own
+# choices, or from the tiers site_info already lists. Nothing is
+# created. A drive step with no tier question on the recipe is BLOCKED.
 - name: Recipe matrix live ladder
   hosts: localhost
   gather_facts: false
@@ -31,6 +56,9 @@
     win2025_iso: "{{ win_iso_host }}/dbazure/888969d5-f34g-4e03-ac9d-1f9786c66749/{{ win2025_iso_name }}"
 
     # Applied to every recipe. Values are throwaway; nothing is deployed.
+    # Used only by this check-mode playbook, for a required credential the
+    # filler deliberately leaves unset. Not a value the filter will invent.
+    matrix_scratch_secret: Zz-Matrix-Scratch-1!
     matrix_base_answers:
       HOSTNAME: zz-mx
       YB_HOSTNAME: zz-mx            # the vendor Services recipe wants both
@@ -50,11 +78,9 @@
       "New VM":
         YB_NIC_main_nic: External
         SELECT_CREATE_CDROM: "no"
-      "Kubernetes K3S":
-        CLUSTER_SECRET: Zz-Matrix-Scratch-1!
-      "OpenVPN-AS":
-        VPNPASS: Zz-Matrix-Scratch-1!
-      # Both Windows recipes enforce a 100 GB minimum OS drive, require
+      # Required passwords and secrets are not listed here. The filler
+      # reads them off the question set. Both Windows recipes enforce a
+      # 100 GB minimum OS drive, require
       # explicit EULA acceptance, and require WINDOWS_ISO to be answered even
       # though the question carries a default.
       #
@@ -99,10 +125,17 @@
     # from that table. Neither was ever blocked. Declaring a blocker from a
     # convincing error message instead of testing it is how a working recipe
     # goes untested for as long as anyone cares to leave it.
+    # API_CHECK_VW and VM_TIMEZONE fail as `Error executing API command
+    # '...': 0`. That text is a recipe step in the simulate log, not a
+    # value this file sends. API_CHECK_VW looks up a tenant and returns 0
+    # when there is nothing to find; tenants are out of scope, so it stays
+    # blocked. VM_TIMEZONE is the same kind of step. When the recipe also
+    # publishes a timezone question whose default is empty or 0, the filler
+    # sends UTC. A step with no such question is left as a failure.
     matrix_blocked:
       "Tenant Crash Cart": >-
-        tenant-scoped (its API_CHECK_VW step resolves a tenant); tenants
-        are out of scope for this module
+        tenant-scoped (its API_CHECK_VW step resolves a tenant and the
+        command returns 0); tenants are out of scope for this module
 
   tasks:
     - name: "0. Enumerate every recipe on the system"
@@ -122,56 +155,164 @@
           {{ all_recipes.recipes | length }} recipes found;
           {{ matrix_blocked | length }} declared known-blocked.
 
+    - name: "0d. Separate recipes that are not simulated"
+      ansible.builtin.set_fact:
+        matrix_ready: >-
+          {%- set ready = [] -%}
+          {%- for recipe in all_recipes.recipes -%}
+            {%- if not (recipe | vergeio.vergeos.vergeos_not_applicable)
+                      and not (recipe.name is match('^Dev ')) -%}
+              {%- set _ = ready.append(recipe) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ready }}
+
+    - name: "1. Read questions for the recipes that can be simulated"
+      vergeio.vergeos.vm_recipe_info:
+        insecure: true
+        name: "{{ item.name }}"
+        catalog: "{{ item.catalog_display | default(omit, true) }}"
+        questions: true
+        resolve_options: true
+      loop: "{{ matrix_ready | sort(attribute='name') }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: matrix_questions
+      changed_when: false
+
     # ignore_errors rather than a rescue per recipe, and rather than
     # failed_when: false. The loop records every outcome in one results
     # list, and the verdict is computed from it below, so one refusal does
     # not stop the matrix. `.failed` is the refusal signal on every core:
     # failed_when would clear it, and failed_when_suppressed_exception is
     # not set on ansible-core 2.15.
-    - name: "1. Simulate each recipe in check mode"
+    #
+    # plain_answers is not no_log. answers is. The filler does not invent a
+    # credential. This check-mode task supplies the scratch value for the
+    # names it left unset, and does not print that dict.
+    - name: "1c. Read storage tiers that already exist"
+      vergeio.vergeos.site_info:
+        insecure: true
+      register: matrix_site
+      check_mode: true
+      changed_when: false
+
+    - name: "1b. Read existing ISO files, without uploading any"
+      vergeio.vergeos.file_info:
+        insecure: true
+        file_type: iso
+      register: matrix_isos
+      check_mode: true
+      changed_when: false
+
+    - name: "2. Simulate each downloaded recipe in check mode"
       vergeio.vergeos.vm_recipe_deploy:
         insecure: true
-        name: "zz-mx-{{ item['$key'][:8] }}"
-        recipe: "{{ item.name }}"
+        name: "zz-mx-{{ item.item['$key'][:8] }}"
+        recipe: "{{ item.item.name }}"
+        catalog: "{{ item.item.catalog_display | default(omit, true) }}"
         prune_unknown: true
+        plain_answers: "{{ filled.plain }}"
         answers: >-
+          {{ filled.secrets | combine(dict(
+               filled.unanswered_secrets | product([matrix_scratch_secret])
+             )) }}
+      vars:
+        supplied: >-
           {{ matrix_base_answers
-             | combine({'HOSTNAME': 'zz-mx-' ~ item['$key'][:6],
-                        'YB_HOSTNAME': 'zz-mx-' ~ item['$key'][:6]})
-             | combine(matrix_overrides[item.name] | default({})) }}
+             | combine({'HOSTNAME': 'zz-mx-' ~ item.item['$key'][:6],
+                        'YB_HOSTNAME': 'zz-mx-' ~ item.item['$key'][:6]})
+             | combine(matrix_overrides[item.item.name] | default({})) }}
+        filled: >-
+          {{ supplied | vergeio.vergeos.vergeos_fill_answers(
+               item.questions | default([]),
+               item.options | default({}),
+               matrix_isos.files | default([]),
+               matrix_site.storage_tiers | default([])) }}
       check_mode: true
       ignore_errors: true  # noqa: ignore-errors -- a refusal is data, recorded in failed
       register: matrix_runs
-      loop: "{{ all_recipes.recipes | sort(attribute='name') }}"
+      loop: "{{ matrix_questions.results }}"
       loop_control:
-        label: "{{ item.name }}"
+        label: "{{ item.item.name }}"
 
-    - name: "2. Reduce the runs to a verdict per recipe"
+    - name: "2b. Reduce the runs to a verdict per recipe"
       ansible.builtin.set_fact:
         matrix_results: >-
           {%- set out = [] -%}
-          {%- for r in matrix_runs.results -%}
-            {%- set nm = r.item.name -%}
-            {#- `.failed` stays set under ignore_errors on every core this
-                collection supports, including 2.15. failed_when: false
-                clears it, and failed_when_suppressed_exception is only
-                attached by newer cores, so a refusal on 2.15 used to look
-                like a pass. -#}
-            {%- set refused = r.failed | default(false) -%}
-            {%- set ok = (not refused)
-                         and (r.simulate_result | default({})).ok | default(false) -%}
-            {%- set blocked = nm in matrix_blocked -%}
-            {%- set detail = (r.simulate_result | default({})).errors | default([])
-                             or [r.msg | default('refused before simulate')] -%}
-            {%- set _ = out.append({
-                  'name': nm,
-                  'ok': ok,
-                  'as_expected': (ok and not blocked) or ((not ok) and blocked),
-                  'line': (('PASS    ' if ok else
-                            ('BLOCKED ' if blocked else 'FAIL    '))
-                           ~ nm ~ ' -- '
-                           ~ (detail | join('; ') | truncate(150, true)))
-                }) -%}
+          {%- for recipe in all_recipes.recipes | sort(attribute='name') -%}
+            {%- set nm = recipe.name -%}
+            {%- if nm is match('^Dev ') -%}
+              {%- set _ = out.append({
+                    'name': nm,
+                    'ok': false,
+                    'as_expected': true,
+                    'line': 'SKIPPED ' ~ nm
+                            ~ ' -- Dev recipe, not customer-facing'
+                  }) -%}
+            {%- else -%}
+            {%- set runs = matrix_runs.results | default([])
+                           | selectattr('item.item.name', 'equalto', nm)
+                           | list -%}
+            {%- if runs | length == 0
+                        or (runs[0].msg | default('')
+                            | vergeio.vergeos.vergeos_not_applicable) -%}
+              {%- set _ = out.append({
+                    'name': nm,
+                    'ok': false,
+                    'as_expected': true,
+                    'line': 'N/A     ' ~ nm
+                            ~ ' -- recipe is not downloaded or published'
+                  }) -%}
+            {%- else -%}
+              {%- set r = runs[0] -%}
+              {#- `.failed` stays set under ignore_errors on every core this
+                  collection supports, including 2.15. failed_when: false
+                  clears it, and failed_when_suppressed_exception is only
+                  attached by newer cores, so a refusal on 2.15 used to look
+                  like a pass. -#}
+              {%- set supplied = matrix_base_answers
+                    | combine({'HOSTNAME': 'zz-mx-' ~ (recipe['$key'] | default(''))[:6],
+                               'YB_HOSTNAME': 'zz-mx-' ~ (recipe['$key'] | default(''))[:6]})
+                    | combine(matrix_overrides[nm] | default({})) -%}
+              {%- set filled = supplied | vergeio.vergeos.vergeos_fill_answers(
+                    r.item.questions | default([]),
+                    r.item.options | default({}),
+                    matrix_isos.files | default([]),
+                    matrix_site.storage_tiers | default([])) -%}
+              {%- set unfilled = filled.unfilled | default([]) -%}
+              {%- set refused = r.failed | default(false) -%}
+              {%- set detail = (r.simulate_result | default({})).errors | default([])
+                               or [r.msg | default('refused before simulate')] -%}
+              {%- set tier_gap = (detail | join(' '))
+                    | vergeio.vergeos.vergeos_tier_step_unanswered(
+                        r.item.questions | default([])) -%}
+              {%- set ok = (not refused)
+                           and (r.simulate_result | default({})).ok | default(false)
+                           and (unfilled | length == 0) -%}
+              {%- set blocked = (nm in matrix_blocked) or (unfilled | length > 0)
+                    or tier_gap -%}
+              {%- if unfilled | length > 0 -%}
+                {%- set detail = unfilled | map(attribute='reason') | list -%}
+              {%- elif tier_gap -%}
+                {%- set detail = ['preferred_tier is set by a drive step and this recipe has no tier question'] -%}
+              {%- endif -%}
+              {%- set sent = (r.answers_sent | default([])) | join(', ') -%}
+              {%- set line = (('PASS    ' if ok else
+                              ('BLOCKED ' if blocked else 'FAIL    '))
+                             ~ nm ~ ' -- '
+                             ~ (detail | join('; ') | truncate(120, true))) -%}
+              {%- if (not ok) and (not blocked) -%}
+                {%- set line = line ~ ' [sent: ' ~ sent ~ ']' -%}
+              {%- endif -%}
+              {%- set _ = out.append({
+                    'name': nm,
+                    'ok': ok,
+                    'as_expected': (ok and not blocked) or ((not ok) and blocked),
+                    'line': line
+                  }) -%}
+            {%- endif -%}
+            {%- endif -%}
           {%- endfor -%}
           {{ out }}
 
@@ -210,6 +351,11 @@
         msg: >-
           recipe matrix PASSED:
           {{ matrix_results | selectattr('ok') | list | length }} simulated
-          clean, {{ matrix_results | rejectattr('ok') | list | length }}
-          blocked-as-declared, of {{ matrix_results | length }} recipes --
-          and nothing was created
+          clean,
+          {{ matrix_results | map(attribute='line')
+             | select('match', '^N/A') | list | length }} not applicable,
+          {{ matrix_results | map(attribute='line')
+             | select('match', '^SKIPPED') | list | length }} skipped,
+          {{ matrix_results | map(attribute='line')
+             | select('match', '^BLOCKED') | list | length }} blocked-as-declared,
+          of {{ matrix_results | length }} recipes -- and nothing was created

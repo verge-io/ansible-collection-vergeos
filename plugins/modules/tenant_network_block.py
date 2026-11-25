@@ -95,7 +95,9 @@ actions:
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vergeos import (
     get_vergeos_client,
+    platform_key,
     resolve_one,
+    same_platform_key,
     sdk_error_handler,
     vergeos_argument_spec,
     HAS_PYVERGEOS,
@@ -130,7 +132,9 @@ def resolve_network_key(module, client, name):
                               fields=NETWORK_FIELDS)
     except NotFoundError:
         module.fail_json(msg="Network '%s' not found" % name)
-    return dict(network)['$key']
+    # .key when it is numeric, otherwise $key. A string key and an int
+    # vnet are the same network (#216).
+    return platform_key(network)
 
 
 def find_block(tenant, cidr):
@@ -187,7 +191,7 @@ def main():
 
         if block is not None:
             current_net = dict(block).get('vnet')
-            if current_net != net_key:
+            if not same_platform_key(current_net, net_key):
                 module.fail_json(
                     msg="block %s on tenant '%s' is assigned from network "
                         "key %s, not '%s'; a block cannot be moved - remove "

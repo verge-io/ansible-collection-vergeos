@@ -32,6 +32,12 @@ argument_specs:
           - The protection classes, keyed by class name. Each takes C(periods)
             for the snapshot profile, and optionally C(profile) to override
             the default profile name of C(protect-<class>).
+          - A period may set C(include_tags), C(exclude_tags), or
+            C(quiesce_tags). Omit them and the period is an all-or-nothing
+            schedule. Include and exclude together are refused. Quiesce tags
+            apply only on a partial period. Tag scope needs a pyVergeOS
+            build that contains PR 200, which is not released yet. An older
+            SDK fails the snapshot profile task instead of dropping the field.
         type: dict
         required: true
       protect_mode:

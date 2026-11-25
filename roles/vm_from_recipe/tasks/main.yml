@@ -28,6 +28,7 @@
     recipe: "{{ vm_from_recipe_recipe }}"
     catalog: "{{ vm_from_recipe_catalog | default(omit, true) }}"
     answers: "{{ vm_from_recipe_answers }}"
+    plain_answers: "{{ vm_from_recipe_plain_answers }}"
     prune_unknown: "{{ vm_from_recipe_prune_unknown }}"
     auto_update: "{{ vm_from_recipe_auto_update }}"
     simulate: "{{ vm_from_recipe_simulate }}"

@@ -29,10 +29,9 @@ obvious from the outside.
       vergeio.vergeos.vm_recipe_deploy:
         name: "web-01"
         recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
-        answers:
+        plain_answers:
           HOSTNAME: "web-01"
           USER: "ops"
-          PASSWORD: "{{ vault_guest_password }}"
           YB_CPU_CORES: 2
           YB_RAM: 4096                   # MB
           YB_DRIVE_OS_SIZE: 53687091200  # BYTES. This is 50 GB.
@@ -40,7 +39,13 @@ obvious from the outside.
           YB_NIC_ETH0: "External"
           SELECT_OS_TIER: >-
             {{ recipe.options.SELECT_OS_TIER | map(attribute='$key') | first }}
+        answers:
+          PASSWORD: "{{ vault_guest_password }}"
 ```
+
+`PASSWORD` is the one that goes in `answers`. That parameter is `no_log`.
+Everything else goes in `plain_answers`, which is not. The reason is in
+"When a value is masked" below.
 
 Connection details fall back to `VERGEOS_HOST`, `VERGEOS_USERNAME`,
 `VERGEOS_PASSWORD` and `VERGEOS_INSECURE`, so they are left out above.
@@ -162,7 +167,8 @@ roles:
     vars:
       vm_from_recipe_name: "web-01"
       vm_from_recipe_recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
-      vm_from_recipe_answers: { ... }
+      vm_from_recipe_plain_answers: { ... }
+      vm_from_recipe_answers: { ... }   # credentials only
       vm_from_recipe_power_on: true
       vm_from_recipe_verify_boot: true
 ```
@@ -172,33 +178,55 @@ still has its firmware read the boot sector and send a few DHCP packets, so
 read counters and NIC counters both move off zero on a guest sitting at "no
 bootable device". Only written bytes separate the two.
 
-### When the result shows asterisks
+### When a value is masked
 
-The `answers` parameter is marked `no_log`, because recipe answers routinely
-carry a guest password. Ansible scrubs every value in that mapping from the
-task output, and it does so by substring, so a short answer can rewrite some
-other field that happens to contain the same text.
+`answers` is `no_log`, and it has to stay that way. A guest password is a
+normal recipe answer, and ansible-core writes the module invocation before
+this module runs and before it can read the recipe's question types. A
+password in a parameter that is not `no_log` would be in that log on every
+supported ansible-core. Put credentials in `answers`.
 
-What you see depends on whether the recipe publishes its questions.
+Put ordinary answers in `plain_answers`. That parameter is not `no_log`. A
+core count of `1`, a boolean `no`, or a tier of `0` is then just a value.
+ansible-core 2.22 registers every value of a `no_log` parameter when the
+module starts and masks that text in later output for the rest of the run,
+including the play recap. Taking the string back out of the module's own
+no_log set does not change what is printed afterwards. `plain_answers` is
+how those short values stay off that list.
 
-A recipe that publishes questions is classified. Once those question types are
-known, answers that are not credentials stop being masked in this task's
-result. That includes a second run, the one that finds a VM of this name
-already exists. `recipe.name` stays `Debian 12 (Bookworm)`. A tier answer of
-`1` leaves the digits in `version` and `creator` alone, and leaves `build` and
-`vm_snapshot` as numbers rather than
-`VALUE_SPECIFIED_IN_NO_LOG_PARAMETER`. The VM name stays readable when the
-result contains it. `HOSTNAME` being the same string does not turn it into
-`********`. A password answer stays masked.
+A playbook that still passes the whole set in `answers` keeps working, and
+the password stays hidden. On 2.22 the ordinary values in that mapping are
+masked for the rest of the run as well. A question named in both parameters
+is an error. A credential passed in `plain_answers` is refused: the value is
+already in the log, and the module will not send it on.
 
-A recipe that publishes no questions cannot be classified, so every answer
-stays masked, on a first deploy and on a rerun. A tier of `1` then rewrites
-`recipe.name` to `Debian ********2 (Bookworm)`, `version` `1.0` to
-`********.0` and `creator` `node1` to `node********`, and replaces `build` and
-`vm_snapshot` with `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER` when those values
-contain `1`. A `HOSTNAME` equal to the VM name is scrubbed the same way, in
-any result field that contains the name. The module's messages identify the VM
-by key. Use `vm_key`, or read the name back with a separate `vm_info` task.
+The text of a mask depends on the ansible-core version. You may see a run of
+asterisks, `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER`, `$REDACTED$`, or another
+placeholder. None of those is the only form.
+
+What gets masked also depends on whether the recipe publishes its questions.
+
+A recipe that publishes questions is classified. On cores that rewrite the
+module result, answers that are not credentials stop being scrubbed out of
+this task's return once those types are known. That includes a second run,
+the one that finds a VM of this name already exists. `recipe.name` stays
+`Debian 12 (Bookworm)`. A tier answer of `1` leaves the digits in `version`
+and `creator` alone, and leaves `build` and `vm_snapshot` as numbers. The VM
+name stays readable when the result contains it. `HOSTNAME` being the same
+string does not by itself mask the name. A password answer stays masked. On
+2.22 the return keeps the real values either way, and the screen masks
+whatever was registered. A non-credential that was passed in `answers` was
+registered before the module could classify it, so the screen still masks
+it. Pass it in `plain_answers`.
+
+A recipe that publishes no questions cannot be classified, so every value
+left in `answers` stays masked, on a first deploy and on a rerun. A tier of
+`1` can then rewrite other fields that contain that digit, and a `HOSTNAME`
+equal to the VM name is scrubbed the same way, in any result field that
+contains the name. The module's messages identify the VM by key. Use
+`vm_key`, or read the name back with a separate `vm_info` task. Put anything
+you would not want logged in `answers`. With no question types, a name that
+reads like a password is the only signal the module has.
 
 ### fail_on_hints asks more of you than it looks
 
@@ -278,8 +306,8 @@ explicit act:
 | `network 'x' not found` | A network answer named something that is not on this system. Check the name, including case |
 | VM exists but will not boot | The image import may still be running. The role waits for this; the module does not |
 | VM boots but reaches nothing | A network question was probably left at `__new_internal__`. Check with `vm_nic_info` |
-| `recipe.name` contains `********`, or a field is `VALUE_SPECIFIED_IN_NO_LOG_PARAMETER` | The recipe publishes no questions, so every answer stays `no_log`. A recipe that publishes questions does not do this, including when the VM already exists |
-| VM name shows as `********` | The recipe publishes no questions and the name equals an answer, usually `HOSTNAME`. Use `vm_key`, or read the name back with `vm_info` |
+| A field is masked (asterisks, `$REDACTED$`, or another placeholder) | A value in `answers` collided with that text. If the recipe publishes questions, move the ordinary answers to `plain_answers`. If it publishes none, every answer in `answers` stays masked. A credential stays masked either way |
+| VM name is masked | The recipe publishes no questions and the name equals an answer, usually `HOSTNAME`. Use `vm_key`, or read the name back with `vm_info`. On ansible-core 2.22 the same thing happens to a short answer left in `answers`, in later output as well as this task |
 | `fail_on_hints is set and questions are unanswered` | Read the hints, answer the ones that matter, see the section above |
 
 ## Where to look next

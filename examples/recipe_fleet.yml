@@ -74,16 +74,17 @@
       vergeio.vergeos.vm_recipe_deploy:
         name: "{{ item.name }}"
         recipe: "{{ recipe_name }}"
-        answers:
+        plain_answers:
           HOSTNAME: "{{ item.name }}"
           USER: "{{ guest_user }}"
-          PASSWORD: "{{ guest_password }}"
           YB_CPU_CORES: "{{ item.cores | default(2) }}"
           YB_RAM: "{{ item.ram_mb | default(4096) }}"
           YB_DRIVE_OS_SIZE: "{{ item.disk_bytes | default(53687091200) }}"
           YB_IP_ADDR_TYPE: dhcp
           YB_NIC_ETH0: "{{ fleet_network }}"
           SELECT_OS_TIER: "{{ storage_tier }}"
+        answers:
+          PASSWORD: "{{ guest_password }}"
       check_mode: true
       loop: "{{ fleet }}"
       loop_control:
@@ -97,16 +98,17 @@
       vars:
         vm_from_recipe_name: "{{ item.name }}"
         vm_from_recipe_recipe: "{{ recipe_name }}"
-        vm_from_recipe_answers:
+        vm_from_recipe_plain_answers:
           HOSTNAME: "{{ item.name }}"
           USER: "{{ guest_user }}"
-          PASSWORD: "{{ guest_password }}"
           YB_CPU_CORES: "{{ item.cores | default(2) }}"
           YB_RAM: "{{ item.ram_mb | default(4096) }}"
           YB_DRIVE_OS_SIZE: "{{ item.disk_bytes | default(53687091200) }}"
           YB_IP_ADDR_TYPE: dhcp
           YB_NIC_ETH0: "{{ fleet_network }}"
           SELECT_OS_TIER: "{{ storage_tier }}"
+        vm_from_recipe_answers:
+          PASSWORD: "{{ guest_password }}"
         vm_from_recipe_power_on: true
         vm_from_recipe_verify_boot: true
         vm_from_recipe_wait_timeout: 1800

@@ -18,6 +18,7 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 import glob
+import importlib.util
 import os
 import re
 
@@ -50,7 +51,30 @@ def _present():
     plugins = {os.path.basename(p)[:-3]
                for p in glob.glob(os.path.join(root, 'plugins', '*', '*.py'))
                if not os.path.basename(p).startswith('__')}
+    plugins.update(_filter_names(root))
     return modules | roles | plugins
+
+
+def _filter_names(root):
+    """Names returned by FilterModule.filters(), not the file that holds them.
+
+    A playbook calls ``vergeio.vergeos.vergeos_fill_answers``. The file can
+    be named something else.
+    """
+    found = set()
+    base = os.path.join(root, 'plugins', 'filter')
+    for path in glob.glob(os.path.join(base, '*.py')):
+        if os.path.basename(path).startswith('_'):
+            continue
+        spec = importlib.util.spec_from_file_location(
+            'vergeos_filter_' + os.path.basename(path)[:-3], path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        filters = getattr(module, 'FilterModule', None)
+        if filters is None:
+            continue
+        found.update(filters().filters())
+    return found
 
 
 def _references():

@@ -1,0 +1,347 @@
+---
+# Live ladder for a tag-scoped protect class (#67).
+#
+# Two zz- VMs. One gets the class tag, the other does not. The class
+# period is include-scoped to that tag (and quiesces it). The ladder
+# then takes one cloud snapshot of the same tag and reads membership
+# back over HTTP.
+#
+# The negative half is the point: the untagged VM must not be in the
+# snapshot. Two lab facts the read has to respect, or it will report
+# the wrong answer and look like a pass:
+#
+#   pyVergeOS #201  cloud_snapshot_vms stays empty until
+#                   POST cloud_snapshot_actions
+#                   {action: find_vms, cloud_snapshot: N}
+#   pyVergeOS #202  cloud_snapshots.create(wait=True) polls
+#                   cloud_snapshots.get() and can return while
+#                   GET cloud_snapshots/N?fields=all still says
+#                   building. The helper polls that read, not get(),
+#                   and only then calls find_vms. The old helper called
+#                   find_vms off get(), and any error other than
+#                   ValueError was a traceback under no_log.
+#
+# Saving the temporary period starts a system snapshot. create() then
+# raises ValidationError 'System snapshot is still building' until that
+# finishes. Listed rows can already read normal on fields=all, so the
+# helper retries only that error, for --timeout seconds, and re-raises
+# every other error. find_vms raises the same error after create() was
+# accepted and the fields=all read has left building. That POST is
+# retried the same way.
+#
+# find_vms returns before cloud_snapshot_vms rows exist. On the lab
+# they appeared 6 to 8 seconds later. The helper polls that GET until
+# it is non-empty or --timeout. Task 2p polls again (30 retries, 2
+# seconds apart) before the assert. An empty list is not "the untagged
+# VM is absent". The helper POSTs find_vms itself. It does not call
+# CloudSnapshotVMManager.list() or get_vms(), so this does not need
+# pyVergeOS #210, which is released in 1.8.0.
+#
+# The helper tests/live/partial_snapshot_probe.py does that order.
+# This playbook then repeats the membership GET itself, so a bug in
+# the helper's own read cannot mark the untagged VM absent.
+#
+# The helper commands are no_log, because the password is in the
+# environment. no_log hides the whole result, so a failed command is
+# reported from its stderr. The helper scrubs that line.
+#
+# Not run from CI. Needs pyVergeOS 1.8.0 (PR #200) for the period
+# half. The one-shot snapshot uses include_tags, which released
+# pyVergeOS already has. Do not drop the include tag: that
+# call snapshots the whole cloud.
+- name: Protect partial-snapshot ladder
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    api_base: "https://{{ lookup('env', 'VERGEOS_HOST') }}/api/v4"
+    in_vm: zz-partial-in
+    out_vm: zz-partial-out
+    cls: zz-partial
+    prof: protect-zz-partial
+    snap_name: zz-partial-snap
+    period_name: Daily
+    prof_description: "protect class 'zz-partial' (managed by the protect role)"
+    protect_classes:
+      zz-partial:
+        periods:
+          - name: Daily
+            frequency: daily
+            retention: 604800
+            hour: 2
+            include_tags:
+              - zz-partial
+            quiesce_tags:
+              - zz-partial
+
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ lookup('env', 'VERGEOS_USERNAME') }}"
+      url_password: "{{ lookup('env', 'VERGEOS_PASSWORD') }}"
+      force_basic_auth: true
+      validate_certs: false
+      return_content: true
+
+  tasks:
+    - name: "0. Did the protect tag category already exist?"
+      ansible.builtin.uri:
+        url: "{{ api_base }}/tag_categories?fields=name"
+      register: cat_before
+      changed_when: false
+
+    - name: "0a. Record it"
+      ansible.builtin.set_fact:
+        category_preexisted: >-
+          {{ 'protect' in (cat_before.json | map(attribute='name') | list) }}
+
+    - name: "0b. Clear a previous run"
+      ansible.builtin.include_tasks: partial_snapshot_cleanup.yml
+
+    - name: "1. Two scratch VMs, neither tagged"
+      vergeio.vergeos.vm:
+        insecure: true
+        name: "{{ item }}"
+        cpu_cores: 1
+        ram: 512
+        state: present
+      loop:
+        - "{{ in_vm }}"
+        - "{{ out_vm }}"
+
+    - name: "2. Full lifecycle"
+      block:
+        - name: "2a. Enforce the class"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.protect
+          vars:
+            protect_mode: enforce
+
+        - name: "2b. Apply the same period again"
+          vergeio.vergeos.snapshot_profile:
+            insecure: true
+            name: "{{ prof }}"
+            description: "{{ prof_description }}"
+            periods: "{{ protect_classes['zz-partial'].periods }}"
+            state: present
+          register: period_rerun
+
+        - name: "2c. A second apply is a no-op"
+          ansible.builtin.assert:
+            that: not period_rerun.changed
+            fail_msg: >-
+              the partial period did not converge:
+              {{ period_rerun.actions }}
+
+        - name: "2d. Read the period through pyVergeOS"
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ playbook_dir }}/partial_snapshot_probe.py"
+              - show-period
+              - --profile
+              - "{{ prof }}"
+              - --period
+              - "{{ period_name }}"
+          register: period_raw
+          changed_when: false
+          check_mode: false
+          failed_when: false
+          no_log: true
+
+        - name: "2d1. The period read must have succeeded"
+          ansible.builtin.fail:
+            msg: >-
+              partial_snapshot_probe.py show-period exited
+              {{ period_raw.rc | default('unknown') }}:
+              {{ period_raw.stderr | default('') | trim }}
+          when: period_raw.rc | default(0) != 0
+
+        - name: "2e. Parse the period"
+          ansible.builtin.set_fact:
+            period: "{{ period_raw.stdout | from_json }}"
+
+        - name: "2f. Read the period type over HTTP"
+          ansible.builtin.uri:
+            url: >-
+              {{ api_base }}/snapshot_profile_periods?filter=profile%20eq%20{{ period.profile_key }}&fields=name,type
+          register: period_http
+          changed_when: false
+
+        - name: "2g. The stored type is partial_include"
+          vars:
+            row: "{{ period_http.json | selectattr('name', 'equalto', period_name) | first }}"
+          ansible.builtin.assert:
+            that:
+              - period.snapshot_type == 'partial_include'
+              - row.type == 'partial_include'
+            fail_msg: >-
+              period scope did not stick.
+              sdk={{ period }} http={{ period_http.json }}
+
+        - name: "2h. Look up the class tag key"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/tags?fields=$key,name"
+          register: tag_rows
+          changed_when: false
+
+        - name: "2i. The period's tag keys are that tag, including quiesce"
+          vars:
+            tag_key: >-
+              {{ (tag_rows.json | selectattr('name', 'equalto', cls) | first)['$key'] | int }}
+          ansible.builtin.assert:
+            that:
+              - tag_key in period.partial_tag_keys
+              - tag_key in period.quiesce_tag_keys
+            fail_msg: >-
+              tag {{ tag_key }} ({{ cls }}) is not on the period:
+              partial={{ period.partial_tag_keys }}
+              quiesce={{ period.quiesce_tag_keys }}
+
+        - name: "2j. Tag only one VM"
+          vergeio.vergeos.tag:
+            insecure: true
+            name: "{{ cls }}"
+            category: protect
+            vm_name: "{{ in_vm }}"
+            state: present
+
+        - name: "2k. Enrol the tagged VM"
+          ansible.builtin.include_role:
+            name: vergeio.vergeos.protect
+          vars:
+            protect_mode: enforce
+
+        - name: "2l. Read both VMs' profiles over HTTP"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/vms?fields=name,snapshot_profile"
+          register: enrolled
+          changed_when: false
+
+        - name: "2m. The tag enrols one VM and leaves the other alone"
+          vars:
+            tagged: "{{ enrolled.json | selectattr('name', 'equalto', in_vm) | first }}"
+            plain: "{{ enrolled.json | selectattr('name', 'equalto', out_vm) | first }}"
+          ansible.builtin.assert:
+            that:
+              - tagged.snapshot_profile | string | length > 0
+              - plain.snapshot_profile | default('') | string | length == 0
+            fail_msg: >-
+              enrolment: {{ in_vm }}={{ tagged }} {{ out_vm }}={{ plain }}
+
+        - name: "2n. Snapshot the include tag"
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ playbook_dir }}/partial_snapshot_probe.py"
+              - create
+              - --name
+              - "{{ snap_name }}"
+              - --include-tag
+              - "{{ cls }}"
+              - --timeout
+              - "300"
+          register: snap_raw
+          changed_when: true
+          failed_when: false
+          no_log: true
+
+        - name: "2n1. The snapshot command must have succeeded"
+          ansible.builtin.fail:
+            msg: >-
+              partial_snapshot_probe.py create exited
+              {{ snap_raw.rc | default('unknown') }}:
+              {{ snap_raw.stderr | default('') | trim }}
+          when: snap_raw.rc | default(0) != 0
+
+        - name: "2o. Parse the snapshot"
+          ansible.builtin.set_fact:
+            snap: "{{ (snap_raw.stdout | default('{}', true)) | from_json }}"
+
+        - name: "2p. Read membership over HTTP, after find_vms"
+          vars:
+            member_q: >-
+              {{ ('cloud_snapshot eq ' ~ snap.key
+                  ~ ' and is_snapshot eq false') | replace(' ', '%20') }}
+          ansible.builtin.uri:
+            url: >-
+              {{ api_base }}/cloud_snapshot_vms?filter={{ member_q }}&fields=name,original_key,is_snapshot,cloud_snapshot
+          register: members
+          until:
+            - members.json | default([]) | length > 0
+          retries: 30
+          delay: 2
+          changed_when: false
+
+        - name: "2q. The tagged VM is in the snapshot and the other is not"
+          vars:
+            names: "{{ members.json | default([]) | map(attribute='name') | list }}"
+          ansible.builtin.assert:
+            that:
+              - in_vm in names
+              - out_vm not in names
+              - in_vm in snap.members
+              - out_vm not in snap.members
+            fail_msg: >-
+              partial snapshot {{ snap.key }} status {{ snap.status }}
+              contains {{ names }}. {{ in_vm }} should be there and
+              {{ out_vm }} should not. helper members={{ snap.members }}
+
+      always:
+        - name: "3. Tear the run down"
+          ansible.builtin.include_tasks: partial_snapshot_cleanup.yml
+
+        # Only if this run created it. The category is shared lab state.
+        - name: "3a. Delete the protect category, if this run created it"
+          vergeio.vergeos.tag_category:
+            insecure: true
+            name: protect
+            state: absent
+          when: not (category_preexisted | bool)
+
+        - name: "3b. Re-read the tables this ladder writes"
+          ansible.builtin.uri:
+            url: "{{ api_base }}/{{ item.q }}"
+          register: leftover_rows
+          changed_when: false
+          loop:
+            - {name: tag, q: "tags?fields=name"}
+            - {name: profile, q: "snapshot_profiles?fields=name"}
+            - {name: category, q: "tag_categories?fields=name"}
+            - {name: snapshot, q: "cloud_snapshots?fields=name"}
+          loop_control:
+            label: "{{ item.name }}"
+
+        - name: "3c. Confirm both scratch VMs are gone"
+          vergeio.vergeos.vm_info:
+            insecure: true
+            name: "{{ item }}"
+          register: leftover_vms
+          changed_when: false
+          loop:
+            - "{{ in_vm }}"
+            - "{{ out_vm }}"
+
+        - name: "3d. Assert clean"
+          vars:
+            names: >-
+              {{ leftover_rows.results | map(attribute='json')
+                 | map('map', attribute='name') | map('list') | list }}
+          ansible.builtin.assert:
+            that:
+              - leftover_vms.results[0].vms | length == 0
+              - leftover_vms.results[1].vms | length == 0
+              - cls not in names[0]
+              - prof not in names[1]
+              - category_preexisted | bool or 'protect' not in names[2]
+              - snap_name not in names[3]
+            fail_msg: >-
+              leftovers: vms={{ leftover_vms.results | map(attribute='vms') | list }},
+              tags={{ names[0] }}, profiles={{ names[1] }},
+              categories={{ names[2] }}, snapshots={{ names[3] }}
+
+    - name: PASSED
+      ansible.builtin.debug:
+        msg: >-
+          protect partial ladder PASSED: period converges as
+          partial_include, quiesce tag is stored, the tagged VM is
+          enrolled and snapshotted, the untagged VM is neither

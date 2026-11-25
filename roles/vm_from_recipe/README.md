@@ -53,10 +53,9 @@ that cannot boot.
       vars:
         vm_from_recipe_name: "web-01"
         vm_from_recipe_recipe: "Ubuntu Server 22.04 (Jammy Jellyfish)"
-        vm_from_recipe_answers:
+        vm_from_recipe_plain_answers:
           HOSTNAME: "web-01"
           USER: "ops"
-          PASSWORD: "{{ vault_guest_password }}"
           YB_CPU_CORES: 2
           YB_RAM: 4096                   # MB
           YB_DRIVE_OS_SIZE: 53687091200  # BYTES, not GB. This is 50 GB.
@@ -65,6 +64,8 @@ that cannot boot.
           SELECT_OS_TIER: >-
             {{ recipe.options.SELECT_OS_TIER
                | map(attribute='$key') | first }}
+        vm_from_recipe_answers:
+          PASSWORD: "{{ vault_guest_password }}"
         vm_from_recipe_power_on: true
         vm_from_recipe_verify_boot: true
 ```

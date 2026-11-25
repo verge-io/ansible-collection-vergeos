@@ -1,0 +1,52 @@
+---
+# Tear down everything verify-protect-partial.yml creates.
+# Included at the start as well, so a dead previous run does not collide.
+# The protect tag category is shared lab state: only remove it when this
+# run is the one that created it.
+# no_log because the password is in the environment. The next task
+# prints stderr, which the helper has already scrubbed, so a delete
+# that fails is not the word "censored".
+- name: Delete the scratch cloud snapshot
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ playbook_dir }}/partial_snapshot_probe.py"
+      - delete
+      - --name
+      - "{{ snap_name }}"
+  register: snap_delete
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: The snapshot delete must have succeeded
+  ansible.builtin.fail:
+    msg: >-
+      partial_snapshot_probe.py delete exited
+      {{ snap_delete.rc | default('unknown') }}:
+      {{ snap_delete.stderr | default('') | trim }}
+  when: snap_delete.rc | default(0) != 0
+
+- name: Delete the scratch VMs
+  vergeio.vergeos.vm:
+    insecure: true
+    name: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ in_vm }}"
+    - "{{ out_vm }}"
+
+# No category: on a system that does not have 'protect' yet, naming
+# the category fails the lookup before the "tag does not exist" path.
+# The name is zz-partial, so a cross-category lookup is one tag or none.
+- name: Delete the class tag
+  vergeio.vergeos.tag:
+    insecure: true
+    name: "{{ cls }}"
+    state: absent
+
+- name: Delete the class profile
+  vergeio.vergeos.snapshot_profile:
+    insecure: true
+    name: "{{ prof }}"
+    state: absent

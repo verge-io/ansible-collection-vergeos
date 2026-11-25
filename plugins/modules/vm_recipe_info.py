@@ -136,8 +136,9 @@ options:
         $display: "4"
 secret_questions:
   description:
-    - Names of questions whose answers are credentials. Pass these with
-      C(no_log) when you build an answer set.
+    - Names of questions whose answers are credentials. Pass these to
+      M(vergeio.vergeos.vm_recipe_deploy) in C(answers), which is C(no_log).
+      Pass the other answers in C(plain_answers) on that module.
   returned: when O(questions) is true and O(name) matched
   type: list
   elements: str
@@ -155,6 +156,7 @@ from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers imp
     SECRET_TYPES,
     TABLE_BACKED_TYPES,
     is_internal,
+    is_tier_question,
     looks_secret,
 )
 from ansible_collections.vergeio.vergeos.plugins.module_utils.vm_recipes import (
@@ -245,7 +247,7 @@ def main():
                 # The raw row returns a credential default in clear text.
                 if q.get('default'):
                     q = dict(q, default='VALUE_SPECIFIED_IN_NO_LOG_PARAMETER')
-            if is_internal(q):
+            if is_internal(q) and not is_tier_question(q):
                 internal.append(q.get('name'))
             else:
                 answerable.append(q)

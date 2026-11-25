@@ -53,9 +53,22 @@ argument_specs:
         required: true
       vm_from_recipe_answers:
         description:
-          - Recipe question answers, keyed by question variable name.
-          - Answer network questions explicitly; their defaults do not reliably
-            attach a NIC.
+          - Credential recipe answers, keyed by question variable name.
+          - Passed to vm_recipe_deploy's answers parameter, which is no_log.
+          - A playbook that still puts the whole answer set here keeps
+            working. On ansible-core 2.22 a short ordinary value in this
+            mapping is masked in later output for the rest of the run. Put
+            those in vm_from_recipe_plain_answers.
+        type: dict
+        default: {}
+      vm_from_recipe_plain_answers:
+        description:
+          - Ordinary recipe answers, keyed by question variable name.
+          - Passed to vm_recipe_deploy's plain_answers parameter, which is
+            not no_log. A core count, a boolean, a hostname and a disk size
+            belong here.
+          - Do not put a guest password here. The module refuses a credential
+            passed this way. The same question in both mappings is an error.
         type: dict
         default: {}
       vm_from_recipe_prune_unknown:

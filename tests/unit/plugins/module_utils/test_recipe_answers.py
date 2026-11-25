@@ -6,7 +6,12 @@ __metaclass__ = type
 import pytest
 
 from ansible_collections.vergeio.vergeos.plugins.module_utils.recipe_answers import (
+    answers_retained_in_no_log,
+    credential_answer_concealed,
+    drive_tier_has_no_question,
+    fill_recipe_answers,
     maskable_strings,
+    recipe_not_applicable,
     resolve_answers,
     scan_simulate,
     unmaskable_answer_strings,
@@ -614,3 +619,589 @@ def test_secret_vars_naming_an_absent_answer_is_harmless():
 def test_empty_inputs_do_not_explode():
     assert unmaskable_answer_strings(None, None) == set()
     assert unmaskable_answer_strings({}, []) == set()
+
+
+def test_retained_no_log_names_are_only_values_still_held():
+    held = {"fuzz", "secret"}
+    names = answers_retained_in_no_log(
+        {"ZZ_SECRET": "fuzz", "ZZ_HOSTNAME": "zz-fuzz-host",
+         "YB_CPU_CORES": 1, "ZZ_NOTE": ""},
+        held)
+    assert names == ["ZZ_SECRET"]
+
+
+def test_retained_no_log_names_drop_a_value_removed_from_the_set():
+    """Classification off removes the password string. The name goes with it."""
+    names = answers_retained_in_no_log(
+        {"ZZ_SECRET": "fuzz", "ZZ_HOSTNAME": "zz-fuzz-host"},
+        set())
+    assert names == []
+
+
+def test_a_value_shared_with_another_no_log_parameter_stays_listed():
+    names = answers_retained_in_no_log(
+        {"YB_CPU_CORES": 1, "ZZ_SECRET": "1"}, {"1"})
+    assert names == ["YB_CPU_CORES", "ZZ_SECRET"]
+
+
+def _refusal(no_log_answers, msg=None):
+    """The ZZ_RAM_MB refusal. It quotes the recipe and not the password."""
+    return {
+        "msg": msg or (
+            "the answer set is not valid for recipe 'zz-fuzz-recipe': "
+            "answer 'ZZ_RAM_MB' is 256; the recipe requires at least 512"),
+        "recipe": {
+            "name": "zz-fuzz-recipe",
+            "description": "fuzz ladder recipe, for the no_log check",
+            "catalog_display": "zz-fuzz-cat",
+        },
+        "answers_sent": ["YB_CPU_CORES", "ZZ_HOSTNAME", "ZZ_RAM_MB", "ZZ_SECRET"],
+        "hints": [],
+        "no_log_answers": no_log_answers,
+    }
+
+
+def test_recipe_name_alone_does_not_conceal_a_password():
+    """The live rung used to pass on this result. The password was not no_log."""
+    result = _refusal([])
+    assert "zz-fuzz-recipe" in result["msg"]
+    assert "fuzz" in result["msg"]
+    assert credential_answer_concealed(result, "ZZ_SECRET", "fuzz") is False
+
+
+def test_a_password_kept_no_log_is_concealed_when_the_recipe_name_matches():
+    result = _refusal(["ZZ_SECRET"])
+    assert credential_answer_concealed(result, "ZZ_SECRET", "fuzz") is True
+    assert credential_answer_concealed(result, "ZZ_NOTE", "fuzz") is False
+
+
+def test_an_echoed_password_is_not_concealed_even_when_listed():
+    result = _refusal(
+        ["ZZ_SECRET"],
+        msg=("the answer set is not valid for recipe 'zz-fuzz-recipe': "
+             "refusing fuzz"),
+    )
+    assert credential_answer_concealed(result, "ZZ_SECRET", "fuzz") is False
+
+
+def test_a_rewritten_result_with_the_name_still_listed_is_concealed():
+    """Cores that rewrite the return replace the marker. The list still decides."""
+    result = _refusal(["ZZ_SECRET"])
+    result["msg"] = result["msg"].replace("fuzz", "********")
+    result["recipe"]["name"] = "zz-********-recipe"
+    result["recipe"]["description"] = "******** ladder recipe, for the no_log check"
+    assert "********" in result["msg"]
+    assert credential_answer_concealed(result, "ZZ_SECRET", "fuzz") is True
+
+
+def test_a_missing_no_log_list_is_not_concealed():
+    result = _refusal(["ZZ_SECRET"])
+    del result["no_log_answers"]
+    assert credential_answer_concealed(result, "ZZ_SECRET", "fuzz") is False
+
+
+def test_an_empty_password_is_not_concealed():
+    result = _refusal(["ZZ_SECRET"])
+    assert credential_answer_concealed(result, "ZZ_SECRET", "") is False
+
+
+# ── matrix answer fill ───────────────────────────────────────────────────────
+
+def test_required_secrets_are_named_and_not_invented():
+    questions = [
+        q("MINIO_ADMIN_PASSWORD", "password", required=True, default=""),
+        q("CLUSTER_SECRET", "string", required=True, default=""),
+        q("VPNPASS", "string", required=True, default=""),
+        q("HOSTNAME", required=True, default=""),
+    ]
+    out = fill_recipe_answers(questions, {"HOSTNAME": "zz-mx"})
+    assert out["plain"] == {"HOSTNAME": "zz-mx"}
+    assert out["secrets"] == {}
+    assert out["unanswered_secrets"] == [
+        "CLUSTER_SECRET", "MINIO_ADMIN_PASSWORD", "VPNPASS"]
+
+
+@pytest.mark.parametrize("default", [
+    "VALUE_SPECIFIED_IN_NO_LOG_PARAMETER",
+    "$REDACTED$",
+    "********",
+    "published-default",
+])
+def test_a_required_credential_default_is_not_copied(default):
+    """vm_recipe_info redacts a credential default to the no_log token.
+
+    Posting that token would install it. A real published default stays on
+    the platform: the filler does not copy that either.
+    """
+    questions = [q("MINIO_ADMIN_PASSWORD", "password", required=True,
+                   default=default)]
+    out = fill_recipe_answers(questions, {})
+    assert out["secrets"] == {}
+    assert out["plain"] == {}
+    assert default not in out["secrets"].values()
+    assert out["unanswered_secrets"] == ["MINIO_ADMIN_PASSWORD"]
+
+
+def test_a_supplied_secret_is_kept():
+    questions = [q("PASSWORD", "password", required=True, default="")]
+    out = fill_recipe_answers(questions, {"PASSWORD": "caller-secret"})
+    assert out["secrets"] == {"PASSWORD": "caller-secret"}
+    assert out["unanswered_secrets"] == []
+    assert out["plain"] == {}
+
+
+def test_a_supplied_secret_wins_over_a_redacted_default():
+    questions = [q("PASSWORD", "password", required=True,
+                   default="VALUE_SPECIFIED_IN_NO_LOG_PARAMETER")]
+    out = fill_recipe_answers(questions, {"PASSWORD": "caller-secret"})
+    assert out["secrets"] == {"PASSWORD": "caller-secret"}
+    assert out["unanswered_secrets"] == []
+
+
+def test_a_no_log_placeholder_is_not_sent_as_a_plain_default():
+    questions = [q("HOSTNAME", "string", required=True,
+                   default="VALUE_SPECIFIED_IN_NO_LOG_PARAMETER")]
+    out = fill_recipe_answers(questions, {})
+    assert out["plain"]["HOSTNAME"] != "VALUE_SPECIFIED_IN_NO_LOG_PARAMETER"
+    assert out["secrets"] == {}
+
+
+def test_required_bool_and_list_are_filled_from_the_question():
+    questions = [
+        q("REOPEN", "bool", required=True, default="", display="Reopen File During Writes"),
+        q("YB_IP_ADDR_TYPE", "list", required=True, default="",
+          list={"dhcp": "DHCP", "static": "Static"}),
+    ]
+    out = fill_recipe_answers(questions, {})
+    assert out["secrets"] == {}
+    assert out["plain"]["REOPEN"] is False
+    assert out["plain"]["YB_IP_ADDR_TYPE"] == "dhcp"
+
+
+def test_required_table_question_uses_the_first_option():
+    questions = [q("SELECT_OS_TIER", "row", required=True, default="",
+                   table="cluster_tiers")]
+    out = fill_recipe_answers(
+        questions, {}, {"SELECT_OS_TIER": [{"$key": 4, "$display": "4"}]})
+    assert out["plain"]["SELECT_OS_TIER"] == 4
+    assert out["secrets"] == {}
+
+
+def test_table_question_with_no_rows_is_left_unset():
+    questions = [q("WINDOWS_ISO", "list", required=True, default="",
+                   table="files")]
+    out = fill_recipe_answers(questions, {}, {"WINDOWS_ISO": []})
+    assert "WINDOWS_ISO" not in out["plain"]
+    assert out["secrets"] == {}
+
+
+def test_supplied_numeric_below_the_question_minimum_is_raised():
+    questions = [q("YB_RAM", "ram", default="1024", min=16384)]
+    out = fill_recipe_answers(questions, {"YB_RAM": 1024, "HOSTNAME": "zz-mx"})
+    assert out["plain"]["YB_RAM"] == 16384
+    assert out["plain"]["HOSTNAME"] == "zz-mx"
+
+
+def test_numeric_default_below_the_minimum_is_sent_as_the_minimum():
+    """The matrix did not mention this question. The published default is too small."""
+    questions = [q("YB_RAM", "ram", required=False, default="1024", min=16384)]
+    out = fill_recipe_answers(questions, {})
+    assert out["plain"]["YB_RAM"] == 16384
+
+
+def test_numeric_at_or_above_the_minimum_is_left_alone():
+    questions = [q("YB_RAM", "ram", default="1024", min=2048)]
+    out = fill_recipe_answers(questions, {"YB_RAM": 4096})
+    assert out["plain"]["YB_RAM"] == 4096
+
+
+def test_timezone_question_with_a_zero_default_is_utc():
+    questions = [q("VM_TIMEZONE", "string", required=False, default="0")]
+    out = fill_recipe_answers(questions, {})
+    assert out["plain"]["VM_TIMEZONE"] == "UTC"
+    assert out["secrets"] == {}
+
+
+def test_supplied_timezone_of_zero_is_replaced():
+    questions = [q("VM_TIMEZONE", "string", default="America/New_York")]
+    out = fill_recipe_answers(questions, {"VM_TIMEZONE": 0})
+    assert out["plain"]["VM_TIMEZONE"] == "UTC"
+
+
+def test_a_real_timezone_answer_is_kept():
+    questions = [q("YB_TIMEZONE", "string", default="0")]
+    out = fill_recipe_answers(questions, {"YB_TIMEZONE": "America/New_York"})
+    assert out["plain"]["YB_TIMEZONE"] == "America/New_York"
+
+
+def test_api_check_step_is_not_invented_when_it_is_not_a_question():
+    """API_CHECK_VW is a recipe command, not an answer, unless the recipe says so."""
+    questions = [q("HOSTNAME", required=False, default="host")]
+    out = fill_recipe_answers(questions, {"HOSTNAME": "zz-mx"})
+    assert "API_CHECK_VW" not in out["plain"]
+    assert "API_CHECK_VW" not in out["secrets"]
+
+
+def test_internal_questions_are_not_filled():
+    questions = [q("API_CHECK_VW", "database_find", required=True, default="")]
+    out = fill_recipe_answers(questions, {})
+    assert out["plain"] == {}
+    assert out["secrets"] == {}
+    assert out["unfilled"] == []
+
+
+def test_a_supplied_internal_answer_is_kept_and_posted():
+    """VM_TIMEZONE is often an internal question. The override must survive."""
+    questions = [q("VM_TIMEZONE", "database_find", required=False,
+                   default="settings/timezone")]
+    filled = fill_recipe_answers(questions, {"VM_TIMEZONE": "UTC"})
+    assert filled["plain"]["VM_TIMEZONE"] == "UTC"
+    posted = resolve_answers(questions, {"VM_TIMEZONE": "UTC"})
+    assert posted["answers"]["VM_TIMEZONE"] == "UTC"
+    assert "VM_TIMEZONE" not in posted["pruned"]
+
+
+def test_timezone_settings_default_is_replaced_with_utc():
+    questions = [q("VM_TIMEZONE", "string", required=False,
+                   default="settings/timezone")]
+    out = fill_recipe_answers(questions, {})
+    assert out["plain"]["VM_TIMEZONE"] == "UTC"
+
+
+def test_required_question_with_a_concrete_default_is_sent():
+    questions = [
+        q("MINIO_USER", "string", required=True, default="minio",
+          display="Minio System User"),
+        q("INSTANCES", "num", required=True, default="2", display="Instances"),
+    ]
+    out = fill_recipe_answers(questions, {})
+    assert out["plain"]["MINIO_USER"] == "minio"
+    assert out["plain"]["INSTANCES"] == 2
+
+
+def test_required_list_uses_the_first_choice_when_the_default_is_not_one():
+    questions = [q("PICK", "list", required=True, default="settings/users",
+                   list={"a": "A", "b": "B"})]
+    out = fill_recipe_answers(questions, {})
+    assert out["plain"]["PICK"] == "a"
+    assert out["unfilled"] == []
+
+
+def test_required_iso_with_no_choices_is_unfilled():
+    questions = [q("INSTALL_ISO", "list", required=True, default="",
+                   table="files", display="Install ISO")]
+    out = fill_recipe_answers(questions, {}, {"INSTALL_ISO": []})
+    assert "INSTALL_ISO" not in out["plain"]
+    assert out["unfilled"] == [{
+        "name": "INSTALL_ISO",
+        "display": "Install ISO",
+        "reason": "no existing ISO for required question 'Install ISO'",
+    }]
+
+
+def test_required_iso_download_url_is_not_sent():
+    """A download URL is not a file on this system.
+
+    The platform rejected that send for Install ISO. A caller can still
+    pass the URL, which is how the Windows recipes name an image.
+    """
+    questions = [q("INSTALL_ISO", "list", required=True,
+                   default="https://example.invalid/vergeos.iso",
+                   table="files", display="Install ISO")]
+    out = fill_recipe_answers(questions, {}, {"INSTALL_ISO": []})
+    assert "INSTALL_ISO" not in out["plain"]
+    assert out["unfilled"][0]["reason"].startswith("no existing ISO")
+    supplied = fill_recipe_answers(
+        questions, {"INSTALL_ISO": "https://example.invalid/vergeos.iso"},
+        {"INSTALL_ISO": []})
+    assert supplied["plain"]["INSTALL_ISO"] == "https://example.invalid/vergeos.iso"
+    assert supplied["unfilled"] == []
+
+
+def test_install_iso_uses_an_iso_file_not_another_row():
+    questions = [q("INSTALL_ISO", "list", required=True, default="",
+                   table="files", display="Install ISO")]
+    options = {"INSTALL_ISO": [
+        {"$key": 3, "name": "disk.raw", "type": "raw"},
+        {"$key": 9, "name": "vergeos.iso", "$display": "vergeos.iso",
+         "type": "iso"},
+    ]}
+    out = fill_recipe_answers(questions, {}, options)
+    assert out["plain"]["INSTALL_ISO"] == 9
+    assert out["unfilled"] == []
+
+
+def test_install_iso_uses_a_read_only_file_listing():
+    """No option rows. The check-mode matrix passes file_info's ISO list."""
+    questions = [q("INSTALL_ISO", "list", required=True, default="",
+                   table="files", display="Install ISO")]
+    files = [{"$key": 12, "name": "verge-io-install.iso", "type": "iso"}]
+    out = fill_recipe_answers(questions, {}, {"INSTALL_ISO": []}, files)
+    assert out["plain"]["INSTALL_ISO"] == 12
+    assert out["unfilled"] == []
+
+
+def test_install_iso_url_choices_ignore_the_default_and_the_local_file():
+    """VergeOS Install ISO publishes download URLs as its own list.
+
+    The default points at marketplace.vergeos.com and is not one of those
+    choices. A file from file_info is not one either. The answer is the
+    first https choice. Nothing is downloaded.
+    """
+    first = "https://updates.vergeos.com/public/verge-io-install-26.2.iso"
+    second = "https://updates.vergeos.com/public/verge-io-install-26.3.iso"
+    questions = [q(
+        "INSTALL_ISO", "list", required=True, display="Install ISO",
+        table="files",
+        default="https://marketplace.vergeos.com/public/verge-io-install.iso",
+        list={first: "VergeOS 26.2", second: "VergeOS 26.3"},
+    )]
+    files = [{"$key": 12, "name": "verge-io-install.iso", "type": "iso"}]
+    out = fill_recipe_answers(questions, {}, {"INSTALL_ISO": []}, files)
+    assert out["plain"]["INSTALL_ISO"] == first
+    assert out["unfilled"] == []
+    assert 12 not in out["plain"].values()
+
+
+def test_install_iso_uses_the_default_when_it_is_a_list_choice():
+    first = "https://updates.vergeos.com/public/verge-io-install-26.2.iso"
+    chosen = "https://updates.vergeos.com/public/verge-io-install-26.3.iso"
+    questions = [q(
+        "INSTALL_ISO", "list", required=True, display="Install ISO",
+        default=chosen,
+        list={first: "VergeOS 26.2", chosen: "VergeOS 26.3"},
+    )]
+    files = [{"$key": 12, "name": "verge-io-install.iso", "type": "iso"}]
+    out = fill_recipe_answers(questions, {}, {}, files)
+    assert out["plain"]["INSTALL_ISO"] == chosen
+
+
+def test_install_iso_list_without_an_https_choice_stays_unfilled():
+    questions = [q(
+        "INSTALL_ISO", "list", required=True, display="Install ISO",
+        default="https://marketplace.vergeos.com/not-a-choice.iso",
+        list={"local": "not a url"},
+    )]
+    files = [{"$key": 12, "name": "verge-io-install.iso", "type": "iso"}]
+    out = fill_recipe_answers(questions, {}, {}, files)
+    assert "INSTALL_ISO" not in out["plain"]
+    assert out["unfilled"][0]["reason"] == (
+        "no usable choice for required question 'Install ISO'")
+
+
+def test_install_iso_prefers_the_question_options_over_the_listing():
+    questions = [q("INSTALL_ISO", "list", required=True, default="",
+                   table="files", display="Install ISO")]
+    options = {"INSTALL_ISO": [
+        {"$key": 4, "name": "recipe.iso", "type": "iso"},
+    ]}
+    files = [{"$key": 9, "name": "other.iso", "type": "iso"}]
+    out = fill_recipe_answers(questions, {}, options, files)
+    assert out["plain"]["INSTALL_ISO"] == 4
+
+
+def test_blocksize_default_is_a_valid_disksize():
+    """Filesystem Performance Test publishes BLOCKSIZE 65536.
+
+    disksize is bytes. The 1 MB floor refuses a drive size of 50, which
+    is fifty bytes. It was wrong for this question: 65536 is 64 KiB, the
+    block size the recipe itself publishes. The filler already sent that
+    default. The validator now accepts it.
+    """
+    question = q("BLOCKSIZE", "disksize", required=True, default="65536",
+                 min=512, max=0, display="Block Size")
+    filled = fill_recipe_answers([question], {})
+    assert filled["plain"]["BLOCKSIZE"] == 65536
+    out = resolve_answers([question], filled["plain"])
+    assert out["errors"] == [], " ".join(out["errors"])
+    assert out["answers"]["BLOCKSIZE"] == 65536
+
+
+def test_optional_tier_question_uses_its_own_choices():
+    """SELECT_OS_TIER is optional and its default is empty.
+
+    Leaving it unset makes the drive step send preferred_tier ''.
+    """
+    questions = [q("SELECT_OS_TIER", "row", required=False, default="",
+                   table="cluster_tiers", display="OS Drive Tier")]
+    options = {"SELECT_OS_TIER": [
+        {"$key": 1, "$display": "1"},
+        {"$key": 4, "$display": "4"},
+    ]}
+    out = fill_recipe_answers(questions, {}, options, None, [4])
+    assert out["plain"]["SELECT_OS_TIER"] == 1
+    assert out["unfilled"] == []
+
+
+def test_tier_question_without_choices_uses_a_tier_that_exists():
+    questions = [q("YB_DRIVE_TIER", "num", required=False, default="",
+                   display="Drive Tier")]
+    out = fill_recipe_answers(questions, {}, {}, None, [1, 4])
+    assert out["plain"]["YB_DRIVE_TIER"] == 1
+
+
+def test_hidden_tier_question_is_answered():
+    questions = [q("SELECT_DATA_TIER", "hidden", required=False, default="",
+                   section_name="$database", table="storage_tiers",
+                   display="Data Tier")]
+    options = {"SELECT_DATA_TIER": [{"$key": 2, "$display": "2"}]}
+    out = fill_recipe_answers(questions, {}, options)
+    assert out["plain"]["SELECT_DATA_TIER"] == 2
+
+
+def test_a_supplied_tier_is_kept():
+    questions = [q("SELECT_OS_TIER", "row", required=False, default="",
+                   table="cluster_tiers")]
+    out = fill_recipe_answers(
+        questions, {"SELECT_OS_TIER": 1},
+        {"SELECT_OS_TIER": [{"$key": 4, "$display": "4"}]}, None, [4])
+    assert out["plain"]["SELECT_OS_TIER"] == 1
+
+
+def test_drive_create_command_is_not_a_tier_question():
+    """CREATE_TIER0_DRIVE_1 is the step that reads preferred_tier."""
+    questions = [q("CREATE_TIER0_DRIVE_1", "database_create", required=False,
+                   default="", section_name="$database")]
+    out = fill_recipe_answers(questions, {}, {}, None, [1])
+    assert out["plain"] == {}
+    assert out["unfilled"] == []
+    message = ("Error executing API command 'CREATE_TIER0_DRIVE_1': "
+               "Error creating file for new drive: value '' is not in list "
+               "for field 'preferred_tier'")
+    assert drive_tier_has_no_question(questions, message) is True
+    assert drive_tier_has_no_question(
+        [q("SELECT_OS_TIER", "row", table="cluster_tiers")], message) is False
+
+
+def test_tier_question_with_no_tier_anywhere_is_unfilled():
+    questions = [q("SELECT_OS_TIER", "row", required=False, default="",
+                   table="cluster_tiers", display="OS Drive Tier")]
+    out = fill_recipe_answers(questions, {}, {"SELECT_OS_TIER": []}, None, [])
+    assert "SELECT_OS_TIER" not in out["plain"]
+    assert out["unfilled"][0]["reason"] == (
+        "no storage tier for question 'OS Drive Tier'")
+
+
+def test_vergeos_shaped_answers_pass_the_module_validator():
+    """List default ``0`` stays ``0`` when that choice exists."""
+    iso = "https://updates.vergeos.com/public/verge-io-install-26.2.iso"
+    drive_counts = {"0": "-- None --", "1": "1", "2": "2", "3": "3", "4": "4"}
+    questions = [
+        q("HOSTNAME", "hostname", required=True, default="!!",
+          regex="[a-z][a-z0-9-]*"),
+        q("USER", required=True, default=""),
+        q("PASSWORD", "password", required=True, default=""),
+        q("YB_CPU_CORES", "num", required=False, default="1", min=1),
+        q("YB_RAM", "ram", required=False, default="512", min=1024),
+        q("YB_DRIVE_OS_SIZE", "disksize", required=True, default="", min=0),
+        q("BLOCKSIZE", "disksize", required=True, default="65536", min=512,
+          max=0),
+        q("INSTALL_ISO", "list", required=True, display="Install ISO",
+          default="https://marketplace.vergeos.com/nope.iso",
+          list={iso: "26.2",
+                "https://updates.vergeos.com/public/verge-io-install-26.3.iso": "26.3"}),
+        q("ISO_NAME", required=False, default=""),
+        q("TIER0_DRIVE_TIER", "list", required=False, default="1",
+          table="cluster_tiers", list=drive_counts),
+        q("TIER1_DRIVE_TIER", "list", required=False, default="1",
+          table="cluster_tiers", list=drive_counts),
+        q("SWAP_TIER", "list", required=False, default="0",
+          table="cluster_tiers", display="Swap Tier", list=drive_counts),
+        q("TIER2_DRIVES", "list", required=False, default="0",
+          table="cluster_tiers", display="Drives", list=drive_counts),
+        q("TIER3_DRIVES", "list", required=False, default="0",
+          table="cluster_tiers", display="Drives", list=drive_counts),
+        q("TIER4_DRIVES", "list", required=False, default="0",
+          table="cluster_tiers", display="Drives", list=drive_counts),
+        q("TIER5_DRIVES", "list", required=False, default="0",
+          table="cluster_tiers", display="Drives", list=drive_counts),
+        q("REOPEN", "bool", required=False, default=""),
+        q("ASSET", "string", required=True, default="***", regex="[A-Za-z0-9]+",
+          min=2),
+        q("YB_IP_ADDR_TYPE", "list", required=False, default="static",
+          list={"dhcp": "DHCP", "static": "Static"}),
+        q("CREATE_TIER0_DRIVE_1", "database_create", section_name="$database"),
+    ]
+    keep_zero = ["SWAP_TIER", "TIER2_DRIVES", "TIER3_DRIVES",
+                 "TIER4_DRIVES", "TIER5_DRIVES"]
+    keep_one = ["TIER0_DRIVE_TIER", "TIER1_DRIVE_TIER"]
+    options = {name: [{"$key": 1, "$display": "1"}]
+               for name in keep_zero + keep_one}
+    filled = fill_recipe_answers(
+        questions,
+        {"HOSTNAME": "zz-mx", "USER": "ladder", "PASSWORD": "secret"},
+        options, None, [1])
+    posted = dict(filled["plain"])
+    posted.update(filled["secrets"])
+    assert posted["PASSWORD"] == "secret"
+    assert posted["INSTALL_ISO"] == iso
+    assert posted["YB_RAM"] == 1024
+    assert posted["YB_DRIVE_OS_SIZE"] == 1048576
+    assert posted["BLOCKSIZE"] == 65536
+    assert posted["ASSET"] != "***"
+    for name in keep_zero:
+        assert posted.get(name, "0") in (0, "0"), name
+        assert posted.get(name) != 1
+    for name in keep_one:
+        assert posted.get(name, "1") in (1, "1"), name
+    assert "CREATE_TIER0_DRIVE_1" not in posted
+    out = resolve_answers(questions, posted, options=options)
+    assert out["errors"] == [], " ".join(out["errors"])
+
+
+def test_zero_choice_is_kept_and_default_zero_is_not_replaced():
+    choices = {"0": "-- None --", "1": "1", "2": "2", "3": "3", "4": "4"}
+    question = q("TIER2_DRIVES", "list", required=False, default="0",
+                 table="cluster_tiers", display="Drives", list=choices)
+    options = {"TIER2_DRIVES": [{"$key": 1, "$display": "1"},
+                                {"$key": 0, "$display": "-- None --"}]}
+    filled = fill_recipe_answers([question], {}, options, None, [1])
+    assert filled["plain"].get("TIER2_DRIVES", "0") in (0, "0")
+    assert filled["plain"].get("TIER2_DRIVES") != 1
+    for answer in (0, "0"):
+        out = resolve_answers([question], {"TIER2_DRIVES": answer},
+                              options=options)
+        assert out["errors"] == [], " ".join(out["errors"])
+        assert out["answers"]["TIER2_DRIVES"] == answer
+
+
+def test_optional_list_with_a_valid_default_is_not_replaced():
+    questions = [q("SWAP_TIER", "list", required=False, default="1",
+                   table="cluster_tiers")]
+    options = {"SWAP_TIER": [{"$key": 1, "$display": "1"}]}
+    out = fill_recipe_answers(questions, {}, options)
+    assert "SWAP_TIER" not in out["plain"]
+
+
+def test_drive_size_of_fifty_is_still_refused():
+    """The 1 MB floor stays for a drive whose own bounds are not that small."""
+    question = q("YB_DRIVE_OS_SIZE", "disksize", required=True, default="0",
+                 min=0, max=0)
+    out = resolve_answers([question], {"YB_DRIVE_OS_SIZE": 50})
+    assert out["errors"]
+    assert "bytes" in " ".join(out["errors"])
+    filled = fill_recipe_answers([question], {})
+    assert filled["plain"]["YB_DRIVE_OS_SIZE"] == 1048576
+    accepted = resolve_answers([question], filled["plain"])
+    assert accepted["errors"] == []
+
+
+def test_optional_empty_question_is_not_filled():
+    questions = [q("SSH_KEY", required=False, default="")]
+    out = fill_recipe_answers(questions, {})
+    assert out["plain"] == {}
+
+
+def test_recipe_not_downloaded_is_not_applicable():
+    assert recipe_not_applicable({"name": "Gitlab", "downloaded": False}) is True
+    assert recipe_not_applicable({"name": "Gitlab", "downloaded": 0}) is True
+    assert recipe_not_applicable({"name": "Ubuntu", "downloaded": True}) is False
+    assert recipe_not_applicable({"name": "Local"}) is False
+
+
+def test_simulate_not_downloaded_message_is_not_applicable():
+    msg = ("the simulate POST refused the answer set: HTTP 422 -- "
+           "Recipe is not downloaded or published")
+    assert recipe_not_applicable(msg) is True
+    assert recipe_not_applicable({"downloaded": True}, message=msg) is True
+    assert recipe_not_applicable("answer 'YB_RAM' is 1024") is False

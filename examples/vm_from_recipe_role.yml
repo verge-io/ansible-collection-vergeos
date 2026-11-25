@@ -61,16 +61,17 @@
         vm_from_recipe_name: "{{ vm_name }}"
         vm_from_recipe_recipe: "{{ recipe_name }}"
 
-        vm_from_recipe_answers:
+        vm_from_recipe_plain_answers:
           HOSTNAME: "{{ vm_name }}"
           USER: "{{ guest_user }}"
-          PASSWORD: "{{ guest_password }}"
           YB_CPU_CORES: 2
           YB_RAM: 4096                   # MB
           YB_DRIVE_OS_SIZE: 53687091200  # BYTES, not GB. This is 50 GB.
           YB_IP_ADDR_TYPE: dhcp
           YB_NIC_ETH0: "{{ recipe_network }}"
           SELECT_OS_TIER: "{{ storage_tier }}"
+        vm_from_recipe_answers:
+          PASSWORD: "{{ guest_password }}"
 
         # About vm_from_recipe_fail_on_hints, which is left off here.
         #

@@ -291,9 +291,10 @@ def create_snapshot(client, module):
     # A past epoch used to be silently rewritten to +1h; refuse it instead.
     #
     # pyVergeOS#146/#148 fixed create() to always send expires (including 0)
-    # on tip 1.7.1+. The floor is >=1.2.8, which PyPI resolves to 1.6.1,
-    # still below that tip: retention=0 omits the field and the platform
-    # applies +72h. POST expires ourselves so "never" is actually never.
+    # on tip 1.7.1+. The floor is >=1.2.8, which PyPI now resolves to 1.8.0
+    # (that tip is included), but an older floor-satisfying SDK such as
+    # 1.6.1 still omits the field when retention=0 and the platform applies
+    # +72h. POST expires ourselves so "never" is actually never.
     current_time = int(time.time())
     if expiration is None or expiration == 0:
         expires = 0

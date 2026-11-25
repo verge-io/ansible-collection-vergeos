@@ -70,7 +70,8 @@
   ansible.builtin.debug:
     msg: >-
       {{ billing_export_result.get('system_rows', 0) }} system period(s),
-      {{ billing_export_result.get('tenant_rows', 0) }} tenant row(s)
+      {{ billing_export_result.get('tenant_rows', 0) }} tenant row(s),
+      {{ billing_export_result.get('tenants_skipped', 0) }} skipped
       ({{ billing_export_result.get('periods_deduplicated', 0) }} duplicate
       period(s) dropped) ->
       {{ billing_export_result.get('files', []) | join(', ') }}

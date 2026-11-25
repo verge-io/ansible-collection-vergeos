@@ -276,13 +276,15 @@ class _Names:
         return list(self._rows)
 
 
-def _client(board):
+def _client(board, networks=None):
     client = MagicMock()
     client.vms = _Names([_VM(board)])
-    client.networks = _Names([
-        {'$key': 13, 'name': 'qa-probe-neta'},
-        {'$key': 15, 'name': 'qa-probe-netb'},
-    ])
+    if networks is None:
+        networks = [
+            {'$key': 13, 'name': 'qa-probe-neta'},
+            {'$key': 15, 'name': 'qa-probe-netb'},
+        ]
+    client.networks = _Names(networks)
     return client
 
 
@@ -304,7 +306,7 @@ def _params(**over):
     return base
 
 
-def _run(board, check_mode=False, **over):
+def _run(board, check_mode=False, networks=None, **over):
     from ansible_collections.vergeio.vergeos.plugins.modules import nic as nic_mod
 
     module = MagicMock()
@@ -314,7 +316,8 @@ def _run(board, check_mode=False, **over):
     module.fail_json.side_effect = SystemExit(1)
 
     with patch.object(nic_mod, 'AnsibleModule', return_value=module), \
-         patch.object(nic_mod, 'get_vergeos_client', return_value=_client(board)):
+         patch.object(nic_mod, 'get_vergeos_client',
+                      return_value=_client(board, networks)):
         with pytest.raises(SystemExit):
             nic_mod.main()
     return module
@@ -439,3 +442,91 @@ class TestNicStateIsScopedToTheNamedNetwork:
         assert not module.exit_json.called
         assert board.deletes == []
         assert board.attachments() == [(83, 13)]
+
+
+class TestStringNetworkKeyMatchesIntegerVnet:
+    """#216: a network $key of "22" is the NIC whose vnet is 22.
+
+    On some pyVergeOS and VergeOS 26.2 combinations the raw key is a string
+    and the NIC's vnet is an int. A strict comparison never matched, so
+    present added a NIC on every run and absent left the existing one.
+    """
+
+    def _board(self):
+        return NICBoard([{'$key': 83, 'vnet': 22, 'interface': 'virtio',
+                          'enabled': True, 'macaddress': STORED_MAC}])
+
+    def _networks(self):
+        return [{'$key': '22', 'name': 'qa-probe-neta'}]
+
+    def test_present_reports_no_change(self):
+        board = self._board()
+
+        first = _exited(_run(board, networks=self._networks(), state='present',
+                             mac_address=STORED_MAC))
+        second = _exited(_run(board, networks=self._networks(), state='present',
+                              mac_address=STORED_MAC))
+
+        assert first['changed'] is False
+        assert second['changed'] is False
+        assert board.creates == 0
+        assert board.saves == []
+        assert board.attachments() == [(83, 22)]
+
+    def test_absent_removes_that_nic(self):
+        board = self._board()
+
+        result = _exited(_run(board, networks=self._networks(), state='absent'))
+
+        assert result['changed'] is True
+        assert board.deletes == [83]
+        assert board.attachments() == []
+        assert board.creates == 0
+
+    def test_a_different_string_key_is_still_a_different_network(self):
+        board = self._board()
+        networks = [
+            {'$key': '22', 'name': 'qa-probe-neta'},
+            {'$key': '15', 'name': 'qa-probe-netb'},
+        ]
+
+        result = _exited(_run(board, networks=networks, network='qa-probe-netb',
+                              state='present'))
+
+        assert result['changed'] is True
+        assert board.creates == 1
+        assert board.attachments() == [(83, 22), (91, 15)]
+
+    def test_moving_a_nic_writes_the_key_as_an_int(self):
+        board = NICBoard([{'$key': 83, 'vnet': 13, 'interface': 'virtio',
+                           'enabled': True}])
+        networks = [
+            {'$key': 13, 'name': 'qa-probe-neta'},
+            {'$key': '15', 'name': 'qa-probe-netb'},
+        ]
+
+        moved = _exited(_run(board, networks=networks, network='qa-probe-netb',
+                             nic_index=0))
+        assert moved['changed'] is True
+        assert board.saves == [{'vnet': 15}]
+        assert isinstance(board.saves[0]['vnet'], int)
+
+        again = _exited(_run(board, networks=networks, network='qa-probe-netb',
+                             nic_index=0))
+        assert again['changed'] is False
+        assert board.creates == 0
+        assert board.attachments() == [(83, 15)]
+
+    def test_the_key_property_wins_over_a_string_dollar_key(self):
+        class _Net(dict):
+            def __init__(self):
+                super().__init__({'$key': '99', 'name': 'qa-probe-neta'})
+                self.key = 22
+
+        board = self._board()
+
+        result = _exited(_run(board, networks=[_Net()], state='present'))
+
+        assert result['changed'] is False
+        assert board.creates == 0
+        assert board.saves == []

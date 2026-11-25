@@ -152,16 +152,17 @@
         insecure: "{{ vergeos_insecure }}"
         name: "{{ vm_name }}"
         recipe: "{{ recipe_name }}"
-        answers:
+        plain_answers:
           HOSTNAME: "{{ vm_name }}"
           USER: "{{ guest_user }}"
-          PASSWORD: "{{ guest_password }}"
           YB_CPU_CORES: "{{ guest_cores }}"
           YB_RAM: "{{ guest_ram_mb }}"
           YB_DRIVE_OS_SIZE: "{{ guest_disk_bytes }}"
           YB_IP_ADDR_TYPE: dhcp
           YB_NIC_ETH0: "{{ recipe_network }}"
           SELECT_OS_TIER: "{{ storage_tier }}"
+        answers:
+          PASSWORD: "{{ guest_password }}"
       register: deployed
       tags: [deploy]
 
